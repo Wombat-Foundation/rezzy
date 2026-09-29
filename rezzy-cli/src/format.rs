@@ -723,6 +723,42 @@ pub fn format_cli_output(ctx: &FormattingContext) -> rezzy::JsonValue {
 mod tests {
     use super::*;
 
+    fn build_auth_graph(
+        events_map: &HashMap<String, LeanEvent>,
+    ) -> rezzy::auth::roaring::AuthGraph {
+        rezzy::auth::roaring::AuthGraph::build(events_map)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn formatting_context<'a>(
+        room_version: Option<&'a str>,
+        duration: std::time::Duration,
+        event_count: usize,
+        args: &'a Args,
+        events_map: &'a HashMap<String, LeanEvent>,
+        raw_map: &'a HashMap<String, rezzy::JsonValue>,
+        heads: &'a [String],
+        final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
+        resolved_state_list: &'a [String],
+        auth_chain_ids: &'a [String],
+        auth_graph: &'a rezzy::auth::roaring::AuthGraph,
+    ) -> FormattingContext<'a> {
+        FormattingContext {
+            args,
+            events_map,
+            raw_map,
+            heads,
+            final_state_map,
+            resolved_state_list,
+            auth_chain_ids,
+            auth_graph,
+            version: StateResVersion::V2,
+            room_version,
+            duration,
+            event_count,
+        }
+    }
+
     #[test]
     fn empty_context_supports_all_non_timeline_output_formats() {
         let events_map = HashMap::new();
@@ -731,7 +767,7 @@ mod tests {
         let final_state_map = imbl::OrdMap::new();
         let resolved_state_list = Vec::new();
         let auth_chain_ids = Vec::new();
-        let auth_graph = rezzy::auth::roaring::AuthGraph::build(&events_map);
+        let auth_graph = build_auth_graph(&events_map);
 
         let render = |format| {
             let args = Args {
@@ -747,20 +783,19 @@ mod tests {
                 check: false,
                 origin: String::from("matrix.org"),
             };
-            let ctx = FormattingContext {
-                args: &args,
-                events_map: &events_map,
-                raw_map: &raw_map,
-                heads: &heads,
-                final_state_map: &final_state_map,
-                resolved_state_list: &resolved_state_list,
-                auth_chain_ids: &auth_chain_ids,
-                auth_graph: &auth_graph,
-                version: StateResVersion::V2,
-                room_version: None,
-                duration: std::time::Duration::ZERO,
-                event_count: 0,
-            };
+            let ctx = formatting_context(
+                None,
+                std::time::Duration::ZERO,
+                0,
+                &args,
+                &events_map,
+                &raw_map,
+                &heads,
+                &final_state_map,
+                &resolved_state_list,
+                &auth_chain_ids,
+                &auth_graph,
+            );
             format_cli_output(&ctx)
         };
 
@@ -808,22 +843,21 @@ mod tests {
         final_state_map.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
         let resolved_state_list = vec!["$create".to_string(), "$join".to_string()];
         let auth_chain_ids = Vec::new();
-        let auth_graph = rezzy::auth::roaring::AuthGraph::build(&events_map);
+        let auth_graph = build_auth_graph(&events_map);
 
-        let ctx = FormattingContext {
-            args: &args,
-            events_map: &events_map,
-            raw_map: &raw_map,
-            heads: &heads,
-            final_state_map: &final_state_map,
-            resolved_state_list: &resolved_state_list,
-            auth_chain_ids: &auth_chain_ids,
-            auth_graph: &auth_graph,
-            version: StateResVersion::V2,
-            room_version: Some("11"),
-            duration: std::time::Duration::from_millis(0),
-            event_count: 2,
-        };
+        let ctx = formatting_context(
+            Some("11"),
+            std::time::Duration::from_millis(0),
+            2,
+            &args,
+            &events_map,
+            &raw_map,
+            &heads,
+            &final_state_map,
+            &resolved_state_list,
+            &auth_chain_ids,
+            &auth_graph,
+        );
 
         let output = format_cli_output(&ctx);
         assert_eq!(output["status"].as_str(), Some("success"));
@@ -874,21 +908,20 @@ mod tests {
             final_state_map.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
             let resolved_state_list: Vec<String> = Vec::new();
             let auth_chain_ids: Vec<String> = Vec::new();
-            let auth_graph = rezzy::auth::roaring::AuthGraph::build(&events_map);
-            let ctx = FormattingContext {
-                args: &args,
-                events_map: &events_map,
-                raw_map: &raw_map,
-                heads: &heads,
-                final_state_map: &final_state_map,
-                resolved_state_list: &resolved_state_list,
-                auth_chain_ids: &auth_chain_ids,
-                auth_graph: &auth_graph,
-                version: StateResVersion::V2,
-                room_version: Some("11"),
-                duration: std::time::Duration::from_millis(0),
-                event_count: events.len(),
-            };
+            let auth_graph = build_auth_graph(&events_map);
+            let ctx = formatting_context(
+                Some("11"),
+                std::time::Duration::from_millis(0),
+                events.len(),
+                &args,
+                &events_map,
+                &raw_map,
+                &heads,
+                &final_state_map,
+                &resolved_state_list,
+                &auth_chain_ids,
+                &auth_graph,
+            );
             render_timeline(&ctx)
         };
 

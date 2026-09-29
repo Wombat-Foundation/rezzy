@@ -720,6 +720,39 @@ mod tests {
             quiet: true,
         }
     }
+    fn event_line(event: &rezzy::JsonValue) -> String {
+        format!("{}\n", rezzy::json::write_string_value(event).unwrap())
+    }
+    fn write_event(path: &Path, event: &rezzy::JsonValue) {
+        fs::write(path, event_line(event)).unwrap();
+    }
+    fn merged_dir(root: &Path) -> (PathBuf, String) {
+        let out_dir = root.join("merged");
+        let out_dir_lossy = out_dir.to_string_lossy().into_owned();
+        (out_dir, out_dir_lossy)
+    }
+    fn assert_error(error: &AppError, code: ErrorCode, needle: &str) {
+        assert_eq!(error.code(), code);
+        assert!(error.to_string().contains(needle));
+    }
+    fn complete_report(matches: &ArgMatches) -> rezzy::JsonValue {
+        match run_from_matches(matches).unwrap() {
+            AggregateOutcome::Complete(report) => report,
+            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
+        }
+    }
+    fn partial_report(matches: &ArgMatches) -> rezzy::JsonValue {
+        match run_from_matches(matches).unwrap() {
+            AggregateOutcome::Partial(report) => report,
+            AggregateOutcome::Complete(report) => panic!("expected partial: {report:?}"),
+        }
+    }
+    fn assert_written_two_rooms(report: &rezzy::JsonValue, out_dir: &Path) {
+        assert_eq!(report["status"].as_str(), Some("written"));
+        assert_eq!(report["rooms"].as_array().unwrap().len(), 2);
+        assert!(out_dir.join("merged-room-a-v12.jsonl").exists());
+        assert!(out_dir.join("merged-room-b-v12.jsonl").exists());
+    }
     #[test]
     fn sorting_rejects_missing_metadata_and_uses_event_id_tiebreaker() {
         let mut events = vec![event("$b", 2, 100, &["$a"]), event("$a", 1, 200, &[])];
@@ -815,12 +848,10 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         let first = event("$a", 1, 100, &[]);
         let second = event("$b", 2, 200, &["$a"]);
-        let first_line = format!("{}\n", rezzy::json::write_string_value(&first).unwrap());
-        let second_line = format!("{}\n", rezzy::json::write_string_value(&second).unwrap());
         let first_path = raw_dir.join("room-a.jsonl");
         let second_path = raw_dir.join("room-b.jsonl");
-        fs::write(&first_path, &first_line).unwrap();
-        fs::write(&second_path, &second_line).unwrap();
+        write_event(&first_path, &first);
+        write_event(&second_path, &second);
         assert!(filename_matches_room(&first_path, "room"));
         assert_eq!(input_files(&raw_dir, "room").unwrap().len(), 2);
         let raw_before = fs::read(&first_path).unwrap();
@@ -839,8 +870,11 @@ mod tests {
         );
         aggregate(&options(&root, false)).unwrap();
         let third = event("$c", 3, 300, &["$b"]);
-        let third_line = format!("{}\n", rezzy::json::write_string_value(&third).unwrap());
-        fs::write(&second_path, format!("{second_line}{third_line}")).unwrap();
+        fs::write(
+            &second_path,
+            format!("{}{}", event_line(&second), event_line(&third)),
+        )
+        .unwrap();
         assert_eq!(
             aggregate(&options(&root, true)).unwrap_err().code(),
             ErrorCode::AggregateStale
@@ -867,8 +901,7 @@ mod tests {
         let mut overlapping = options(&root, false);
         overlapping.output = raw_dir.join("merged-room.jsonl");
         let error = aggregate(&overlapping).expect_err("directory overlap should be rejected");
-        assert_eq!(error.code(), ErrorCode::AggregateConflict);
-        assert!(error.to_string().contains("must be different"));
+        assert_error(&error, ErrorCode::AggregateConflict, "must be different");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -903,16 +936,8 @@ mod tests {
         let a = event("$same", 1, 100, &[]);
         let mut b = a.clone();
         b["origin_server_ts"] = rezzy::json!(101);
-        fs::write(
-            raw_dir.join("room-a.jsonl"),
-            format!("{}\n", rezzy::json::write_string_value(&a).unwrap()),
-        )
-        .unwrap();
-        fs::write(
-            raw_dir.join("room-b.jsonl"),
-            format!("{}\n", rezzy::json::write_string_value(&b).unwrap()),
-        )
-        .unwrap();
+        write_event(&raw_dir.join("room-a.jsonl"), &a);
+        write_event(&raw_dir.join("room-b.jsonl"), &b);
         assert_eq!(
             aggregate(&options(&root, false)).unwrap_err().code(),
             ErrorCode::AggregateConflict
@@ -928,11 +953,9 @@ mod tests {
         let first = event("$same", 1, 100, &[]);
         let mut second = first.clone();
         second["origin_server_ts"] = rezzy::json!(101);
-        let first_line = rezzy::json::write_string_value(&first).unwrap();
-        let second_line = rezzy::json::write_string_value(&second).unwrap();
         fs::write(
             raw_dir.join("room-single.jsonl"),
-            format!("{first_line}\n{second_line}\n"),
+            format!("{}{}", event_line(&first), event_line(&second)),
         )
         .unwrap();
         assert_eq!(
@@ -982,12 +1005,7 @@ mod tests {
         let raw_dir = root.join("unmerged");
         fs::create_dir_all(&raw_dir).unwrap();
         let path = raw_dir.join("remote-room-v12.jsonl");
-        let only = event("$a", 1, 100, &[]);
-        fs::write(
-            &path,
-            format!("{}\n", rezzy::json::write_string_value(&only).unwrap()),
-        )
-        .unwrap();
+        write_event(&path, &event("$a", 1, 100, &[]));
         let input = read_raw_input(&path, Path::new("")).unwrap();
         assert_eq!(input.label, path.to_string_lossy());
         fs::remove_dir_all(root).unwrap();
@@ -1003,8 +1021,11 @@ mod tests {
         options.source = Source::Files(vec![existing]);
         options.output = root.join("merged/merged-room.jsonl");
         let error = aggregate(&options).expect_err("input inside output dir should be rejected");
-        assert_eq!(error.code(), ErrorCode::AggregateConflict);
-        assert!(error.to_string().contains("inside output directory"));
+        assert_error(
+            &error,
+            ErrorCode::AggregateConflict,
+            "inside output directory",
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1018,8 +1039,11 @@ mod tests {
         options.source = Source::Files(vec![output.clone()]);
         options.output = output;
         let error = aggregate(&options).expect_err("input equal to output should be rejected");
-        assert_eq!(error.code(), ErrorCode::AggregateConflict);
-        assert!(error.to_string().contains("same as the output file"));
+        assert_error(
+            &error,
+            ErrorCode::AggregateConflict,
+            "same as the output file",
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1058,15 +1082,24 @@ mod tests {
             .expect("room aggregate arguments should parse")
     }
 
+    fn explicit_output_matches(paths: &[&Path], out_dir: &str) -> ArgMatches {
+        explicit_matches(paths, &["--output-dir", out_dir])
+    }
+
+    fn scan_output_matches(input_dir: &Path, out_dir: &str) -> ArgMatches {
+        scan_matches(input_dir, &["--output-dir", out_dir])
+    }
+
+    fn scan_complete_report(raw_dir: &Path, root: &Path) -> (PathBuf, rezzy::JsonValue) {
+        let (out_dir, out_dir_lossy) = merged_dir(root);
+        let matches = scan_output_matches(raw_dir, &out_dir_lossy);
+        (out_dir, complete_report(&matches))
+    }
+
     fn room_file(dir: &Path, name: &str, id: &str) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
         let path = dir.join(name);
-        let only = event(id, 1, 100, &[]);
-        fs::write(
-            &path,
-            format!("{}\n", rezzy::json::write_string_value(&only).unwrap()),
-        )
-        .unwrap();
+        write_event(&path, &event(id, 1, 100, &[]));
         path
     }
 
@@ -1076,21 +1109,11 @@ mod tests {
         let raw_dir = root.join("raw");
         let first = room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
         let second = room_file(&raw_dir, "local-room-b-v12.jsonl", "$b");
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = explicit_matches(
-            &[first.as_path(), second.as_path()],
-            &["--output-dir", out_dir_lossy.as_ref()],
-        );
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
-        assert_eq!(report["status"].as_str(), Some("written"));
+        let (out_dir, out_dir_lossy) = merged_dir(&root);
+        let matches = explicit_output_matches(&[first.as_path(), second.as_path()], &out_dir_lossy);
+        let report = complete_report(&matches);
         assert_eq!(report["failed"].as_u64(), Some(0));
-        assert_eq!(report["rooms"].as_array().unwrap().len(), 2);
-        assert!(out_dir.join("merged-room-a-v12.jsonl").exists());
-        assert!(out_dir.join("merged-room-b-v12.jsonl").exists());
+        assert_written_two_rooms(&report, &out_dir);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1101,8 +1124,7 @@ mod tests {
         let second = root.join("room-b-v12.jsonl");
         let matches = explicit_matches(&[first.as_path(), second.as_path()], &["-o", "out.jsonl"]);
         let error = run_from_matches(&matches).expect_err("multi-room -o should fail");
-        assert_eq!(error.code(), ErrorCode::AggregateConflict);
-        assert!(error.to_string().contains("single room"));
+        assert_error(&error, ErrorCode::AggregateConflict, "single room");
     }
 
     #[test]
@@ -1112,28 +1134,11 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         let first = raw_dir.join("local-room-v12.jsonl");
         let second = raw_dir.join("remote-room-v12-federated.jsonl");
-        let event_a = event("$a", 1, 100, &[]);
-        let event_b = event("$b", 2, 200, &["$a"]);
-        fs::write(
-            &first,
-            format!("{}\n", rezzy::json::write_string_value(&event_a).unwrap()),
-        )
-        .unwrap();
-        fs::write(
-            &second,
-            format!("{}\n", rezzy::json::write_string_value(&event_b).unwrap()),
-        )
-        .unwrap();
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = explicit_matches(
-            &[first.as_path(), second.as_path()],
-            &["--output-dir", out_dir_lossy.as_ref()],
-        );
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
+        write_event(&first, &event("$a", 1, 100, &[]));
+        write_event(&second, &event("$b", 2, 200, &["$a"]));
+        let (out_dir, out_dir_lossy) = merged_dir(&root);
+        let matches = explicit_output_matches(&[first.as_path(), second.as_path()], &out_dir_lossy);
+        let report = complete_report(&matches);
         let rooms = report["rooms"].as_array().unwrap();
         assert_eq!(rooms.len(), 1, "both raw names belong to room-v12");
         assert_eq!(rooms[0]["room"].as_str(), Some("room-v12"));
@@ -1147,8 +1152,7 @@ mod tests {
         let root = unique_test_dir();
         let raw_dir = root.join("raw");
         let raw = room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
+        let (_out_dir, out_dir_lossy) = merged_dir(&root);
         let write_matches =
             explicit_matches(&[raw.as_path()], &["--output-dir", out_dir_lossy.as_ref()]);
         assert!(matches!(
@@ -1159,10 +1163,7 @@ mod tests {
             &[raw.as_path()],
             &["--check", "--output-dir", out_dir_lossy.as_ref()],
         );
-        let report = match run_from_matches(&check_matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
+        let report = complete_report(&check_matches);
         assert_eq!(
             report["rooms"].as_array().unwrap()[0]["status"].as_str(),
             Some("current")
@@ -1174,16 +1175,8 @@ mod tests {
         );
         // A changed input makes the same check stale, proving labels are not
         // part of the compared aggregate bytes.
-        let changed = event("$a", 1, 101, &[]);
-        fs::write(
-            &raw,
-            format!("{}\n", rezzy::json::write_string_value(&changed).unwrap()),
-        )
-        .unwrap();
-        let stale = match run_from_matches(&check_matches).unwrap() {
-            AggregateOutcome::Partial(report) => report,
-            AggregateOutcome::Complete(report) => panic!("expected partial: {report:?}"),
-        };
+        write_event(&raw, &event("$a", 1, 101, &[]));
+        let stale = partial_report(&check_matches);
         assert_eq!(
             stale["rooms"].as_array().unwrap()[0]["code"].as_str(),
             Some("E015_AGGREGATE_STALE")
@@ -1198,16 +1191,9 @@ mod tests {
         let good = room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
         let bad = raw_dir.join("local-room-b-v12.jsonl");
         fs::write(&bad, b"not json\n").unwrap();
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = explicit_matches(
-            &[good.as_path(), bad.as_path()],
-            &["--output-dir", out_dir_lossy.as_ref()],
-        );
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Partial(report) => report,
-            AggregateOutcome::Complete(report) => panic!("expected partial: {report:?}"),
-        };
+        let (out_dir, out_dir_lossy) = merged_dir(&root);
+        let matches = explicit_output_matches(&[good.as_path(), bad.as_path()], &out_dir_lossy);
+        let report = partial_report(&matches);
         assert_eq!(report["status"].as_str(), Some("partial"));
         assert_eq!(report["failed"].as_u64(), Some(1));
         let rooms = report["rooms"].as_array().unwrap();
@@ -1228,17 +1214,8 @@ mod tests {
         let raw_dir = root.join("unmerged");
         room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
         room_file(&raw_dir, "local-room-b-v12.jsonl", "$b");
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = scan_matches(&raw_dir, &["--output-dir", out_dir_lossy.as_ref()]);
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
-        assert_eq!(report["status"].as_str(), Some("written"));
-        assert_eq!(report["rooms"].as_array().unwrap().len(), 2);
-        assert!(out_dir.join("merged-room-a-v12.jsonl").exists());
-        assert!(out_dir.join("merged-room-b-v12.jsonl").exists());
+        let (out_dir, report) = scan_complete_report(&raw_dir, &root);
+        assert_written_two_rooms(&report, &out_dir);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1248,13 +1225,7 @@ mod tests {
         let raw_dir = root.join("unmerged");
         room_file(&raw_dir, "remote-room-a-v12.jsonl", "$a");
         fs::write(raw_dir.join("notes.jsonl"), b"{}\n").unwrap();
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = scan_matches(&raw_dir, &["--output-dir", out_dir_lossy.as_ref()]);
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
+        let (_out_dir, report) = scan_complete_report(&raw_dir, &root);
         let rooms = report["rooms"].as_array().unwrap();
         assert_eq!(rooms.len(), 1);
         assert_eq!(rooms[0]["room"].as_str(), Some("room-a-v12"));
@@ -1271,8 +1242,7 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         let matches = scan_matches(&raw_dir, &[]);
         let error = run_from_matches(&matches).expect_err("empty directory should error");
-        assert_eq!(error.code(), ErrorCode::EmptyInput);
-        assert!(error.to_string().contains("no .jsonl files found"));
+        assert_error(&error, ErrorCode::EmptyInput, "no .jsonl files found");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1282,8 +1252,7 @@ mod tests {
         let raw_dir = root.join("unmerged");
         let matches = scan_matches(&raw_dir, &[]);
         let error = run_from_matches(&matches).expect_err("missing directory should error");
-        assert_eq!(error.code(), ErrorCode::IoError);
-        assert!(error.to_string().contains("cannot read input directory"));
+        assert_error(&error, ErrorCode::IoError, "cannot read input directory");
     }
 
     #[test]
@@ -1294,8 +1263,7 @@ mod tests {
         fs::write(raw_dir.join("notes.jsonl"), b"{}\n").unwrap();
         let matches = scan_matches(&raw_dir, &[]);
         let error = run_from_matches(&matches).expect_err("all-unversioned directory should error");
-        assert_eq!(error.code(), ErrorCode::EmptyInput);
-        assert!(error.to_string().contains("no versioned .jsonl files"));
+        assert_error(&error, ErrorCode::EmptyInput, "no versioned .jsonl files");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1307,8 +1275,7 @@ mod tests {
         room_file(&raw_dir, "room-b-v12.jsonl", "$b");
         let matches = scan_matches(&raw_dir, &["-o", "out.jsonl"]);
         let error = run_from_matches(&matches).expect_err("multi-room -o should fail");
-        assert_eq!(error.code(), ErrorCode::AggregateConflict);
-        assert!(error.to_string().contains("single room"));
+        assert_error(&error, ErrorCode::AggregateConflict, "single room");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1320,8 +1287,7 @@ mod tests {
         let raw_dir_lossy = raw_dir.to_string_lossy();
         let matches = scan_matches(&raw_dir, &["--output-dir", raw_dir_lossy.as_ref()]);
         let error = run_from_matches(&matches).expect_err("overlap should be rejected");
-        assert_eq!(error.code(), ErrorCode::AggregateConflict);
-        assert!(error.to_string().contains("must be different"));
+        assert_error(&error, ErrorCode::AggregateConflict, "must be different");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1333,10 +1299,7 @@ mod tests {
         let out = root.join("custom.jsonl");
         let out_lossy = out.to_string_lossy();
         let matches = scan_matches(&raw_dir, &["-o", out_lossy.as_ref()]);
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
+        let report = complete_report(&matches);
         assert_eq!(
             report["rooms"].as_array().unwrap()[0]["output"].as_str(),
             Some(out_lossy.as_ref())
@@ -1350,22 +1313,15 @@ mod tests {
         let root = unique_test_dir();
         let raw_dir = root.join("unmerged");
         room_file(&raw_dir, "remote-dag-room-v12-merged.jsonl", "$a");
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
+        let (_out_dir, out_dir_lossy) = merged_dir(&root);
         let room = room_matches(
             &raw_dir,
             "room-v12",
             &["--output-dir", out_dir_lossy.as_ref()],
         );
-        let room_result = match run_from_matches(&room).unwrap() {
-            AggregateOutcome::Complete(result) => result,
-            AggregateOutcome::Partial(result) => panic!("unexpected partial: {result:?}"),
-        };
-        let scan = scan_matches(&raw_dir, &["--output-dir", out_dir_lossy.as_ref()]);
-        let scan_result = match run_from_matches(&scan).unwrap() {
-            AggregateOutcome::Complete(result) => result,
-            AggregateOutcome::Partial(result) => panic!("unexpected partial: {result:?}"),
-        };
+        let room_result = complete_report(&room);
+        let scan = scan_output_matches(&raw_dir, &out_dir_lossy);
+        let scan_result = complete_report(&scan);
         let scanned = &scan_result["rooms"].as_array().unwrap()[0];
         assert_eq!(room_result["output"], scanned["output"]);
         assert_eq!(room_result["unique_events"], scanned["unique_events"]);
@@ -1380,13 +1336,7 @@ mod tests {
         let original = room_file(&raw_dir, "room-v12.jsonl", "$a");
         let link = raw_dir.join("remote-room-v12.jsonl");
         std::os::unix::fs::symlink(&original, &link).unwrap();
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = scan_matches(&raw_dir, &["--output-dir", out_dir_lossy.as_ref()]);
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Complete(report) => report,
-            AggregateOutcome::Partial(report) => panic!("unexpected partial: {report:?}"),
-        };
+        let (_out_dir, report) = scan_complete_report(&raw_dir, &root);
         let rooms = report["rooms"].as_array().unwrap();
         assert_eq!(rooms.len(), 1);
         assert_eq!(rooms[0]["input_files"].as_u64(), Some(2));
@@ -1402,13 +1352,9 @@ mod tests {
         room_file(&raw_dir, "room-a-v12.jsonl", "$a");
         fs::write(raw_dir.join("room-b-v12.jsonl"), b"not json\n").unwrap();
         fs::write(raw_dir.join("notes.jsonl"), b"{}\n").unwrap();
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
-        let matches = scan_matches(&raw_dir, &["--output-dir", out_dir_lossy.as_ref()]);
-        let report = match run_from_matches(&matches).unwrap() {
-            AggregateOutcome::Partial(report) => report,
-            AggregateOutcome::Complete(report) => panic!("expected partial: {report:?}"),
-        };
+        let (_out_dir, out_dir_lossy) = merged_dir(&root);
+        let matches = scan_output_matches(&raw_dir, &out_dir_lossy);
+        let report = partial_report(&matches);
         assert_eq!(report["failed"].as_u64(), Some(1));
         assert_eq!(report["skipped"].as_array().unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
@@ -1419,8 +1365,7 @@ mod tests {
         let root = unique_test_dir();
         let raw_dir = root.join("unmerged");
         room_file(&raw_dir, "room.jsonl", "$a");
-        let out_dir = root.join("merged");
-        let out_dir_lossy = out_dir.to_string_lossy();
+        let (out_dir, out_dir_lossy) = merged_dir(&root);
         let room = room_matches(&raw_dir, "room", &["--output-dir", out_dir_lossy.as_ref()]);
         assert!(matches!(
             run_from_matches(&room).unwrap(),

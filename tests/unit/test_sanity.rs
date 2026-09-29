@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Item(i32);
@@ -16,6 +16,146 @@ impl PartialOrd for Item {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
+}
+
+type StateMap =
+    std::collections::BTreeMap<(rezzy::basespec::event_types::EventType, String), String>;
+
+type DeltaCheckpoint = (
+    [u8; 32],
+    Option<[u8; 32]>,
+    String,
+    Vec<rezzy::state::delta::StateDelta>,
+);
+
+/// Builds a synthetic linear chain `$1 -> $2 -> ... -> $total_events`, where
+/// every 10th event is an `m.room.member` state event for `user_{i}`.
+fn synthetic_chain(total_events: u64) -> HashMap<String, rezzy::LeanEvent> {
+    let mut events_map = HashMap::new();
+    for i in 1..=total_events {
+        let event_id = format!("${i}");
+        let prev_events = if i > 1 {
+            vec![format!(
+                "${}",
+                i.checked_sub(1).expect("i > 1 in this branch")
+            )]
+        } else {
+            Vec::new()
+        };
+        let (state_key, event_type) = if i % 10 == 0 {
+            (Some(format!("user_{i}")), "m.room.member".to_string())
+        } else {
+            (None, "m.room.message".to_string())
+        };
+        let ev = rezzy::LeanEvent {
+            rejected: false,
+            soft_fail: false,
+            event_id: event_id.clone(),
+            event_type,
+            state_key,
+            power_level: 0,
+            origin_server_ts: i
+                .checked_mul(1000)
+                .expect("synthetic timestamp fits in u64"),
+            sender: "alice".to_string(),
+            content: rezzy::JsonValue::Null,
+            prev_events,
+            auth_events: Vec::new(),
+            depth: i,
+            room_id: None,
+        };
+        events_map.insert(event_id, ev);
+    }
+    events_map
+}
+
+fn compute_three_states(
+    events_map: &HashMap<String, rezzy::LeanEvent>,
+    ids: (&str, &str, &str),
+) -> (StateMap, StateMap, StateMap) {
+    let compute = |id: &str| {
+        rezzy::compute_state_at(id, events_map, rezzy::StateResVersion::V2, &String::new())
+            .expect("should compute")
+    };
+    (compute(ids.0), compute(ids.1), compute(ids.2))
+}
+
+fn event_map(jsonl: &str) -> HashMap<String, rezzy::LeanEvent> {
+    let mut map = HashMap::new();
+    for ev in utils::parse_jsonl_events(jsonl) {
+        map.insert(ev.event_id.clone(), ev);
+    }
+    map
+}
+
+fn member_event(id: &str, state_key: &str, prev: &str, depth: u64) -> rezzy::LeanEvent {
+    rezzy::LeanEvent {
+        event_id: id.to_string(),
+        event_type: "m.room.member".to_string(),
+        state_key: Some(state_key.to_string()),
+        prev_events: vec![prev.to_string()],
+        depth,
+        ..Default::default()
+    }
+}
+
+/// Sequentially folds `events` into checkpoints of
+/// `(state_hash, parent_hash, event_id, deltas)`.
+fn build_checkpoints(events: &[rezzy::LeanEvent]) -> Vec<DeltaCheckpoint> {
+    let mut state_after_map: HashMap<
+        String,
+        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    > = HashMap::new();
+    let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
+    let mut checkpoints = Vec::new();
+
+    for ev in events {
+        let mut state_before = imbl::OrdMap::new();
+        let mut parent_hash = None;
+
+        if !ev.prev_events.is_empty() {
+            let prev_id = &ev.prev_events[0];
+            if let Some(prev_state) = state_after_map.get(prev_id) {
+                state_before = prev_state.clone();
+                parent_hash = state_hash_map.get(prev_id).copied();
+            }
+        }
+
+        let mut state_after = state_before.clone();
+        if ev.state_key.is_some() {
+            state_after.insert(
+                (
+                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                    ev.state_key.clone().unwrap(),
+                ),
+                ev.event_id.clone(),
+            );
+        }
+
+        let hash_str = rezzy::state::delta::compute_state_hash(&state_after);
+        state_after_map.insert(ev.event_id.clone(), state_after.clone());
+        state_hash_map.insert(ev.event_id.clone(), hash_str);
+
+        let deltas = rezzy::state::delta::compute_state_delta(&state_before, &state_after);
+        checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
+    }
+    checkpoints
+}
+
+/// Asserts a checkpoint records a single member-state delta for `event_id`.
+fn assert_member_delta(
+    checkpoint: &DeltaCheckpoint,
+    event_id: &str,
+    state_key: &str,
+    parent: Option<[u8; 32]>,
+) {
+    let (_, parent_hash, id, deltas) = checkpoint;
+    assert_eq!(id, event_id);
+    assert_eq!(parent_hash, &parent);
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].event_type, "m.room.member");
+    assert_eq!(deltas[0].state_key, state_key.to_string());
+    assert_eq!(deltas[0].event_id, Some(event_id.to_string()));
 }
 
 #[test]
@@ -36,49 +176,12 @@ fn test_heap_order() {
 
 #[test]
 fn test_compute_state_at_correctness_and_performance() {
-    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
-    use std::collections::HashMap;
+    use rezzy::{compute_state_at, StateResVersion};
     use std::time::Instant;
 
     // Generate a synthetic chain of 1000 events: E_1 -> E_2 -> ... -> E_1000
     // Every 10th event is a state event: type "m.room.member", state_key "user_X"
-    let mut events_map = HashMap::new();
-    let total_events = 1000;
-
-    for i in 1..=total_events {
-        let event_id = format!("${i}");
-        let prev_events = if i > 1 {
-            vec![format!("${}", i - 1)]
-        } else {
-            Vec::new()
-        };
-
-        // Every 10th event is state
-        let (state_key, event_type) = if i % 10 == 0 {
-            (Some(format!("user_{i}")), "m.room.member".to_string())
-        } else {
-            (None, "m.room.message".to_string())
-        };
-
-        let u_i = u64::try_from(i).unwrap();
-        let ev = LeanEvent {
-            rejected: false,
-            soft_fail: false,
-            event_id: event_id.clone(),
-            event_type,
-            state_key,
-            power_level: 0,
-            origin_server_ts: u_i * 1000,
-            sender: "alice".to_string(),
-            content: rezzy::JsonValue::Null,
-            prev_events,
-            auth_events: Vec::new(),
-            depth: u_i,
-            room_id: None,
-        };
-
-        events_map.insert(event_id, ev);
-    }
+    let events_map = synthetic_chain(1000);
 
     // Target events
     let early_id = "$100";
@@ -86,12 +189,8 @@ fn test_compute_state_at_correctness_and_performance() {
     let tip_id = "$1000";
 
     // Correctness Checks
-    let early_state = compute_state_at(early_id, &events_map, StateResVersion::V2, &String::new())
-        .expect("should compute");
-    let mid_state = compute_state_at(mid_id, &events_map, StateResVersion::V2, &String::new())
-        .expect("should compute");
-    let tip_state = compute_state_at(tip_id, &events_map, StateResVersion::V2, &String::new())
-        .expect("should compute");
+    let (early_state, mid_state, tip_state) =
+        compute_three_states(&events_map, (early_id, mid_id, tip_id));
 
     // Check sizes of the state maps
     // At $100, we should have exactly 10 state keys (100 / 10)
@@ -145,58 +244,18 @@ fn test_compute_state_at_correctness_and_performance() {
 
 #[test]
 fn test_compute_state_at_batch() {
-    use rezzy::{compute_state_at, compute_state_at_batch, LeanEvent, StateResVersion};
-    use std::collections::HashMap;
-
-    let mut events_map = HashMap::new();
+    use rezzy::{compute_state_at_batch, StateResVersion};
 
     // Create 1000 events in a single linear chain
-    for i in 1..=1000 {
-        let event_id = format!("${i}");
-        let prev_events = if i > 1 {
-            vec![format!("${}", i - 1)]
-        } else {
-            Vec::new()
-        };
-
-        // Every 10th event is state
-        let (state_key, event_type) = if i % 10 == 0 {
-            (Some(format!("user_{i}")), "m.room.member".to_string())
-        } else {
-            (None, "m.room.message".to_string())
-        };
-
-        let u_i = u64::try_from(i).unwrap();
-        let ev = LeanEvent {
-            rejected: false,
-            soft_fail: false,
-            event_id: event_id.clone(),
-            event_type,
-            state_key,
-            power_level: 0,
-            origin_server_ts: u_i * 1000,
-            sender: "alice".to_string(),
-            content: rezzy::JsonValue::Null,
-            prev_events,
-            auth_events: Vec::new(),
-            depth: u_i,
-            room_id: None,
-        };
-
-        events_map.insert(event_id, ev);
-    }
+    let events_map = synthetic_chain(1000);
 
     let early_id = "$100";
     let mid_id = "$500";
     let tip_id = "$1000";
 
     // 1. Correctness Checks
-    let early_state = compute_state_at(early_id, &events_map, StateResVersion::V2, &String::new())
-        .expect("should compute");
-    let mid_state = compute_state_at(mid_id, &events_map, StateResVersion::V2, &String::new())
-        .expect("should compute");
-    let tip_state = compute_state_at(tip_id, &events_map, StateResVersion::V2, &String::new())
-        .expect("should compute");
+    let (early_state, mid_state, tip_state) =
+        compute_three_states(&events_map, (early_id, mid_id, tip_id));
 
     // Run batch computation
     let batch_ids = vec![early_id, mid_id, tip_id];
@@ -239,44 +298,8 @@ fn test_compute_state_at_batch() {
 fn test_streaming_correctness_with_branched_dag() {
     use rezzy::state::at::compute_state_at_streaming;
     use rezzy::{LeanEvent, StateResVersion};
-    use std::collections::HashMap;
 
-    let mut events_map = HashMap::new();
-
-    // Create a DAG with a fork and a merge
-    // Linear 1..=40
-    for i in 1_u64..=40_u64 {
-        let prev_events = if i > 1 {
-            vec![format!("${}", i - 1)]
-        } else {
-            Vec::new()
-        };
-
-        let (state_key, event_type) = if i % 10 == 0 {
-            (Some(format!("user_{i}")), "m.room.member".to_string())
-        } else {
-            (None, "m.room.message".to_string())
-        };
-
-        events_map.insert(
-            format!("${i}"),
-            LeanEvent {
-                rejected: false,
-                soft_fail: false,
-                event_id: format!("${i}"),
-                event_type,
-                state_key,
-                power_level: 0,
-                origin_server_ts: i * 1000,
-                sender: "alice".to_string(),
-                content: rezzy::JsonValue::Null,
-                prev_events,
-                auth_events: Vec::new(),
-                depth: i,
-                room_id: None,
-            },
-        );
-    }
+    let mut events_map = synthetic_chain(40);
 
     // Fork A (41a..=49a)
     for i in 41_u64..=49_u64 {
@@ -404,25 +427,21 @@ fn test_streaming_correctness_with_branched_dag() {
     assert_eq!(&streaming_results["$50"], &expected_at_50);
 }
 
-fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
-    use rezzy::LeanEvent;
-    // 1. Create three chronological events
-    let ev1 = LeanEvent {
+fn create_room_event() -> rezzy::LeanEvent {
+    rezzy::LeanEvent {
         event_id: "$1".to_string(),
         event_type: "m.room.create".to_string(),
         state_key: Some(String::new()),
         depth: 1,
         ..Default::default()
-    };
-    let ev2 = LeanEvent {
-        event_id: "$2".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        prev_events: vec!["$1".to_string()],
-        depth: 2,
-        ..Default::default()
-    };
-    let ev3 = LeanEvent {
+    }
+}
+
+fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
+    // 1. Create three chronological events
+    let ev1 = create_room_event();
+    let ev2 = member_event("$2", "@alice:example.com", "$1", 2);
+    let ev3 = rezzy::LeanEvent {
         event_id: "$3".to_string(),
         event_type: "m.room.message".to_string(),
         state_key: None,
@@ -435,49 +454,10 @@ fn make_chronological_test_events() -> Vec<rezzy::LeanEvent> {
 
 #[test]
 fn test_delta_chain_generation_correctness() {
-    use rezzy::state::delta::{compute_state_delta, compute_state_hash};
-    use std::collections::HashMap;
-
     let events = make_chronological_test_events();
 
     // Perform delta-chain sequential processing using library functions
-    let mut state_after_map: HashMap<
-        String,
-        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    > = HashMap::new();
-    let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
-    let mut checkpoints = Vec::new();
-
-    for ev in &events {
-        let mut state_before = imbl::OrdMap::new();
-        let mut parent_hash = None;
-
-        if !ev.prev_events.is_empty() {
-            let prev_id = &ev.prev_events[0];
-            if let Some(prev_state) = state_after_map.get(prev_id) {
-                state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).copied();
-            }
-        }
-
-        let mut state_after = state_before.clone();
-        if ev.state_key.is_some() {
-            state_after.insert(
-                (
-                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap(),
-                ),
-                ev.event_id.clone(),
-            );
-        }
-
-        let hash_str = compute_state_hash(&state_after);
-        state_after_map.insert(ev.event_id.clone(), state_after.clone());
-        state_hash_map.insert(ev.event_id.clone(), hash_str);
-
-        let deltas = compute_state_delta(&state_before, &state_after);
-        checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
-    }
+    let checkpoints = build_checkpoints(&events);
 
     // Verification of Chaining logic
     assert_eq!(checkpoints.len(), 3);
@@ -490,13 +470,8 @@ fn test_delta_chain_generation_correctness() {
     assert_eq!(d1[0].state_key, String::new());
     assert_eq!(d1[0].event_id, Some("$1".to_string()));
 
-    let (h2, p2, id2, d2) = &checkpoints[1];
-    assert_eq!(id2, "$2");
-    assert_eq!(p2, &Some(*h1));
-    assert_eq!(d2.len(), 1);
-    assert_eq!(d2[0].event_type, "m.room.member");
-    assert_eq!(d2[0].state_key, "@alice:example.com".to_string());
-    assert_eq!(d2[0].event_id, Some("$2".to_string()));
+    let (h2, ..) = &checkpoints[1];
+    assert_member_delta(&checkpoints[1], "$2", "@alice:example.com", Some(*h1));
 
     let (h3, p3, id3, d3) = &checkpoints[2];
     assert_eq!(id3, "$3");
@@ -507,89 +482,21 @@ fn test_delta_chain_generation_correctness() {
 
 #[test]
 fn test_state_delta_compression_robustness() {
-    use rezzy::state::delta::{compute_state_delta, compute_state_hash};
-    use rezzy::LeanEvent;
-    use std::collections::HashMap;
-
     // Construct a micro-history with a merge where some state key gets deleted/overwritten
     // E1: Create room (state: m.room.create => $1)
-    let ev1: LeanEvent = LeanEvent {
-        event_id: "$1".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        depth: 1,
-        ..Default::default()
-    };
+    let ev1 = create_room_event();
 
     // E2: Alice joins (state: m.room.create => $1, m.room.member:@alice => $2)
-    let ev2 = LeanEvent {
-        event_id: "$2".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        prev_events: vec!["$1".to_string()],
-        depth: 2,
-        ..Default::default()
-    };
+    let ev2 = member_event("$2", "@alice:example.com", "$1", 2);
 
     // E3: Fork A - Bob joins (state: m.room.create => $1, m.room.member:@alice => $2, m.room.member:@bob => $3)
-    let ev3 = LeanEvent {
-        event_id: "$3".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@bob:example.com".to_string()),
-        prev_events: vec!["$2".to_string()],
-        depth: 3,
-        ..Default::default()
-    };
+    let ev3 = member_event("$3", "@bob:example.com", "$2", 3);
 
     // E4: Fork B - Alice leaves (state: m.room.create => $1, m.room.member:@alice => $4)
-    let ev4 = LeanEvent {
-        event_id: "$4".to_string(),
-        event_type: "m.room.member".to_string(),
-        state_key: Some("@alice:example.com".to_string()),
-        prev_events: vec!["$2".to_string()],
-        depth: 3,
-        ..Default::default()
-    };
-
-    let mut state_after_map: HashMap<
-        String,
-        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    > = HashMap::new();
-    let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
-    let mut checkpoints = Vec::new();
+    let ev4 = member_event("$4", "@alice:example.com", "$2", 3);
 
     let events = vec![ev1, ev2, ev3, ev4];
-
-    for ev in &events {
-        let mut state_before = imbl::OrdMap::new();
-        let mut parent_hash = None;
-
-        if !ev.prev_events.is_empty() {
-            let prev_id = &ev.prev_events[0];
-            if let Some(prev_state) = state_after_map.get(prev_id) {
-                state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).copied();
-            }
-        }
-
-        let mut state_after = state_before.clone();
-        if ev.state_key.is_some() {
-            state_after.insert(
-                (
-                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap(),
-                ),
-                ev.event_id.clone(),
-            );
-        }
-
-        let hash_str = compute_state_hash(&state_after);
-        state_after_map.insert(ev.event_id.clone(), state_after.clone());
-        state_hash_map.insert(ev.event_id.clone(), hash_str);
-
-        let deltas = compute_state_delta(&state_before, &state_after);
-        checkpoints.push((hash_str, parent_hash, ev.event_id.clone(), deltas));
-    }
+    let checkpoints = build_checkpoints(&events);
 
     // Verify checkpoints
     assert_eq!(checkpoints.len(), 4);
@@ -601,31 +508,28 @@ fn test_state_delta_compression_robustness() {
     assert_eq!(d1.len(), 1);
 
     // E2
-    let (_, p2, id2, d2) = &checkpoints[1];
-    assert_eq!(id2, "$2");
-    assert_eq!(p2, &Some(checkpoints[0].0));
-    assert_eq!(d2.len(), 1);
-    assert_eq!(d2[0].event_type, "m.room.member");
-    assert_eq!(d2[0].state_key, "@alice:example.com".to_string());
-    assert_eq!(d2[0].event_id, Some("$2".to_string()));
+    assert_member_delta(
+        &checkpoints[1],
+        "$2",
+        "@alice:example.com",
+        Some(checkpoints[0].0),
+    );
 
     // E3 (Fork A - Bob joins)
-    let (_, p3, id3, d3) = &checkpoints[2];
-    assert_eq!(id3, "$3");
-    assert_eq!(p3, &Some(checkpoints[1].0));
-    assert_eq!(d3.len(), 1);
-    assert_eq!(d3[0].event_type, "m.room.member");
-    assert_eq!(d3[0].state_key, "@bob:example.com".to_string());
-    assert_eq!(d3[0].event_id, Some("$3".to_string()));
+    assert_member_delta(
+        &checkpoints[2],
+        "$3",
+        "@bob:example.com",
+        Some(checkpoints[1].0),
+    );
 
     // E4 (Fork B - Alice leaves)
-    let (_, p4, id4, d4) = &checkpoints[3];
-    assert_eq!(id4, "$4");
-    assert_eq!(p4, &Some(checkpoints[1].0));
-    assert_eq!(d4.len(), 1);
-    assert_eq!(d4[0].event_type, "m.room.member");
-    assert_eq!(d4[0].state_key, "@alice:example.com".to_string());
-    assert_eq!(d4[0].event_id, Some("$4".to_string()));
+    assert_member_delta(
+        &checkpoints[3],
+        "$4",
+        "@alice:example.com",
+        Some(checkpoints[1].0),
+    );
 }
 
 // ─── Supplemental coverage tests for state/at.rs  ────────────────────
@@ -637,9 +541,8 @@ use crate::utils;
 #[test]
 fn test_compute_merge_base_diamond() {
     use rezzy::{compute_merge_base, compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
-    use std::collections::HashMap;
 
-    let evs = utils::parse_jsonl_events(
+    let mut events_map = event_map(
         r#"
         {"event_id": "$root",  "type": "m.room.create", "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
         {"event_id": "$left",  "type": "m.room.topic",  "state_key": "", "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
@@ -647,11 +550,6 @@ fn test_compute_merge_base_diamond() {
         {"event_id": "$merge", "type": "m.room.message", "sender": "@a:x", "depth": 3, "prev_events": ["$left", "$right"]}
     "#,
     );
-
-    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in evs {
-        events_map.insert(ev.event_id.clone(), ev);
-    }
 
     // Empty extremities → None
     let result = compute_merge_base::<String, str, _, _>(&[], &events_map);
@@ -720,10 +618,9 @@ fn test_compute_merge_base_diamond() {
 /// - `$root`     mask=0b111 depth=1 (all three converge)
 #[test]
 fn test_compute_merge_bases_three_way() {
-    use rezzy::{compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
-    use std::collections::HashMap;
+    use rezzy::{compute_merge_bases, MERGE_BASE_MAX_STEPS};
 
-    let evs = utils::parse_jsonl_events(
+    let events_map = event_map(
         r#"
         {"event_id": "$root",     "type": "m.room.create",  "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
         {"event_id": "$ab_merge", "type": "m.room.message",                  "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
@@ -732,11 +629,6 @@ fn test_compute_merge_bases_three_way() {
         {"event_id": "$b",        "type": "m.room.message",                  "sender": "@a:x", "depth": 3, "prev_events": ["$ab_merge"]}
     "#,
     );
-
-    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in evs {
-        events_map.insert(ev.event_id.clone(), ev);
-    }
 
     let junctions = compute_merge_bases(&["$a", "$b", "$c"], &events_map, MERGE_BASE_MAX_STEPS);
 
@@ -769,12 +661,11 @@ fn test_compute_merge_bases_three_way() {
 /// ```
 #[test]
 fn test_compute_merge_bases_superseding() {
-    use rezzy::{compute_merge_bases, LeanEvent, MERGE_BASE_MAX_STEPS};
-    use std::collections::HashMap;
+    use rezzy::{compute_merge_bases, MERGE_BASE_MAX_STEPS};
 
-    let evs = utils::parse_jsonl_events(
+    let events_map = event_map(
         r#"
-        {"event_id": "$root",   "type": "m.room.create",  "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
+        {"event_id": "$root",   "type": "m.room.create",  "state_key": "", "depth": 1, "sender": "@a:x", "prev_events": []}
         {"event_id": "$ab",     "type": "m.room.message",                  "sender": "@a:x", "depth": 2, "prev_events": ["$root"]}
         {"event_id": "$global", "type": "m.room.message",                  "sender": "@a:x", "depth": 3, "prev_events": ["$ab"]}
         {"event_id": "$a",      "type": "m.room.message",                  "sender": "@a:x", "depth": 4, "prev_events": ["$global"]}
@@ -782,11 +673,6 @@ fn test_compute_merge_bases_superseding() {
         {"event_id": "$c",      "type": "m.room.message",                  "sender": "@a:x", "depth": 4, "prev_events": ["$global"]}
     "#,
     );
-
-    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in evs {
-        events_map.insert(ev.event_id.clone(), ev);
-    }
 
     let junctions = compute_merge_bases(&["$a", "$b", "$c"], &events_map, MERGE_BASE_MAX_STEPS);
 
@@ -806,7 +692,6 @@ fn test_compute_merge_bases_superseding() {
 #[test]
 fn test_compute_merge_bases_max_steps() {
     use rezzy::{compute_merge_bases, LeanEvent};
-    use std::collections::HashMap;
 
     // Build a deep linear chain: $0 ← $1 ← ... ← $999
     // Fork at the end: $999 ← $left, $999 ← $right
@@ -868,19 +753,13 @@ fn test_compute_state_at_prev_events_cycle() {
         compute_state_at_streaming, try_compute_state_at_streaming, StateComputationError,
     };
     use rezzy::{LeanEvent, StateResVersion};
-    use std::collections::HashMap;
 
-    let evs = utils::parse_jsonl_events(
+    let mut events_map = event_map(
         r#"
         {"event_id": "$create", "type": "m.room.create", "state_key": "", "sender": "@a:x", "depth": 1, "prev_events": []}
         {"event_id": "$join",   "type": "m.room.member",  "state_key": "@a:x", "sender": "@a:x", "depth": 2, "prev_events": ["$create"]}
     "#,
     );
-
-    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in &evs {
-        events_map.insert(ev.event_id.clone(), ev.clone());
-    }
 
     // Add a cycle: $A→$B→$A
     events_map.insert(
@@ -957,10 +836,9 @@ fn test_compute_state_at_prev_events_cycle() {
 ///   which are already in `u_visited` → triggers `continue`.
 #[test]
 fn test_auth_chain_diff_interleaving() {
-    use rezzy::{compute_state_at, LeanEvent, StateResVersion};
-    use std::collections::HashMap;
+    use rezzy::{compute_state_at, StateResVersion};
 
-    let evs = utils::parse_jsonl_events(
+    let events_map = event_map(
         r#"
         {"event_id": "$create",    "type": "m.room.create",       "state_key": "",     "sender": "@a:x", "depth": 1, "prev_events": [],           "auth_events": [],                                         "content": {"room_version": "10", "creator": "@a:x"}}
         {"event_id": "$join_a",    "type": "m.room.member",       "state_key": "@a:x", "sender": "@a:x", "depth": 2, "prev_events": ["$create"],  "auth_events": ["$create"],                                "content": {"membership": "join"}}
@@ -973,11 +851,6 @@ fn test_auth_chain_diff_interleaving() {
         {"event_id": "$merge",     "type": "m.room.message",                           "sender": "@a:x", "depth": 7, "prev_events": ["$topic_a", "$topic_b"], "auth_events": ["$create", "$pl", "$join_a"], "content": {}}
     "#,
     );
-
-    let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
-    for ev in evs {
-        events_map.insert(ev.event_id.clone(), ev);
-    }
 
     let state =
         compute_state_at("$merge", &events_map, StateResVersion::V2, &String::new()).unwrap();

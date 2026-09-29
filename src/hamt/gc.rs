@@ -475,6 +475,14 @@ mod tests {
         }
     }
 
+    fn assert_contracted_to(chain: &LinearRootChain, zeroed: &[StructuralHash]) {
+        assert_eq!(chain.current_root(), Some(h(10)));
+        assert!(!chain.has_pending_retirement());
+        assert_eq!(chain.count(&h(1)), 0);
+        assert_eq!(chain.count(&h(2)), 1);
+        assert!(zeroed.contains(&h(1)));
+    }
+
     #[test]
     fn bootstrap_sets_current_root() {
         let chain = LinearRootChain::bootstrap(vec![h(1), h(2)], h(0));
@@ -490,11 +498,7 @@ mod tests {
         // Root A has hash 1. Transition to root B: new=2, superseded=1.
         let d = delta(&[2], &[1]);
         let zeroed = chain.advance(&d, h(10)).unwrap();
-        assert_eq!(chain.current_root(), Some(h(10)));
-        assert!(!chain.has_pending_retirement());
-        assert_eq!(chain.count(&h(1)), 0);
-        assert_eq!(chain.count(&h(2)), 1);
-        assert!(zeroed.contains(&h(1)));
+        assert_contracted_to(&chain, &zeroed);
     }
 
     #[test]
@@ -506,10 +510,7 @@ mod tests {
         assert!(chain.has_pending_retirement());
 
         let zeroed = chain.retire_previous().unwrap();
-        assert!(!chain.has_pending_retirement());
-        assert_eq!(chain.count(&h(1)), 0);
-        assert_eq!(chain.count(&h(2)), 1);
-        assert!(zeroed.contains(&h(1)));
+        assert_contracted_to(&chain, &zeroed);
     }
 
     #[test]

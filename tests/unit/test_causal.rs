@@ -10,6 +10,68 @@ fn key(byte: u8) -> Hash {
     [byte; 32]
 }
 
+fn set(keys: &[Hash]) -> CausalSet {
+    keys.iter()
+        .fold(CausalSet::empty(), |acc, k| acc.insert(*k))
+}
+
+/// Compresses and decompresses an inclusion proof for `k`, then verifies it.
+fn assert_compressed_inclusion(causal_set: &CausalSet, k: &Hash) {
+    let (path, root, count) = inclusion_proof_of(causal_set, k);
+    let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
+    let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
+    assert!(verify_causal_inclusion(k, &decompressed, root, count));
+}
+
+/// Compresses and decompresses a non-inclusion proof for `d`, then verifies it.
+fn assert_compressed_non_inclusion(causal_set: &CausalSet, d: &Hash) {
+    let (path, terminal_depth, root, count) = non_inclusion_proof_of(causal_set, d);
+    let compressed = compress_causal_path(terminal_depth, &path);
+    let decompressed = decompress_causal_path(terminal_depth, &compressed).unwrap();
+    assert!(verify_causal_non_inclusion(
+        d,
+        terminal_depth,
+        &decompressed,
+        root,
+        count
+    ));
+}
+
+fn inclusion_proof_of(causal_set: &CausalSet, k: &Hash) -> (Vec<CausalProofStep>, Hash, u64) {
+    causal_set.inclusion_proof(k).unwrap()
+}
+
+fn non_inclusion_proof_of(
+    causal_set: &CausalSet,
+    d: &Hash,
+) -> (Vec<CausalProofStep>, usize, Hash, u64) {
+    causal_set.non_inclusion_proof(d).unwrap()
+}
+
+/// Set `{$a, $b}` plus the inclusion proof for `$a`.
+fn two_key_inclusion() -> (CausalSet, Hash, Hash, Vec<CausalProofStep>, Hash, u64) {
+    let (a, b) = (key(0xa1), key(0xb2));
+    let s = set(&[a, b]);
+    let (path, root, count) = inclusion_proof_of(&s, &a);
+    (s, a, b, path, root, count)
+}
+
+/// Set `{$a, $b}` plus the non-inclusion proof for `$d`.
+fn two_key_non_inclusion() -> (CausalSet, Hash, Vec<CausalProofStep>, usize, Hash, u64) {
+    let (a, b, d) = (key(0xa1), key(0xb2), key(0xd4));
+    let s = set(&[a, b]);
+    let (path, terminal_depth, root, count) = non_inclusion_proof_of(&s, &d);
+    (s, d, path, terminal_depth, root, count)
+}
+
+/// The empty set plus the non-inclusion proof for `$d`.
+fn empty_non_inclusion() -> (Hash, Vec<CausalProofStep>, usize, Hash, u64) {
+    let d = key(0xd4);
+    let s = CausalSet::empty();
+    let (path, terminal_depth, root, count) = non_inclusion_proof_of(&s, &d);
+    (d, path, terminal_depth, root, count)
+}
+
 #[test]
 fn empty_causal_set_root_and_count() {
     let empty = CausalSet::empty();
@@ -28,9 +90,9 @@ fn empty_causal_set_root_and_count() {
 fn insert_is_idempotent_and_order_independent() {
     let (a, b) = (key(0xa1), key(0xb2));
 
-    let s1 = CausalSet::empty().insert(a).insert(b);
-    let s2 = CausalSet::empty().insert(b).insert(a);
-    let s3 = CausalSet::empty().insert(a).insert(b).insert(a);
+    let s1 = set(&[a, b]);
+    let s2 = set(&[b, a]);
+    let s3 = set(&[a, b, a]);
 
     assert_eq!(s1.root(), s2.root());
     assert_eq!(s1.count(), s2.count());
@@ -42,19 +104,19 @@ fn insert_is_idempotent_and_order_independent() {
 fn union_eliminates_duplicates() {
     let (a, b, c) = (key(0xa1), key(0xb2), key(0xc3));
 
-    let left = CausalSet::empty().insert(a).insert(b);
-    let right = CausalSet::empty().insert(a).insert(c);
+    let left = set(&[a, b]);
+    let right = set(&[a, c]);
     let union = left.union(&right);
 
     assert_eq!(union.count(), 3);
-    let direct = CausalSet::empty().insert(a).insert(b).insert(c);
+    let direct = set(&[a, b, c]);
     assert_eq!(union.root(), direct.root());
 }
 
 #[test]
 fn contains_inclusion_and_non_inclusion() {
     let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a);
+    let s = set(&[a]);
 
     assert!(s.contains(&a));
     assert!(!s.contains(&b));
@@ -63,10 +125,10 @@ fn contains_inclusion_and_non_inclusion() {
 #[test]
 fn causal_inclusion_proof_verifies() {
     let (a, b, c) = (key(0xa1), key(0xb2), key(0xc3));
-    let s = CausalSet::empty().insert(a).insert(b).insert(c);
+    let s = set(&[a, b, c]);
 
     for k in [a, b, c] {
-        let (path, root, count) = s.inclusion_proof(&k).unwrap();
+        let (path, root, count) = inclusion_proof_of(&s, &k);
         assert_eq!(root, s.root());
         assert_eq!(count, s.count());
         assert!(verify_causal_inclusion(&k, &path, root, count));
@@ -76,17 +138,14 @@ fn causal_inclusion_proof_verifies() {
 #[test]
 fn causal_inclusion_proof_rejects_non_member() {
     let (a, d) = (key(0xa1), key(0xd4));
-    let s = CausalSet::empty().insert(a);
+    let s = set(&[a]);
     assert!(s.inclusion_proof(&d).is_none());
     assert!(CausalSet::empty().inclusion_proof(&d).is_none());
 }
 
 #[test]
 fn causal_non_inclusion_proof_verifies() {
-    let (a, b, d) = (key(0xa1), key(0xb2), key(0xd4));
-    let s = CausalSet::empty().insert(a).insert(b);
-
-    let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
+    let (s, d, path, terminal_depth, root, count) = two_key_non_inclusion();
     assert_eq!(root, s.root());
     assert_eq!(count, s.count());
     assert!(verify_causal_non_inclusion(
@@ -101,16 +160,13 @@ fn causal_non_inclusion_proof_verifies() {
 #[test]
 fn causal_non_inclusion_proof_rejects_member() {
     let a = key(0xa1);
-    let s = CausalSet::empty().insert(a);
+    let s = set(&[a]);
     assert!(s.non_inclusion_proof(&a).is_none());
 }
 
 #[test]
 fn causal_non_inclusion_proof_on_empty_set() {
-    let d = key(0xd4);
-    let s = CausalSet::empty();
-
-    let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
+    let (d, path, terminal_depth, root, count) = empty_non_inclusion();
     assert_eq!(path, [] as [rezzy::merkle::causal::CausalProofStep; 0]);
     assert_eq!(terminal_depth, 0);
     assert!(verify_causal_non_inclusion(
@@ -124,10 +180,7 @@ fn causal_non_inclusion_proof_on_empty_set() {
 
 #[test]
 fn verify_causal_inclusion_rejects_tampered_sibling() {
-    let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a).insert(b);
-
-    let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
+    let (_s, a, _b, mut path, root, count) = two_key_inclusion();
     assert_ne!(path, [] as [rezzy::merkle::causal::CausalProofStep; 0]);
     path[0].hash[0] ^= 0xFF;
     assert!(!verify_causal_inclusion(&a, &path, root, count));
@@ -136,9 +189,9 @@ fn verify_causal_inclusion_rejects_tampered_sibling() {
 #[test]
 fn verify_causal_inclusion_rejects_extended_proof() {
     let k = key(0xa1);
-    let s = CausalSet::empty().insert(k);
+    let s = set(&[k]);
 
-    let (mut path, root, count) = s.inclusion_proof(&k).unwrap();
+    let (mut path, root, count) = inclusion_proof_of(&s, &k);
     assert_eq!(path.len(), CAUSAL_DEPTH);
 
     // Append a hand-crafted step beyond CAUSAL_DEPTH.
@@ -152,7 +205,7 @@ fn verify_causal_inclusion_rejects_extended_proof() {
 
     // Also test: prepend a step (path too long from the verifier's
     // perspective — it expects exactly CAUSAL_DEPTH for inclusion).
-    let (path, root, count) = s.inclusion_proof(&k).unwrap();
+    let (path, root, count) = inclusion_proof_of(&s, &k);
     let mut extended = vec![rezzy::merkle::causal::CausalProofStep {
         hash: [0xBB; 32],
         count: 1,
@@ -163,10 +216,7 @@ fn verify_causal_inclusion_rejects_extended_proof() {
 
 #[test]
 fn verify_causal_non_inclusion_rejects_wrong_terminal_depth() {
-    let (a, b, d) = (key(0xa1), key(0xb2), key(0xd4));
-    let s = CausalSet::empty().insert(a).insert(b);
-
-    let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
+    let (_s, d, path, terminal_depth, root, count) = two_key_non_inclusion();
     assert!(!verify_causal_non_inclusion(
         &d,
         terminal_depth + 1,
@@ -189,10 +239,7 @@ fn verify_causal_non_inclusion_rejects_out_of_range_depth() {
 
 #[test]
 fn verify_causal_inclusion_rejects_count_forgery() {
-    let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a).insert(b);
-
-    let (mut path, root, count) = s.inclusion_proof(&a).unwrap();
+    let (_s, a, _b, mut path, root, count) = two_key_inclusion();
     // Tampering with total root count
     assert!(!verify_causal_inclusion(&a, &path, root, count + 1));
     // Tampering with sibling count
@@ -214,18 +261,18 @@ fn causal_deep_key_prefixes() {
     k1[31] = 0x00;
     k2[31] = 0x01;
 
-    let s = CausalSet::empty().insert(k1).insert(k2);
+    let s = set(&[k1, k2]);
     assert_eq!(s.count(), 2);
 
-    let (path1, root, count) = s.inclusion_proof(&k1).unwrap();
+    let (path1, root, count) = inclusion_proof_of(&s, &k1);
     assert!(verify_causal_inclusion(&k1, &path1, root, count));
 
-    let (path2, root, count) = s.inclusion_proof(&k2).unwrap();
+    let (path2, root, count) = inclusion_proof_of(&s, &k2);
     assert!(verify_causal_inclusion(&k2, &path2, root, count));
 
     let mut non_member = [0xAA; 32];
     non_member[31] = 0x02;
-    let (non_path, depth, root, count) = s.non_inclusion_proof(&non_member).unwrap();
+    let (non_path, depth, root, count) = non_inclusion_proof_of(&s, &non_member);
     assert!(verify_causal_non_inclusion(
         &non_member,
         depth,
@@ -244,13 +291,13 @@ fn insert_mut_and_extend_match_immutable_methods() {
     assert!(!s_mut.insert_mut(a)); // duplicate insert returns false
     assert!(s_mut.insert_mut(b));
 
-    let s_imm = CausalSet::empty().insert(a).insert(b);
+    let s_imm = set(&[a, b]);
     assert_eq!(s_mut.root(), s_imm.root());
     assert_eq!(s_mut.count(), s_imm.count());
 
     let mut s_ext = CausalSet::empty();
     s_ext.extend([a, b, c, a]);
-    let s_direct = CausalSet::empty().insert(a).insert(b).insert(c);
+    let s_direct = set(&[a, b, c]);
     assert_eq!(s_ext.root(), s_direct.root());
     assert_eq!(s_ext.count(), s_direct.count());
 }
@@ -267,9 +314,9 @@ fn compress_inclusion_roundtrip_root_level_sibling() {
     let mut k2 = [0u8; 32];
     k1[0] = 0x00;
     k2[0] = 0x80; // bit 0 differs
-    let s = CausalSet::empty().insert(k1).insert(k2);
+    let s = set(&[k1, k2]);
 
-    let (path, root, count) = s.inclusion_proof(&k1).unwrap();
+    let (path, root, count) = inclusion_proof_of(&s, &k1);
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     // At least the root-level sibling should be a Step (the other
     // branch), but deeper levels may be EmptyRun.
@@ -287,9 +334,9 @@ fn compress_inclusion_roundtrip_many_empty_siblings() {
     // A single key means every sibling along the path is an empty
     // subtree — the entire path compresses to one EmptyRun.
     let k = key(0xa1);
-    let s = CausalSet::empty().insert(k);
+    let s = set(&[k]);
 
-    let (path, root, count) = s.inclusion_proof(&k).unwrap();
+    let (path, root, count) = inclusion_proof_of(&s, &k);
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     // The single key diverges from the empty subtree at every level,
     // so all siblings are empty.
@@ -313,38 +360,26 @@ fn compress_inclusion_roundtrip_mixed_siblings() {
     // Three keys: at least one level will have a non-empty sibling,
     // producing a mix of Step and EmptyRun entries.
     let (a, b, c) = (key(0xa1), key(0xb2), key(0xc3));
-    let s = CausalSet::empty().insert(a).insert(b).insert(c);
+    let s = set(&[a, b, c]);
 
     for k in [a, b, c] {
-        let (path, root, count) = s.inclusion_proof(&k).unwrap();
-        let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
-        let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
-        assert!(verify_causal_inclusion(&k, &decompressed, root, count));
+        assert_compressed_inclusion(&s, &k);
     }
 }
 
 #[test]
 fn compress_non_inclusion_roundtrip() {
     let (a, d) = (key(0xa1), key(0xd4));
-    let s = CausalSet::empty().insert(a);
+    let s = set(&[a]);
 
-    let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
-    let compressed = compress_causal_path(terminal_depth, &path);
-    let decompressed = decompress_causal_path(terminal_depth, &compressed).unwrap();
-    assert!(verify_causal_non_inclusion(
-        &d,
-        terminal_depth,
-        &decompressed,
-        root,
-        count,
-    ));
+    assert_compressed_non_inclusion(&s, &d);
 }
 
 #[test]
 fn compress_non_inclusion_on_empty_set() {
     let d = key(0xd4);
     let s = CausalSet::empty();
-    let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
+    let (path, terminal_depth, root, count) = non_inclusion_proof_of(&s, &d);
     assert_eq!(path, [] as [rezzy::merkle::causal::CausalProofStep; 0]);
     assert_eq!(terminal_depth, 0);
     let compressed = compress_causal_path(terminal_depth, &path);
@@ -368,9 +403,7 @@ fn compress_non_inclusion_on_empty_set() {
 
 #[test]
 fn compress_verify_compressed_inclusion_api() {
-    let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a).insert(b);
-    let (path, root, count) = s.inclusion_proof(&a).unwrap();
+    let (_s, a, _b, path, root, count) = two_key_inclusion();
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     assert!(verify_causal_inclusion_compressed(&a, &compressed, root, count).unwrap());
 }
@@ -378,8 +411,8 @@ fn compress_verify_compressed_inclusion_api() {
 #[test]
 fn compress_verify_compressed_non_inclusion_api() {
     let (a, d) = (key(0xa1), key(0xd4));
-    let s = CausalSet::empty().insert(a);
-    let (path, terminal_depth, root, count) = s.non_inclusion_proof(&d).unwrap();
+    let s = set(&[a]);
+    let (path, terminal_depth, root, count) = non_inclusion_proof_of(&s, &d);
     let compressed = compress_causal_path(terminal_depth, &path);
     assert!(
         verify_causal_non_inclusion_compressed(&d, terminal_depth, &compressed, root, count,)
@@ -389,9 +422,7 @@ fn compress_verify_compressed_non_inclusion_api() {
 
 #[test]
 fn decompress_path_independent_of_key() {
-    let (a, b) = (key(0xa1), key(0xb2));
-    let s = CausalSet::empty().insert(a).insert(b);
-    let (path, root, count) = s.inclusion_proof(&a).unwrap();
+    let (_s, a, b, path, root, count) = two_key_inclusion();
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
 
     // Decompressing with a different key produces the same { hash, count }
@@ -426,8 +457,8 @@ fn decompress_rejects_truncated() {
 #[test]
 fn decompress_rejects_excess_data() {
     let k = key(0xa1);
-    let s = CausalSet::empty().insert(k);
-    let (path, _, _) = s.inclusion_proof(&k).unwrap();
+    let s = set(&[k]);
+    let (path, _, _) = inclusion_proof_of(&s, &k);
     let mut compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     // Append a spurious step — should be rejected as excess.
     compressed.push(CompressedCausalStep::Step(path[0]));
@@ -513,28 +544,16 @@ fn deep_key_prefixes_compressed_roundtrip() {
     k1[31] = 0x00;
     k2[31] = 0x01;
 
-    let s = CausalSet::empty().insert(k1).insert(k2);
+    let s = set(&[k1, k2]);
     assert_eq!(s.count(), 2);
 
     for k in [k1, k2] {
-        let (path, root, count) = s.inclusion_proof(&k).unwrap();
-        let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
-        let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
-        assert!(verify_causal_inclusion(&k, &decompressed, root, count));
+        assert_compressed_inclusion(&s, &k);
     }
 
     let mut non_member = [0xAA; 32];
     non_member[31] = 0x02;
-    let (path, td, root, count) = s.non_inclusion_proof(&non_member).unwrap();
-    let compressed = compress_causal_path(td, &path);
-    let decompressed = decompress_causal_path(td, &compressed).unwrap();
-    assert!(verify_causal_non_inclusion(
-        &non_member,
-        td,
-        &decompressed,
-        root,
-        count,
-    ));
+    assert_compressed_non_inclusion(&s, &non_member);
 }
 
 // ── canonicity rejection tests ─────────────────────────────────────
@@ -562,8 +581,8 @@ fn decompress_rejects_adjacent_empty_runs() {
 #[test]
 fn decompress_rejects_non_canonical_step_with_empty_value() {
     let k = key(0xa1);
-    let s = CausalSet::empty().insert(k);
-    let (path, _root, _count) = s.inclusion_proof(&k).unwrap();
+    let s = set(&[k]);
+    let (path, _root, _count) = inclusion_proof_of(&s, &k);
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
 
@@ -587,8 +606,8 @@ fn decompress_rejects_non_canonical_step_interleaved_with_run() {
     // An EmptyRun followed by a Step with a canonical-empty value at the
     // next expected depth. The Step should be rejected even though the
     // EmptyRun is valid on its own.
-    let s = CausalSet::empty().insert(k);
-    let (path, _, _) = s.inclusion_proof(&k).unwrap();
+    let s = set(&[k]);
+    let (path, _, _) = inclusion_proof_of(&s, &k);
     let decompressed =
         decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path)).unwrap();
     // The first decompressed step is at sibling depth CAUSAL_DEPTH.
@@ -615,8 +634,8 @@ fn decompress_rejects_non_canonical_step_interleaved_with_run() {
 #[test]
 fn decompress_accepts_step_with_nonzero_count_at_empty_position() {
     let k = key(0xa1);
-    let s = CausalSet::empty().insert(k);
-    let (path, _, _) = s.inclusion_proof(&k).unwrap();
+    let s = set(&[k]);
+    let (path, _, _) = inclusion_proof_of(&s, &k);
     let decompressed =
         decompress_causal_path(CAUSAL_DEPTH, &compress_causal_path(CAUSAL_DEPTH, &path)).unwrap();
     // Same hash as the first empty sibling, but with count=1. This is

@@ -742,17 +742,22 @@ mod tests {
             .collect()
     }
 
+    const CREATE_AND_JOIN: &str = r#"
+{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
+"#;
+
+    fn events_with(extra: &str) -> HashMap<String, LeanEvent> {
+        map_from_jsonl(&format!("{CREATE_AND_JOIN}{extra}"))
+    }
+
     /// A gap in `auth_events` must be reported distinctly from a `prev_events`
     /// gap, and both must be absent when no oracle gap exists.
     #[test]
     fn test_report_gaps_distinguishes_prev_vs_auth() {
-        let events = map_from_jsonl(
-            r#"
-{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
-{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
-{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","MISSING_PREV"],"auth_events":["A","B"]}
-{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":4,"prev_events":["C"],"auth_events":["A","MISSING_AUTH"]}
-            "#,
+        let events = events_with(
+            r#"{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B","MISSING_PREV"],"auth_events":["A","B"]}
+{"event_id":"D","type":"m.room.message","sender":"@x:x","depth":4,"prev_events":["C"],"auth_events":["A","MISSING_AUTH"]}"#,
         );
 
         let (backward, missing_auth) = report_gaps(&events, |_| false);
@@ -790,12 +795,8 @@ mod tests {
     /// A fully-connected DAG reports no gaps.
     #[test]
     fn test_report_gaps_clean() {
-        let events = map_from_jsonl(
-            r#"
-{"event_id":"A","type":"m.room.create","state_key":"","sender":"@x:x","depth":1,"content":{"room_version":"10","creator":"@x:x"},"prev_events":[],"auth_events":[]}
-{"event_id":"B","type":"m.room.member","state_key":"@x:x","sender":"@x:x","depth":2,"content":{"membership":"join"},"prev_events":["A"],"auth_events":["A"]}
-{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B"],"auth_events":["A","B"]}
-            "#,
+        let events = events_with(
+            r#"{"event_id":"C","type":"m.room.message","sender":"@x:x","depth":3,"prev_events":["B"],"auth_events":["A","B"]}"#,
         );
         let (backward, missing_auth) = report_gaps(&events, |_| false);
         assert_eq!(

@@ -75,6 +75,13 @@ where
     Ok((added, removed))
 }
 
+pub(super) fn check_depth<E>(depth: usize) -> Result<(), HamtTraversalError<E>> {
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    Ok(())
+}
+
 /// Helper to iterate over the indices of set bits in a 32-bit integer.
 fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
     core::iter::from_fn(move || {
@@ -86,6 +93,26 @@ fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
             Some(bit.trailing_zeros() as usize)
         }
     })
+}
+
+/// Returns `true` when two nodes are known equivalent (identical pointer or
+/// structural hash) and the diff can skip them, or an error when `depth` has
+/// reached the routing limit.
+fn diff_short_circuit<K, V, E>(
+    node_a: &Arc<HamtNode<K, V>>,
+    node_b: &Arc<HamtNode<K, V>>,
+    depth: usize,
+) -> Result<bool, HamtTraversalError<E>> {
+    if Arc::ptr_eq(node_a, node_b) {
+        return Ok(true);
+    }
+    if node_a.structural_hash == node_b.structural_hash {
+        return Ok(true);
+    }
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    Ok(false)
 }
 
 /// Recursively compute the structural diff between two HAMT nodes.
@@ -102,18 +129,8 @@ where
     V: Hash + Clone + Eq,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    // Pointer equality check (fastest path for structurally shared nodes)
-    if Arc::ptr_eq(node_a, node_b) {
+    if diff_short_circuit(node_a, node_b, depth)? {
         return Ok(());
-    }
-
-    // Structural hash check (fast path across process/storage boundaries)
-    if node_a.structural_hash == node_b.structural_hash {
-        return Ok(());
-    }
-
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
     }
     let next_depth = depth.saturating_add(1);
 
@@ -328,18 +345,8 @@ fn diff_node_hashes_rec<K, V, F, E>(
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    // Pointer equality check (fastest path for structurally shared nodes)
-    if Arc::ptr_eq(node_a, node_b) {
+    if diff_short_circuit(node_a, node_b, depth)? {
         return Ok(());
-    }
-
-    // Structural hash check (fast path across process/storage boundaries)
-    if node_a.structural_hash == node_b.structural_hash {
-        return Ok(());
-    }
-
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
     }
 
     superseded.push(node_a.structural_hash);
@@ -461,9 +468,7 @@ where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
     M: FnMut(StructuralHash) -> bool,
 {
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
-    }
+    check_depth(depth)?;
     let next_depth = depth.saturating_add(1);
     for child in &node.children {
         if !mark(child.structural_hash()) {
@@ -489,9 +494,7 @@ where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
     collection.push(node.structural_hash);
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
-    }
+    check_depth(depth)?;
     let next_depth = depth.saturating_add(1);
     for child in &node.children {
         let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
@@ -511,9 +514,7 @@ where
     V: Hash + Clone + Eq,
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
 {
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
-    }
+    check_depth(depth)?;
     let next_depth = depth.saturating_add(1);
     for (k, v) in &node.leaves {
         collection.push((k.clone(), v.clone()));

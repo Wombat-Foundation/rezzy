@@ -300,13 +300,8 @@ impl BucketExchange {
         };
 
         for (depth, prefix) in failed_buckets {
-            let Some(previous) = previous_requests
-                .iter()
-                .find(|request| request.prefix == prefix && request.depth == depth)
+            let Ok(next_requests) = retry_failed_bucket(previous_requests, depth, prefix, share)
             else {
-                return ClientAction::ExtremityDiff;
-            };
-            let Ok(next_requests) = retry_or_split_bucket(previous, share) else {
                 return ClientAction::ExtremityDiff;
             };
             self.pending.extend(next_requests);
@@ -336,6 +331,33 @@ impl BucketExchange {
     }
 }
 
+/// Finds the request a failed bucket was submitted under, then retries or
+/// splits it. Shared by [`BucketExchange::advance`] and
+/// [`ReconciliationClient::transition_bucket_batch`].
+fn retry_failed_bucket(
+    previous_requests: &[BucketRequest],
+    depth: u8,
+    prefix: u64,
+    share: u64,
+) -> Result<VecDeque<BucketRequest>, ClientAction> {
+    let previous = previous_requests
+        .iter()
+        .find(|request| request.prefix == prefix && request.depth == depth)
+        .ok_or(ClientAction::ExtremityDiff)?;
+    retry_or_split_bucket(previous, share)
+}
+
+/// Provisions a bucket sketch capacity for `target`, clamped to
+/// `[floor, MAX_BUCKET_SKETCH_CAPACITY]`.
+fn provision_bucket_capacity(target: u64, floor: usize) -> Option<usize> {
+    target
+        .checked_add(target / 2)
+        .and_then(|value| value.checked_add(target % 2))
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| usize::try_from(value).ok())
+        .map(|value| value.clamp(floor, MAX_BUCKET_SKETCH_CAPACITY))
+}
+
 fn retry_or_split_bucket(
     previous: &BucketRequest,
     share: u64,
@@ -350,14 +372,7 @@ fn retry_or_split_bucket(
             return Err(ClientAction::ExtremityDiff);
         };
         let target = share.max(floor_u64);
-        let provisioned = target
-            .checked_add(target / 2)
-            .and_then(|value| value.checked_add(target % 2))
-            .and_then(|value| value.checked_add(4));
-        let capacity = provisioned
-            .and_then(|value| usize::try_from(value).ok())
-            .map(|value| value.clamp(floor, MAX_BUCKET_SKETCH_CAPACITY));
-        let Some(capacity) = capacity else {
+        let Some(capacity) = provision_bucket_capacity(target, floor) else {
             return Err(ClientAction::ExtremityDiff);
         };
         requests.push_back(BucketRequest::new(
@@ -377,14 +392,7 @@ fn retry_or_split_bucket(
         return Err(ClientAction::ExtremityDiff);
     };
     let target = (share / 2).max(floor_u64);
-    let provisioned = target
-        .checked_add(target / 2)
-        .and_then(|value| value.checked_add(target % 2))
-        .and_then(|value| value.checked_add(4));
-    let capacity = provisioned
-        .and_then(|value| usize::try_from(value).ok())
-        .map(|value| value.clamp(floor, MAX_BUCKET_SKETCH_CAPACITY));
-    let Some(capacity) = capacity else {
+    let Some(capacity) = provision_bucket_capacity(target, floor) else {
         return Err(ClientAction::ExtremityDiff);
     };
 
@@ -657,14 +665,8 @@ impl ReconciliationClient {
         let mut requests = alloc::vec::Vec::with_capacity(batch.failed_buckets.len());
 
         for (depth, prefix) in batch.failed_buckets {
-            let Some(previous) = previous_requests
-                .iter()
-                .find(|request| request.prefix == prefix && request.depth == depth)
+            let Ok(next_requests) = retry_failed_bucket(previous_requests, depth, prefix, share)
             else {
-                return ClientAction::ExtremityDiff;
-            };
-
-            let Ok(next_requests) = retry_or_split_bucket(previous, share) else {
                 return ClientAction::ExtremityDiff;
             };
             for request in next_requests {
@@ -725,6 +727,58 @@ mod tests {
             kernel.insert(*hash).unwrap();
         }
         kernel
+    }
+
+    /// Remote kernel holding the odd values 1..=17, whose strata produce the
+    /// sparse-tail estimator scenario exercised below.
+    fn odd_element_kernel() -> ResidentKernel {
+        let mut remote = ResidentKernel::new();
+        for value in (1_u64..=17).step_by(2) {
+            remote
+                .insert(ElementHash {
+                    h128: u128::from(value),
+                    h64: value,
+                })
+                .unwrap();
+        }
+        remote
+    }
+
+    fn assert_sparse_tail_bucket_sketches(client: ReconciliationClient) {
+        let local = ResidentKernel::new();
+        let remote = odd_element_kernel();
+        assert_eq!(
+            client.select_action(
+                &local,
+                RemoteDigest {
+                    digest: 1,
+                    known_event_count: 9,
+                    strata: *remote.strata(),
+                    frame_matches: true,
+                    has_unknown_extremity: false,
+                },
+                0,
+            ),
+            ClientAction::BucketSketches {
+                requests: vec![BucketRequest::new(0, 0, 31)],
+                accumulated_roots: vec![],
+            }
+        );
+    }
+
+    /// Builds `count` max-capacity failed buckets at depth 7 together with the
+    /// requests they were submitted under.
+    fn failed_bucket_fanout(
+        count: usize,
+    ) -> (alloc::vec::Vec<(u8, u64)>, alloc::vec::Vec<BucketRequest>) {
+        let mut failed_buckets = alloc::vec::Vec::with_capacity(count);
+        let mut previous_requests = alloc::vec::Vec::with_capacity(count);
+        for prefix in 0..count {
+            let prefix = u64::try_from(prefix).expect("bucket fanout prefix fits in u64");
+            failed_buckets.push((7, prefix));
+            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
+        }
+        (failed_buckets, previous_requests)
     }
 
     #[test]
@@ -902,82 +956,18 @@ mod tests {
 
     #[test]
     fn sparse_tail_estimator_failure_proceeds_with_bucket_sketches() {
-        let local = ResidentKernel::new();
-        let mut remote = ResidentKernel::new();
-        for value in (1_u64..=17).step_by(2) {
-            remote
-                .insert(ElementHash {
-                    h128: u128::from(value),
-                    h64: value,
-                })
-                .unwrap();
-        }
-
-        let client = ReconciliationClient::default();
-        assert_eq!(
-            client.select_action(
-                &local,
-                RemoteDigest {
-                    digest: 1,
-                    known_event_count: 9,
-                    strata: *remote.strata(),
-                    frame_matches: true,
-                    has_unknown_extremity: false,
-                },
-                0,
-            ),
-            ClientAction::BucketSketches {
-                requests: vec![BucketRequest::new(0, 0, 31)],
-                accumulated_roots: vec![],
-            }
-        );
+        assert_sparse_tail_bucket_sketches(ReconciliationClient::default());
     }
 
     #[test]
     fn sparse_tail_estimator_failure_proceeds_with_bucket_sketches_even_without_gate() {
-        let local = ResidentKernel::new();
-        let mut remote = ResidentKernel::new();
-        for value in (1_u64..=17).step_by(2) {
-            remote
-                .insert(ElementHash {
-                    h128: u128::from(value),
-                    h64: value,
-                })
-                .unwrap();
-        }
-
-        let client = ReconciliationClient::default().allow_unlimited_delta();
-        assert_eq!(
-            client.select_action(
-                &local,
-                RemoteDigest {
-                    digest: 1,
-                    known_event_count: 9,
-                    strata: *remote.strata(),
-                    frame_matches: true,
-                    has_unknown_extremity: false,
-                },
-                0,
-            ),
-            ClientAction::BucketSketches {
-                requests: vec![BucketRequest::new(0, 0, 31)],
-                accumulated_roots: vec![],
-            }
-        );
+        assert_sparse_tail_bucket_sketches(ReconciliationClient::default().allow_unlimited_delta());
     }
 
     #[test]
     fn select_action_rejects_unknown_extremity_and_gated_estimates() {
         let local = ResidentKernel::new();
-        let mut remote = ResidentKernel::new();
-        for value in (1_u64..=17).step_by(2) {
-            remote
-                .insert(ElementHash {
-                    h128: u128::from(value),
-                    h64: value,
-                })
-                .unwrap();
-        }
+        let remote = odd_element_kernel();
 
         let client = ReconciliationClient::default().with_gate_threshold(Some(10));
         assert_eq!(
@@ -1101,12 +1091,7 @@ mod tests {
 
     #[test]
     fn bucket_transition_falls_back_when_retry_fanout_exceeds_round_cap() {
-        let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
-        let mut previous_requests = alloc::vec::Vec::with_capacity(65);
-        for prefix in 0..65_u64 {
-            failed_buckets.push((7, prefix));
-            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
-        }
+        let (failed_buckets, previous_requests) = failed_bucket_fanout(65);
 
         let batch = BucketDecodeBatch {
             successful_buckets: vec![],
@@ -1135,12 +1120,7 @@ mod tests {
         );
         assert_eq!(exchange.accumulated_roots(), &[99]);
 
-        let mut previous_requests = alloc::vec::Vec::with_capacity(65);
-        let mut failed_buckets = alloc::vec::Vec::with_capacity(65);
-        for prefix in 0..65_u64 {
-            failed_buckets.push((7, prefix));
-            previous_requests.push(BucketRequest::new(7, prefix, MAX_BUCKET_SKETCH_CAPACITY));
-        }
+        let (failed_buckets, previous_requests) = failed_bucket_fanout(65);
 
         let first = exchange.advance(
             BucketDecodeBatch {

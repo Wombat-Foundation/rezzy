@@ -49,23 +49,7 @@ pub(crate) fn decode(
     odd_syndromes: &[u64],
     max_elements: usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
-    let all = reconstruct_syndromes(odd_syndromes);
-    let mut locator = berlekamp_massey(&all, max_elements).ok_or(AlgebraicError::DecodeFailure)?;
-    if locator.len() == 1 {
-        return Ok(Vec::new());
-    }
-    locator.reverse();
-    let expected = locator
-        .len()
-        .checked_sub(1)
-        .ok_or(AlgebraicError::DecodeFailure)?;
-    let mut roots = Vec::with_capacity(expected);
-    find_roots(locator, &mut roots)?;
-    if roots.len() != expected || roots.contains(&0) {
-        return Err(AlgebraicError::DecodeFailure);
-    }
-    roots.sort_unstable();
-    Ok(roots)
+    decode_roots(prepare_locator(odd_syndromes, max_elements)?, find_roots)
 }
 
 /// Like [`decode`], but draws factoring work from `budget` and leaves the
@@ -77,18 +61,49 @@ pub(crate) fn decode_with_budget(
     max_elements: usize,
     budget: &mut usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
+    decode_roots(
+        prepare_locator(odd_syndromes, max_elements)?,
+        |locator, roots| find_roots_with_budget(locator, roots, budget),
+    )
+}
+
+/// Finds the roots of an already-prepared locator and finalizes them, or
+/// returns the empty set when `prepared` is `None`.
+fn decode_roots(
+    prepared: Option<(Polynomial, usize)>,
+    find: impl FnOnce(Polynomial, &mut Vec<u64>) -> Result<(), AlgebraicError>,
+) -> Result<Vec<u64>, AlgebraicError> {
+    let Some((locator, expected)) = prepared else {
+        return Ok(Vec::new());
+    };
+    let mut roots = Vec::with_capacity(expected);
+    find(locator, &mut roots)?;
+    finalize_roots(roots, expected)
+}
+
+/// Reconstructs syndromes, runs Berlekamp-Massey, and reverses the locator so
+/// its roots can be found. Returns `None` when the residual decodes to the
+/// empty set (`locator.len() == 1`), matching the early-return in [`decode`]
+/// and [`decode_with_budget`].
+fn prepare_locator(
+    odd_syndromes: &[u64],
+    max_elements: usize,
+) -> Result<Option<(Polynomial, usize)>, AlgebraicError> {
     let all = reconstruct_syndromes(odd_syndromes);
     let mut locator = berlekamp_massey(&all, max_elements).ok_or(AlgebraicError::DecodeFailure)?;
     if locator.len() == 1 {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     locator.reverse();
     let expected = locator
         .len()
         .checked_sub(1)
         .ok_or(AlgebraicError::DecodeFailure)?;
-    let mut roots = Vec::with_capacity(expected);
-    find_roots_with_budget(locator, &mut roots, budget)?;
+    Ok(Some((locator, expected)))
+}
+
+/// Validates the root count and distinctness, then returns them sorted.
+fn finalize_roots(mut roots: Vec<u64>, expected: usize) -> Result<Vec<u64>, AlgebraicError> {
     if roots.len() != expected || roots.contains(&0) {
         return Err(AlgebraicError::DecodeFailure);
     }
@@ -615,6 +630,34 @@ fn find_roots_with_budget(
 mod tests {
     use super::*;
 
+    /// Builds the odd `s1, s3, ...` syndromes for a set of field elements.
+    fn odd_syndromes(elements: &[u64]) -> Vec<u64> {
+        let mut odd = vec![0; elements.len()];
+        for value in elements {
+            let squared = gf64_mul(*value, *value);
+            let mut power = *value;
+            for syndrome in &mut odd {
+                *syndrome ^= power;
+                power = gf64_mul(power, squared);
+            }
+        }
+        odd
+    }
+
+    /// Draws `size` distinct nonzero elements from the deterministic
+    /// `next_factor_parameter` stream.
+    fn unique_random_elements(state: &mut u64, size: usize) -> Vec<u64> {
+        let mut expected = Vec::new();
+        while expected.len() < size {
+            let candidate = next_factor_parameter(*state);
+            *state = candidate;
+            if candidate != 0 && !expected.contains(&candidate) {
+                expected.push(candidate);
+            }
+        }
+        expected
+    }
+
     #[test]
     fn inverses_roundtrip() {
         for value in [1, 2, 3, 0xdead_beef, u64::MAX] {
@@ -625,15 +668,7 @@ mod tests {
     #[test]
     fn decodes_small_sets() {
         for expected in [vec![1], vec![1, 2], vec![1, 2, 3], vec![1, 2, 3, 4]] {
-            let mut odd = vec![0; expected.len()];
-            for value in &expected {
-                let squared = gf64_mul(*value, *value);
-                let mut power = *value;
-                for syndrome in &mut odd {
-                    *syndrome ^= power;
-                    power = gf64_mul(power, squared);
-                }
-            }
+            let odd = odd_syndromes(&expected);
             assert_eq!(decode(&odd, expected.len()), Ok(expected));
         }
     }
@@ -650,25 +685,9 @@ mod tests {
     fn decodes_deterministic_varied_sets() {
         let mut state = 0x6a09_e667_f3bc_c909_u64;
         for size in (1..=24).chain([32, 64]) {
-            let mut expected = Vec::new();
-            while expected.len() < size {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                if state != 0 && !expected.contains(&state) {
-                    expected.push(state);
-                }
-            }
+            let mut expected = unique_random_elements(&mut state, size);
             expected.sort_unstable();
-            let mut odd = vec![0; size];
-            for value in &expected {
-                let squared = gf64_mul(*value, *value);
-                let mut power = *value;
-                for syndrome in &mut odd {
-                    *syndrome ^= power;
-                    power = gf64_mul(power, squared);
-                }
-            }
+            let odd = odd_syndromes(&expected);
             assert_eq!(decode(&odd, size), Ok(expected));
         }
     }
@@ -694,24 +713,8 @@ mod tests {
     fn budget_exhaustion_on_a_large_decode_fails_safe() {
         let mut state = 0x243f_6a88_85a3_08d3_u64;
         let size = 256;
-        let mut expected = Vec::new();
-        while expected.len() < size {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            if state != 0 && !expected.contains(&state) {
-                expected.push(state);
-            }
-        }
-        let mut odd = vec![0; size];
-        for value in &expected {
-            let squared = gf64_mul(*value, *value);
-            let mut power = *value;
-            for syndrome in &mut odd {
-                *syndrome ^= power;
-                power = gf64_mul(power, squared);
-            }
-        }
+        let expected = unique_random_elements(&mut state, size);
+        let odd = odd_syndromes(&expected);
 
         // Nowhere near enough to complete a degree-256 decode (measured at
         // ~9-10M for a full decode/non-splitting ladder per this file's own
@@ -726,15 +729,7 @@ mod tests {
     #[test]
     fn decodes_a_triple_unsplit_by_the_mixed_parameter_prefix() {
         let expected = vec![1, 0xcd2, 0x1_d71a];
-        let mut odd = vec![0; expected.len()];
-        for value in &expected {
-            let squared = gf64_mul(*value, *value);
-            let mut power = *value;
-            for syndrome in &mut odd {
-                *syndrome ^= power;
-                power = gf64_mul(power, squared);
-            }
-        }
+        let odd = odd_syndromes(&expected);
         assert_eq!(decode(&odd, expected.len()), Ok(expected));
     }
 

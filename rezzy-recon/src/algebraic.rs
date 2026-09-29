@@ -399,12 +399,7 @@ impl SyndromeSketch {
     /// exceeds the sketch capacity or the local decode policy, and
     /// [`AlgebraicError::BudgetExhausted`] when root finding reaches its work limit.
     pub fn decode_elements(&self, max_elements: usize) -> Result<Vec<u64>, AlgebraicError> {
-        if max_elements == 0
-            || max_elements > self.capacity()
-            || max_elements > MAX_LOCAL_SKETCH_DECODE_CAPACITY
-        {
-            return Err(AlgebraicError::InvalidSketchCapacity);
-        }
+        self.validate_decode_capacity(max_elements, MAX_LOCAL_SKETCH_DECODE_CAPACITY)?;
         let decoded = super::pinsketch::decode(&self.coordinates[..max_elements], max_elements)?;
         self.validate_decoded_elements(decoded)
     }
@@ -440,12 +435,7 @@ impl SyndromeSketch {
         max_elements: usize,
         budget: &mut usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
-        if max_elements == 0
-            || max_elements > self.capacity()
-            || max_elements > MAX_LOCAL_SKETCH_DECODE_CAPACITY
-        {
-            return Err(AlgebraicError::InvalidSketchCapacity);
-        }
+        self.validate_decode_capacity(max_elements, MAX_LOCAL_SKETCH_DECODE_CAPACITY)?;
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],
             max_elements,
@@ -454,11 +444,30 @@ impl SyndromeSketch {
         self.validate_decoded_elements(decoded)
     }
 
+    fn validate_decode_capacity(
+        &self,
+        max_elements: usize,
+        limit: usize,
+    ) -> Result<(), AlgebraicError> {
+        if max_elements == 0 || max_elements > self.capacity() || max_elements > limit {
+            return Err(AlgebraicError::InvalidSketchCapacity);
+        }
+        Ok(())
+    }
+
     fn validate_decoded_elements(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
+        self.validate_decoded(decoded, Self::new)
+    }
+
+    fn validate_decoded(
+        &self,
+        decoded: Vec<u64>,
+        new_check: fn(usize) -> Result<Self, AlgebraicError>,
+    ) -> Result<Vec<u64>, AlgebraicError> {
         if decoded.contains(&0) {
             return Err(AlgebraicError::DecodeFailure);
         }
-        let mut check = Self::new(self.capacity())?;
+        let mut check = new_check(self.capacity())?;
         for element in &decoded {
             check
                 .toggle(*element)
@@ -502,7 +511,15 @@ impl SyndromeSketch {
     /// # Errors
     /// Returns an error for invalid capacity, base64, or encoded byte length.
     pub fn decode(capacity: usize, encoded: &str) -> Result<Self, AlgebraicError> {
-        if capacity == 0 || capacity > MAX_SKETCH_CAPACITY {
+        Self::decode_with_limit(capacity, encoded, MAX_SKETCH_CAPACITY)
+    }
+
+    fn decode_with_limit(
+        capacity: usize,
+        encoded: &str,
+        max_capacity: usize,
+    ) -> Result<Self, AlgebraicError> {
+        if capacity == 0 || capacity > max_capacity {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
         let expected_len = capacity
@@ -562,21 +579,7 @@ impl SyndromeSketch {
     /// # Errors
     /// Returns an error for invalid capacity, base64, or encoded byte length.
     pub fn decode_overflow(capacity: usize, encoded: &str) -> Result<Self, AlgebraicError> {
-        if capacity == 0 || capacity > MAX_OVERFLOW_SKETCH_CAPACITY {
-            return Err(AlgebraicError::InvalidSketchCapacity);
-        }
-        let expected_len = capacity
-            .checked_mul(8)
-            .ok_or(AlgebraicError::InvalidSketchLength)?;
-        let expected_encoded_len =
-            base64::encoded_len(expected_len, false).ok_or(AlgebraicError::InvalidSketchLength)?;
-        if encoded.len() != expected_encoded_len {
-            return Err(AlgebraicError::InvalidSketchLength);
-        }
-        let bytes = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(|_| AlgebraicError::InvalidBase64)?;
-        Self::from_encoded_bytes(capacity, &bytes)
+        Self::decode_with_limit(capacity, encoded, MAX_OVERFLOW_SKETCH_CAPACITY)
     }
 
     /// Decodes up to `max_elements` with overflow capacity support.
@@ -595,12 +598,7 @@ impl SyndromeSketch {
         max_elements: usize,
         budget: usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
-        if max_elements == 0
-            || max_elements > self.capacity()
-            || max_elements > MAX_OVERFLOW_SKETCH_CAPACITY
-        {
-            return Err(AlgebraicError::InvalidSketchCapacity);
-        }
+        self.validate_decode_capacity(max_elements, MAX_OVERFLOW_SKETCH_CAPACITY)?;
         let mut remaining = budget;
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],
@@ -611,18 +609,7 @@ impl SyndromeSketch {
     }
 
     fn validate_decoded_overflow(&self, decoded: Vec<u64>) -> Result<Vec<u64>, AlgebraicError> {
-        if decoded.contains(&0) {
-            return Err(AlgebraicError::DecodeFailure);
-        }
-        let mut check = Self::new_overflow(self.capacity())?;
-        for element in &decoded {
-            check
-                .toggle(*element)
-                .expect("decoded elements are validated to be nonzero");
-        }
-        (check == *self)
-            .then_some(decoded)
-            .ok_or(AlgebraicError::DecodeFailure)
+        self.validate_decoded(decoded, Self::new_overflow)
     }
 }
 

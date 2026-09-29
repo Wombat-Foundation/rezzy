@@ -338,18 +338,24 @@ mod tests {
         })
     }
 
+    fn event_ids(events: &[rezzy::JsonValue]) -> Vec<&str> {
+        events
+            .iter()
+            .map(|v| v["event_id"].as_str().unwrap())
+            .collect()
+    }
+
+    fn merge_pair(a: Vec<rezzy::JsonValue>, b: Vec<rezzy::JsonValue>) -> Vec<rezzy::JsonValue> {
+        merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap()
+    }
+
     #[test]
     fn test_merge_dedup_by_event_id() {
         let a = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
         let b = vec![ev("$2", 2), ev("$3", 3), ev("$4", 4)];
-        let result =
-            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        let result = merge_pair(a, b);
 
-        let ids: Vec<&str> = result
-            .iter()
-            .map(|v| v["event_id"].as_str().unwrap())
-            .collect();
-        assert_eq!(ids, vec!["$1", "$2", "$3", "$4"]);
+        assert_eq!(event_ids(&result), vec!["$1", "$2", "$3", "$4"]);
     }
 
     #[test]
@@ -377,11 +383,7 @@ mod tests {
         )
         .unwrap();
 
-        let ids: Vec<&str> = result
-            .iter()
-            .map(|v| v["event_id"].as_str().unwrap())
-            .collect();
-        assert_eq!(ids, vec!["$1", "$2", "$3", "$4"]);
+        assert_eq!(event_ids(&result), vec!["$1", "$2", "$3", "$4"]);
     }
 
     #[test]
@@ -395,8 +397,7 @@ mod tests {
     fn test_merge_complete_overlap() {
         let a = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
         let b = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3)];
-        let result =
-            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        let result = merge_pair(a, b);
         assert_eq!(result.len(), 3);
     }
 
@@ -404,12 +405,7 @@ mod tests {
     fn test_merge_subset() {
         let large = vec![ev("$1", 1), ev("$2", 2), ev("$3", 3), ev("$4", 4)];
         let small = vec![ev("$1", 1), ev("$2", 2)];
-        let result = merge_event_sets(
-            &[("large.jsonl".into(), large), ("small.jsonl".into(), small)],
-            false,
-            true,
-        )
-        .unwrap();
+        let result = merge_pair(large, small);
         assert_eq!(result.len(), 4);
     }
 
@@ -426,8 +422,7 @@ mod tests {
     fn test_merge_single_event_per_file() {
         let a = vec![ev("$1", 1)];
         let b = vec![ev("$1", 1)];
-        let result =
-            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        let result = merge_pair(a, b);
         assert_eq!(result.len(), 1);
     }
 
@@ -443,8 +438,7 @@ mod tests {
     fn test_merge_two_events_one_shared() {
         let a = vec![ev("$1", 1), ev("$2", 2)];
         let b = vec![ev("$2", 2), ev("$3", 3)];
-        let result =
-            merge_event_sets(&[("a.jsonl".into(), a), ("b.jsonl".into(), b)], false, true).unwrap();
+        let result = merge_pair(a, b);
         assert_eq!(result.len(), 3);
     }
 

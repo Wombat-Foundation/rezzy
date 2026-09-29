@@ -28,6 +28,54 @@ fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
         .collect()
 }
 
+/// The conflicted pair of topic candidates used by most tests.
+fn conflicting_topics(map: &HashMap<String, LeanEvent>) -> HashMap<String, LeanEvent> {
+    let mut conflicted = HashMap::new();
+    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
+    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
+    conflicted
+}
+
+/// Parses [`FIXTURE`] and returns its event map plus the two conflicting topics.
+fn fixture_problem() -> (HashMap<String, LeanEvent>, HashMap<String, LeanEvent>) {
+    let events = utils::parse_jsonl_events(FIXTURE);
+    let map = to_event_map(&events);
+    let conflicted = conflicting_topics(&map);
+    (map, conflicted)
+}
+
+fn topic_key() -> (rezzy::basespec::event_types::EventType, String) {
+    (
+        rezzy::basespec::event_types::EventType::from("m.room.topic"),
+        String::new(),
+    )
+}
+
+fn assert_topic_b(
+    resolved: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    msg: &str,
+) {
+    assert_eq!(
+        resolved.get(&topic_key()),
+        Some(&"$topic_b".to_string()),
+        "{msg}"
+    );
+}
+
+fn set_state(
+    state: &mut imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    event_type: &str,
+    event_id: &str,
+) {
+    state.insert(
+        (
+            rezzy::basespec::event_types::EventType::from(event_type),
+            String::new(),
+        ),
+        event_id.to_string(),
+    );
+}
+
 // ============================================================================
 // LUB comparator unit tests
 // ============================================================================
@@ -114,29 +162,15 @@ fn test_route_power_events_classification() {
 
 #[test]
 fn test_lattice_fold_resolves_conflicting_topics() {
-    let events = utils::parse_jsonl_events(FIXTURE);
-    let map = to_event_map(&events);
+    let (map, conflicted) = fixture_problem();
 
     // Build unconflicted state (everything except the conflicting topics)
     let unconflicted = utils::build_unconflicted_state_test_helper(&map);
 
-    // Conflicted events: the two topics
-    let mut conflicted = HashMap::new();
-    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
-    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
-
     let resolved = resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2);
 
     // The topic with later timestamp ($topic_b, ts=3000) should win
-    let topic_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.topic"),
-        String::new(),
-    );
-    assert_eq!(
-        resolved.get(&topic_key),
-        Some(&"$topic_b".to_string()),
-        "Lattice fold should pick topic_b (later ts)"
-    );
+    assert_topic_b(&resolved, "Lattice fold should pick topic_b (later ts)");
 }
 
 #[test_case(StateResVersion::V2; "v2")]
@@ -149,9 +183,7 @@ fn test_supplemental_key_does_not_overwrite_resolved_state(version: StateResVers
 
     // These events are available as supplemental context for another conflict,
     // but their topic key itself is not conflicted.
-    let mut supplemental_events = HashMap::new();
-    supplemental_events.insert("$topic_a".to_string(), map["$topic_a"].clone());
-    supplemental_events.insert("$topic_b".to_string(), map["$topic_b"].clone());
+    let supplemental_events = conflicting_topics(&map);
     let conflicted_keys = rezzy::FastSet::default();
 
     let semilattice = resolve_semilattice_fold_with_conflicted_keys(
@@ -169,10 +201,7 @@ fn test_supplemental_key_does_not_overwrite_resolved_state(version: StateResVers
         &conflicted_keys,
     );
 
-    let topic_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.topic"),
-        String::new(),
-    );
+    let topic_key = topic_key();
     assert!(
         !semilattice.contains_key(&topic_key),
         "an accepted supplemental event must not decide an excluded key"
@@ -185,14 +214,9 @@ fn test_supplemental_key_does_not_overwrite_resolved_state(version: StateResVers
 
 #[test]
 fn test_lattice_fold_parity_with_iterative() {
-    let events = utils::parse_jsonl_events(FIXTURE);
-    let map = to_event_map(&events);
+    let (map, conflicted) = fixture_problem();
 
     let unconflicted = utils::build_unconflicted_state_test_helper(&map);
-
-    let mut conflicted = HashMap::new();
-    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
-    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
 
     let lattice = resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2);
     let iterative = rezzy::resolve_iterative_sort(
@@ -205,10 +229,7 @@ fn test_lattice_fold_parity_with_iterative() {
     );
 
     // Lattice and iterative should agree on the topic winner
-    let topic_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.topic"),
-        String::new(),
-    );
+    let topic_key = topic_key();
     assert_eq!(
         lattice.get(&topic_key),
         iterative.get(&topic_key),
@@ -218,13 +239,8 @@ fn test_lattice_fold_parity_with_iterative() {
 
 #[test]
 fn test_lattice_fold_deterministic() {
-    let events = utils::parse_jsonl_events(FIXTURE);
-    let map = to_event_map(&events);
+    let (map, conflicted) = fixture_problem();
     let unconflicted = utils::build_unconflicted_state_test_helper(&map);
-
-    let mut conflicted = HashMap::new();
-    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
-    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
 
     let r1 = resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2);
     let r2 = resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2);
@@ -237,38 +253,22 @@ fn test_lattice_fold_deterministic() {
 #[test]
 fn test_lattice_fold_skips_non_state_events() {
     // Base fixture plus a non-state event (message with no state_key)
-    let fixture = r#"
-{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a.com","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a.com","room_version":"11"},"prev_events":[],"auth_events":[]}
-{"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:a.com","sender":"@alice:a.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":["$create"]}
-{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:a.com","depth":2,"origin_server_ts":1002,"content":{"users":{"@alice:a.com":100},"events_default":0,"state_default":50,"ban":50,"kick":50,"invite":0},"prev_events":["$alice_join"],"auth_events":["$create","$alice_join"]}
-{"event_id":"$jr","type":"m.room.join_rules","state_key":"","sender":"@alice:a.com","depth":3,"origin_server_ts":1003,"content":{"join_rule":"public"},"prev_events":["$pl"],"auth_events":["$create","$alice_join","$pl"]}
-{"event_id":"$topic_a","type":"m.room.topic","state_key":"","sender":"@alice:a.com","depth":4,"origin_server_ts":2000,"content":{"topic":"Alice topic"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
-{"event_id":"$topic_b","type":"m.room.topic","state_key":"","sender":"@alice:a.com","depth":4,"origin_server_ts":3000,"content":{"topic":"Later topic"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
-{"event_id":"$msg","type":"m.room.message","sender":"@alice:a.com","depth":4,"origin_server_ts":2500,"content":{"body":"hello"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}
-"#;
-    let events = utils::parse_jsonl_events(fixture);
+    let mut events = utils::parse_jsonl_events(FIXTURE);
+    events.extend(utils::parse_jsonl_events(
+        r#"{"event_id":"$msg","type":"m.room.message","sender":"@alice:a.com","depth":4,"origin_server_ts":2500,"content":{"body":"hello"},"prev_events":["$jr"],"auth_events":["$create","$alice_join","$pl"]}"#,
+    ));
     let map = to_event_map(&events);
 
     let unconflicted = utils::build_unconflicted_state_test_helper(&map);
 
     // Include the message (state_key: None) in the conflicted set
-    let mut conflicted = HashMap::new();
-    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
-    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
+    let mut conflicted = conflicting_topics(&map);
     conflicted.insert("$msg".to_string(), map["$msg"].clone());
 
     let resolved = resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2);
 
     // topic_b wins (later ts), message is silently skipped
-    let topic_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.topic"),
-        String::new(),
-    );
-    assert_eq!(
-        resolved.get(&topic_key),
-        Some(&"$topic_b".to_string()),
-        "topic_b should win"
-    );
+    assert_topic_b(&resolved, "topic_b should win");
     // No (m.room.message, _) key should appear — it has no state_key
     assert!(
         !resolved
@@ -280,45 +280,22 @@ fn test_lattice_fold_skips_non_state_events() {
 
 #[test]
 fn test_lattice_fold_unconflicted_power_bootstrap_v2_1() {
-    let events = utils::parse_jsonl_events(FIXTURE);
-    let map = to_event_map(&events);
+    let (map, conflicted) = fixture_problem();
 
     // Build unconflicted state (starts with m.room.create)
     let mut unconflicted = utils::build_unconflicted_state_test_helper(&map);
     // Manually add unconflicted power levels and join rules to unconflicted input state
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
-            String::new(),
-        ),
-        "$pl".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
-            String::new(),
-        ),
-        "$jr".to_string(),
-    );
-
-    // Conflicted events: the two topics
-    let mut conflicted = HashMap::new();
-    conflicted.insert("$topic_a".to_string(), map["$topic_a"].clone());
-    conflicted.insert("$topic_b".to_string(), map["$topic_b"].clone());
+    set_state(&mut unconflicted, "m.room.power_levels", "$pl");
+    set_state(&mut unconflicted, "m.room.join_rules", "$jr");
 
     // Resolve with V2_1: resolve_semilattice_fold delegates to resolve_iterative_sort for V2.1+.
     // This exercises the iterative fallback path, not the lattice fold's merge logic.
     let resolved =
         resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2_1);
 
-    let topic_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.topic"),
-        String::new(),
-    );
-    assert_eq!(
-        resolved.get(&topic_key),
-        Some(&"$topic_b".to_string()),
-        "Lattice fold V2.1 should pick topic_b (later ts)"
+    assert_topic_b(
+        &resolved,
+        "Lattice fold V2.1 should pick topic_b (later ts)",
     );
 
     // Verify unconflicted power levels, join rules, and create events are successfully resolved and present
@@ -361,20 +338,8 @@ fn test_msc4297_lattice_fold_dependency_v2_1_fallback() {
 
     // Build unconflicted state: has $create, $pl, $jr
     let mut unconflicted = utils::build_unconflicted_state_test_helper(&map);
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
-            String::new(),
-        ),
-        "$pl".to_string(),
-    );
-    unconflicted.insert(
-        (
-            rezzy::basespec::event_types::EventType::from("m.room.join_rules"),
-            String::new(),
-        ),
-        "$jr".to_string(),
-    );
+    set_state(&mut unconflicted, "m.room.power_levels", "$pl");
+    set_state(&mut unconflicted, "m.room.join_rules", "$jr");
 
     // Conflicted events: $alice_join and $alice_topic are on one fork
     let mut conflicted = HashMap::new();
@@ -387,10 +352,7 @@ fn test_msc4297_lattice_fold_dependency_v2_1_fallback() {
         resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2_1);
 
     // Verify that the topic is successfully authorized and present!
-    let topic_key = (
-        rezzy::basespec::event_types::EventType::from("m.room.topic"),
-        String::new(),
-    );
+    let topic_key = topic_key();
     assert_eq!(
         resolved.get(&topic_key),
         Some(&"$alice_topic".to_string()),

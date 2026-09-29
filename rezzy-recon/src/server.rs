@@ -415,6 +415,53 @@ mod tests {
         MockId(s.to_string())
     }
 
+    fn hash1() -> ElementHash {
+        ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap()
+    }
+
+    fn hash2() -> ElementHash {
+        ElementHash::from_matrix_event_id("$2", EventIdFormat::Legacy).unwrap()
+    }
+
+    fn four_entry_index() -> [u64; 4] {
+        [
+            0x0000_0001_0000_0001,
+            0x0000_0001_0000_0002,
+            0x0000_0002_0000_0001,
+            0x0000_0003_0000_0001,
+        ]
+    }
+
+    fn sketch_builder<'a>(
+        index: &'a H64Index<'a>,
+        max_aggregate_work: usize,
+        hard_fallback_threshold: usize,
+    ) -> SketchBuilder<'a> {
+        SketchBuilder::new(
+            index,
+            SketchPolicy {
+                max_aggregate_work,
+                hard_fallback_threshold,
+            },
+        )
+    }
+
+    fn single_bucket_roots(
+        sorted_h64: &[u64],
+        request: BucketRequest,
+        capacity: usize,
+    ) -> Vec<u64> {
+        let requests = [request];
+        let sketches = build_bucket_sketches(sorted_h64, &requests).unwrap();
+        assert_eq!(sketches.len(), 1);
+        sketches[0].clone().decode_elements(capacity).unwrap()
+    }
+
+    fn assert_fallback(builder: &SketchBuilder<'_>, requests: &[BucketRequest]) {
+        let result = builder.build(requests).unwrap();
+        assert!(matches!(result, SketchResult::FallbackToRangeSync));
+    }
+
     #[test]
     fn test_event_id_str_some_branch() {
         // Exercises the `Some(...)` arm of the default `event_hash` impl directly,
@@ -554,16 +601,11 @@ mod tests {
     #[test]
     fn test_build_bucket_sketches_exact_match() {
         use crate::triage::BucketRequest;
-        let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
+        let h1 = hash1();
 
         let bucket_idx = h1.h64 >> 56;
-        let requests = [BucketRequest::new(8, bucket_idx, 4)];
+        let roots = single_bucket_roots(&[h1.h64], BucketRequest::new(8, bucket_idx, 4), 4);
 
-        let sorted_h64 = vec![h1.h64];
-        let sketches = build_bucket_sketches(&sorted_h64, &requests).unwrap();
-
-        assert_eq!(sketches.len(), 1);
-        let roots = sketches[0].clone().decode_elements(4).unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0], h1.h64);
     }
@@ -572,12 +614,7 @@ mod tests {
     fn test_h64_index_bucket_slice() {
         use crate::triage::BucketRequest;
 
-        let sorted_h64 = vec![
-            0x0000_0001_0000_0001,
-            0x0000_0001_0000_0002,
-            0x0000_0002_0000_0001,
-            0x0000_0003_0000_0001,
-        ];
+        let sorted_h64 = four_entry_index();
         let index = H64Index::new(&sorted_h64);
         let request = BucketRequest::new(32, 1, 4);
 
@@ -589,12 +626,7 @@ mod tests {
     fn test_h64_index_bucket_range() {
         use crate::triage::BucketRequest;
 
-        let sorted_h64 = vec![
-            0x0000_0001_0000_0001,
-            0x0000_0001_0000_0002,
-            0x0000_0002_0000_0001,
-            0x0000_0003_0000_0001,
-        ];
+        let sorted_h64 = four_entry_index();
         let index = H64Index::new(&sorted_h64);
         let request = BucketRequest::new(32, 1, 4);
 
@@ -643,8 +675,8 @@ mod tests {
     #[test]
     fn test_build_bucket_sketches_dynamic_summation() {
         use crate::triage::BucketRequest;
-        let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
-        let h2 = ElementHash::from_matrix_event_id("$2", EventIdFormat::Legacy).unwrap();
+        let h1 = hash1();
+        let h2 = hash2();
 
         // Depth 0 encompasses everything
         let requests = [BucketRequest::new(0, 0, 4)];
@@ -666,8 +698,8 @@ mod tests {
     #[test]
     fn test_build_bucket_sketches_deep_extraction() {
         use crate::triage::BucketRequest;
-        let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
-        let h2 = ElementHash::from_matrix_event_id("$2", EventIdFormat::Legacy).unwrap();
+        let h1 = hash1();
+        let h2 = hash2();
 
         let depth: u8 = 16;
         let shift = u32::from(H64_TRIE_WIDTH) - u32::from(depth);
@@ -706,15 +738,9 @@ mod tests {
     #[test]
     fn test_build_bucket_sketches_depth_0_slow_path() {
         use crate::triage::BucketRequest;
-        let h1 = ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap();
+        let h1 = hash1();
 
-        let requests = [BucketRequest::new(0, 0, 10)];
-
-        let sorted_h64 = vec![h1.h64];
-        let sketches = build_bucket_sketches(&sorted_h64, &requests).unwrap();
-
-        assert_eq!(sketches.len(), 1);
-        let roots = sketches[0].clone().decode_elements(10).unwrap();
+        let roots = single_bucket_roots(&[h1.h64], BucketRequest::new(0, 0, 10), 10);
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0], h1.h64);
     }
@@ -724,13 +750,7 @@ mod tests {
         use crate::triage::BucketRequest;
         let sorted_h64 = vec![0x1000_0000_0000_0000, 0x2000_0000_0000_0000];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1000,
-            hard_fallback_threshold: 1000,
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
+        let builder = sketch_builder(&index, 1000, 1000);
         let requests = [BucketRequest::new(0, 0, 10)];
 
         let result = builder.build(&requests).unwrap();
@@ -747,13 +767,7 @@ mod tests {
         use crate::triage::BucketRequest;
         let sorted_h64 = vec![0x0000_0000_0000_0001, 0x8000_0000_0000_0002];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1000,
-            hard_fallback_threshold: 1000,
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
+        let builder = sketch_builder(&index, 1000, 1000);
         let requests = [BucketRequest::new(0, 0, 1)];
 
         let result = builder.build(&requests).unwrap();
@@ -765,17 +779,9 @@ mod tests {
         use crate::triage::BucketRequest;
         let sorted_h64 = vec![1, 2, 3];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1000,
-            hard_fallback_threshold: 2, // 3 > 2, triggers hard fallback
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest::new(0, 0, 1)];
-
-        let result = builder.build(&requests).unwrap();
-        assert!(matches!(result, SketchResult::FallbackToRangeSync));
+        // 3 > 2, triggers hard fallback
+        let builder = sketch_builder(&index, 1000, 2);
+        assert_fallback(&builder, &[BucketRequest::new(0, 0, 1)]);
     }
 
     #[test]
@@ -786,17 +792,9 @@ mod tests {
         // Aggregate work will be 1 + 1 = 2.
         let sorted_h64 = vec![0x0000_0000_0000_0001, 0x8000_0000_0000_0002];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1, // Budget of 1 will be exhausted since 2 work is needed
-            hard_fallback_threshold: 1000,
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest::new(0, 0, 1)];
-
-        let result = builder.build(&requests).unwrap();
-        assert!(matches!(result, SketchResult::FallbackToRangeSync));
+        // Budget of 1 will be exhausted since 2 work is needed
+        let builder = sketch_builder(&index, 1, 1000);
+        assert_fallback(&builder, &[BucketRequest::new(0, 0, 1)]);
     }
 
     #[test]
@@ -805,17 +803,11 @@ mod tests {
 
         let sorted_h64 = vec![0x1000_0000_0000_0000, 0x9000_0000_0000_0000];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1,
-            hard_fallback_threshold: 1000,
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
-        let requests = [BucketRequest::new(1, 0, 1), BucketRequest::new(1, 1, 1)];
-
-        let result = builder.build(&requests).unwrap();
-        assert!(matches!(result, SketchResult::FallbackToRangeSync));
+        let builder = sketch_builder(&index, 1, 1000);
+        assert_fallback(
+            &builder,
+            &[BucketRequest::new(1, 0, 1), BucketRequest::new(1, 1, 1)],
+        );
     }
 
     #[test]
@@ -824,13 +816,7 @@ mod tests {
 
         let sorted_h64 = vec![0, 0x1000_0000_0000_0000];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1000,
-            hard_fallback_threshold: 1000,
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
+        let builder = sketch_builder(&index, 1000, 1000);
         let requests = [BucketRequest::new(0, 0, 2)];
 
         assert!(matches!(
@@ -844,13 +830,7 @@ mod tests {
         use crate::triage::BucketRequest;
         let sorted_h64 = vec![0x1000_0000_0000_0000, 0x2000_0000_0000_0000];
         let index = H64Index::new(&sorted_h64);
-
-        let policy = SketchPolicy {
-            max_aggregate_work: 1000,
-            hard_fallback_threshold: 1000,
-        };
-
-        let builder = SketchBuilder::new(&index, policy);
+        let builder = sketch_builder(&index, 1000, 1000);
         // Zero capacity is rejected by `validate_bucket_requests` before any
         // range localization is attempted.
         let requests = [BucketRequest::new(0, 0, 0)];
@@ -865,13 +845,7 @@ mod tests {
     fn test_sketch_builder_rejects_depth_above_maximum() {
         let sorted_h64 = [1_u64];
         let index = H64Index::new(&sorted_h64);
-        let builder = SketchBuilder::new(
-            &index,
-            SketchPolicy {
-                max_aggregate_work: 1_000,
-                hard_fallback_threshold: 1_000,
-            },
-        );
+        let builder = sketch_builder(&index, 1_000, 1_000);
         let requests = [BucketRequest::new(crate::MAX_DEPTH.saturating_add(1), 0, 1)];
 
         assert!(matches!(
