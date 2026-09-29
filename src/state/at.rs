@@ -26,6 +26,7 @@
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
 
+use crate::auth::StateKeyDyn;
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
@@ -37,6 +38,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
+
+/// Event context passed to state computation: event IDs mapped to their events.
+pub(crate) type EventMap<Id, C, K, S> = HashMap<Id, LeanEvent<Id, C, K>, S>;
 
 /// An entry in the local auth cache, pairing an event with its discovery depth.
 ///
@@ -94,13 +98,13 @@ impl<Id: EventId, C: EventContent, S1: BuildHasher, S2: BuildHasher, K>
     crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
 where
     K: Ord + Clone + AsRef<str>,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     /// Returns the resolved event or a limited local-auth fallback for the query.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
         use crate::basespec::event_types::{M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS};
 
-        let query: &dyn crate::auth::StateKeyDyn = &(event_type, state_key);
+        let query: &dyn StateKeyDyn = &(event_type, state_key);
 
         // V2.1+ (MSC4297): required auth keys come from the (resolved) state in
         // ALL phases — power phase included. The prior PL-only power-phase
@@ -190,7 +194,7 @@ where
     S2: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     // Rejected events must never be admitted into state (spec rooms/v9). Soft-failed
     // events, however, participate in state resolution as normal (spec server-server-api
@@ -369,7 +373,7 @@ pub type SharedState<Id = String, K = String> = imbl::OrdMap<(EventType, K), Id>
 #[must_use]
 pub fn compute_state_at<Id, C, Q, S, K>(
     target_event_id: &Q,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     empty_key: &K,
 ) -> Option<BTreeMap<(EventType, K), Id>>
@@ -379,7 +383,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     if !events_map.contains_key(target_event_id) {
         return None;
@@ -426,7 +430,7 @@ where
 #[must_use]
 pub fn compute_state_at_batch<Id, C, Q, S, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     empty_key: &K,
 ) -> HashMap<Id, BTreeMap<(EventType, K), Id>>
@@ -436,7 +440,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let mut results = HashMap::with_capacity(target_event_ids.len());
 
@@ -495,7 +499,7 @@ impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for StateCompu
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
 pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
     empty_key: &K,
@@ -506,7 +510,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     C: EventContent,
     F: FnMut(Id, SharedState<Id, K>),
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming(
         target_event_ids,
@@ -536,7 +540,7 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
 /// target mask; returns `None` when none of the requested targets are present.
 fn with_target_index<Id, C, Q, S, K, R>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     f: impl FnOnce(&DenseIndex<&Id, usize>, &[bool]) -> R,
 ) -> Option<R>
 where
@@ -583,7 +587,7 @@ where
 /// Returns `StateComputationError::Callback(e)` if the callback yields an error.
 pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
     empty_key: &K,
@@ -595,7 +599,7 @@ where
     C: EventContent,
     F: FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     with_target_index(target_event_ids, events_map, |index, is_target| {
         run_state_pipeline_streaming(
@@ -620,7 +624,7 @@ where
 fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
     index: &DenseIndex<&Id, usize>,
     is_target: &[bool],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     mut on_target: F,
     empty_key: &K,
@@ -631,7 +635,7 @@ where
     C: EventContent,
     F: FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
@@ -1003,7 +1007,7 @@ where
 /// contiguous integer IDs (short IDs) for fast topological processing and array lookups.
 fn collect_ancestor_short_ids_batch<'a, Id, C, S, K>(
     target_event_ids: &[&'a Id],
-    events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &'a EventMap<Id, C, K, S>,
 ) -> DenseIndex<&'a Id, usize>
 where
     Id: EventId,
@@ -1046,7 +1050,7 @@ where
 /// Returns the events sorted such that parents always appear before their children.
 fn topological_sort_short_ids<Id, C, S, K>(
     index: &DenseIndex<&Id, usize>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
 ) -> (Vec<usize>, Vec<usize>)
 where
     Id: EventId,
@@ -1107,7 +1111,7 @@ where
 /// Bypasses full state resolution by simply returning one of the identical parent states.
 pub(crate) fn resolve_merge_fast_path<Id, C, S, K>(
     prev_states: &[SharedState<Id, K>],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
@@ -1118,7 +1122,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
     let all_match = prev_states[1..].iter().all(|state| first == state);
@@ -1169,7 +1173,7 @@ pub(crate) fn take_finalized_parent<T: Clone>(
 /// [`resolve_merge_fast_path`].
 pub(crate) fn collapse_resolved_parents<Id, C, S, K>(
     prev_states: Vec<SharedState<Id, K>>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
@@ -1180,7 +1184,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     if prev_states.is_empty() {
         SharedState::new()
@@ -1203,7 +1207,7 @@ where
 /// Groups the unconflicted state and runs `resolve_iterative_sort` on the conflicted subset.
 fn resolve_multiple_prev_states<Id, C, S, K>(
     prev_states: &[SharedState<Id, K>],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
@@ -1214,7 +1218,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
@@ -1591,7 +1595,7 @@ where
 /// - **Space**: `O(V)` for the position map.
 #[must_use]
 pub fn compute_topo_positions<Id, C, S, F, K>(
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     tiebreak: F,
 ) -> Vec<Id>
 where
@@ -1668,9 +1672,7 @@ where
 /// Panics if a sorted event ID is not found in `events_map` (indicates a
 /// bug in the topological sort).
 #[must_use]
-pub fn compute_depths<Id, C, S, K>(
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
-) -> HashMap<Id, u64>
+pub fn compute_depths<Id, C, S, K>(events_map: &EventMap<Id, C, K, S>) -> HashMap<Id, u64>
 where
     Id: EventId,
     S: BuildHasher,
@@ -1758,7 +1760,7 @@ pub struct DepthDivergence<Id> {
 /// `O(Σ |prev_events|)` — linear in the total number of parent references.
 #[must_use]
 pub fn find_depth_divergences<Id, C, S, K>(
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
 ) -> Vec<DepthDivergence<Id>>
 where
     Id: EventId,
@@ -1823,7 +1825,7 @@ where
 /// Identical to [`compute_topo_positions`]: `O(V log V + E)`.
 #[must_use]
 pub fn resolve_gap_fill_order<Id, C, S, F, K>(
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     tiebreak: F,
 ) -> Vec<Id>
 where
@@ -1851,7 +1853,7 @@ where
 #[must_use]
 pub fn reverse_topological_order<Id, C, Q, S, F, K>(
     tip: &Q,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     tiebreak: F,
 ) -> Vec<Id>
 where
@@ -1942,7 +1944,7 @@ pub enum PaginationViolation<Id> {
 /// A `Vec` of violations. Empty means the pages are well-formed.
 #[must_use]
 pub fn verify_pagination<Id, C, S, K>(
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     pages: &[Vec<Id>],
 ) -> Vec<PaginationViolation<Id>>
 where
@@ -2229,7 +2231,7 @@ where
 /// Panics if `prev_states` is empty. At least 2 entries are needed for meaningful merging.
 pub fn resolve_merge_fast_path_hashed<Id, C, S, K>(
     prev_states: &[HashedState<Id, K>],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     version: StateResVersion,
     empty_key: &K,
@@ -2239,7 +2241,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     resolve_merge_fast_path_hashed_with_cache(
         prev_states,
@@ -2258,7 +2260,7 @@ where
 /// `O(M)` cache-hit walk instead of restarting from scratch every time.
 fn resolve_merge_fast_path_hashed_with_cache<Id, C, S, K>(
     prev_states: &[HashedState<Id, K>],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     version: StateResVersion,
@@ -2269,7 +2271,7 @@ where
     S: BuildHasher,
     C: EventContent,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let first = &prev_states[0];
 
@@ -2331,7 +2333,7 @@ where
 fn run_state_pipeline_streaming_optimized<'a, Id, C, S, F, E, K>(
     index: &DenseIndex<&'a Id, usize>,
     is_target: &[bool],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     mut on_target: F,
     empty_key: &K,
@@ -2342,7 +2344,7 @@ where
     C: EventContent,
     F: for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
 
@@ -2462,7 +2464,7 @@ where
 /// are dropped. The callback count may therefore be less than the input count.
 pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
     empty_key: &K,
@@ -2474,7 +2476,7 @@ where
     C: EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     with_target_index(target_event_ids, events_map, |index, is_target| {
         run_state_pipeline_streaming_optimized(
@@ -2500,7 +2502,7 @@ where
 #[must_use = "a `false` return means a cycle was detected and results are incomplete; silently discarding it defeats the purpose of cycle detection"]
 pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F, K>(
     target_event_ids: &[&Q],
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
     mut on_target_resolved: F,
     empty_key: &K,
@@ -2512,7 +2514,7 @@ where
     C: EventContent,
     F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
     K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming_optimized(
         target_event_ids,
@@ -2646,6 +2648,14 @@ mod tests {
         }
     }
 
+    /// Like [`test_event`], plus a `state_key`.
+    fn test_state_event(id: &str, event_type: &str, state_key: &str, sender: &str) -> LeanEvent {
+        LeanEvent {
+            state_key: Some(state_key.into()),
+            ..test_event(id, event_type, sender)
+        }
+    }
+
     #[test]
     fn test_conflicted_auth_event_validation_in_power_phase() {
         // Create a minimal room context
@@ -2762,18 +2772,8 @@ mod tests {
     /// checked below.
     #[test]
     fn test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity() {
-        let create_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
-            event_id: "$create".into(),
-            event_type: "m.room.create".into(),
-            sender: "@creator:example.com".into(),
-            ..Default::default()
-        };
-        let pl_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
-            event_id: "$pl".into(),
-            event_type: "m.room.power_levels".into(),
-            sender: "@creator:example.com".into(),
-            ..Default::default()
-        };
+        let create_ev = test_event("$create", "m.room.create", "@creator:example.com");
+        let pl_ev = test_event("$pl", "m.room.power_levels", "@creator:example.com");
 
         // A required-type (PL) query, present in local_auth but not yet in
         // `resolved`, requested on behalf of a non-power candidate
@@ -2833,34 +2833,18 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_overlay_state_coverage_boosters() {
-        let create_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
-            event_id: "$create".into(),
-            event_type: "m.room.create".into(),
-            sender: "@creator:example.com".into(),
-            ..Default::default()
-        };
+        let create_ev = test_event("$create", "m.room.create", "@creator:example.com");
 
-        let pl_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
-            event_id: "$pl".into(),
-            event_type: "m.room.power_levels".into(),
-            sender: "@creator:example.com".into(),
-            ..Default::default()
-        };
+        let pl_ev = test_event("$pl", "m.room.power_levels", "@creator:example.com");
 
-        let jr_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
-            event_id: "$jr".into(),
-            event_type: "m.room.join_rules".into(),
-            sender: "@creator:example.com".into(),
-            ..Default::default()
-        };
+        let jr_ev = test_event("$jr", "m.room.join_rules", "@creator:example.com");
 
-        let member_ban_ev: LeanEvent<String, crate::json::Value> = LeanEvent {
-            event_id: "$member_ban".into(),
-            event_type: "m.room.member".into(),
-            state_key: Some("@bannee:example.com".into()),
-            sender: "@moderator:example.com".into(),
-            ..Default::default()
-        };
+        let member_ban_ev = test_state_event(
+            "$member_ban",
+            "m.room.member",
+            "@bannee:example.com",
+            "@moderator:example.com",
+        );
 
         // 1. Test case: resolved_id is found but the event is missing from both auth_context and sort_set (returns None).
         {

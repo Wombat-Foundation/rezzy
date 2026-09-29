@@ -63,6 +63,17 @@ pub type KeyPathHash = StructuralHash;
 /// Shared pointer to a (possibly interned) HAMT node.
 pub(crate) type NodePtr<K, V> = Arc<HamtNode<K, V>>;
 
+/// Resolver bound shared by the HAMT descent, diff, and mutation APIs.
+///
+/// Any closure matching the underlying `FnMut` signature satisfies it via the
+/// blanket impl, so callers pass closures exactly as before.
+pub trait NodeResolver<K, V, E>: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E> {}
+
+impl<K, V, E, F> NodeResolver<K, V, E> for F where
+    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>
+{
+}
+
 /// The outcome of descending one level of a HAMT with a batch of requested keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DescendResult<V> {
@@ -254,7 +265,7 @@ impl<K, V> HamtNode<K, V> {
         K: Hash + Eq + Borrow<Q>,
         V: Clone,
         Q: Hash + Eq + ?Sized,
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         let path_hash = key_path_hash(structural_key, key);
         self.search_by_path_hash(key, &path_hash, resolver)
@@ -278,7 +289,7 @@ impl<K, V> HamtNode<K, V> {
         V: Clone,
         Q: Eq + ?Sized,
         KeyHash: FnMut(&Q) -> StructuralHash,
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         let path_hash = key_hash(key);
         self.search_by_path_hash(key, &path_hash, resolver)
@@ -302,7 +313,7 @@ impl<K, V> HamtNode<K, V> {
         K: Eq + Borrow<Q>,
         V: Clone,
         Q: Eq + ?Sized,
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         self.search_by_path_hash_inner(key, path_hash, 0, resolver)
     }
@@ -321,7 +332,7 @@ impl<K, V> HamtNode<K, V> {
         visitor: &mut impl FnMut(&K, &V) -> Result<(), E>,
     ) -> Result<(), E>
     where
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         for (key, value) in &self.leaves {
             visitor(key, value)?;
@@ -360,7 +371,7 @@ impl<K, V> HamtNode<K, V> {
         predicate: &mut impl FnMut(&K, &V) -> Result<bool, E>,
     ) -> Result<bool, HamtTraversalError<E>>
     where
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         self.any_entry_inner(resolver, predicate, 0)
     }
@@ -372,7 +383,7 @@ impl<K, V> HamtNode<K, V> {
         depth: usize,
     ) -> Result<bool, HamtTraversalError<E>>
     where
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         crate::hamt::delta::check_depth(depth)?;
         let next_depth = depth.saturating_add(1);
@@ -425,7 +436,7 @@ impl<K, V> HamtNode<K, V> {
     where
         K: Clone,
         V: Clone,
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         self.find_entry_inner(resolver, predicate, 0)
     }
@@ -439,7 +450,7 @@ impl<K, V> HamtNode<K, V> {
     where
         K: Clone,
         V: Clone,
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         crate::hamt::delta::check_depth(depth)?;
         let next_depth = depth.saturating_add(1);
@@ -514,7 +525,7 @@ impl<K, V> HamtNode<K, V> {
         K: Eq + Borrow<Q>,
         V: Clone,
         Q: Eq + ?Sized,
-        F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+        F: NodeResolver<K, V, E>,
     {
         if depth >= HAMT_MAX_DEPTH {
             return Ok(None);
@@ -920,7 +931,7 @@ fn resolve_child_ref<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<NodePtr<K, V>, HamtMutateError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     match child {
         NodeRef::Resolved(child) => Ok(child.clone()),
@@ -970,7 +981,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut ctx = InsertCtx {
         structural_key,
@@ -994,7 +1005,7 @@ fn insert_node<K, V, F, E>(
 where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut key_hash = |k: &K| key_path_hash(structural_key, k);
     let mut sink = |_: &NodePtr<K, V>| {};
@@ -1038,7 +1049,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     if depth >= HAMT_MAX_DEPTH {
         return Err(HamtMutateError::HashCollision {
@@ -1108,7 +1119,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let InsertStep {
         key,
@@ -1159,7 +1170,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let InsertStep {
         key,
@@ -1202,7 +1213,7 @@ pub fn insert<K, V, F, E>(
 where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     insert_with_key_hash(
         node,
@@ -1241,7 +1252,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let path_hash = key_hash(&key);
     let mut sink = |_: &NodePtr<K, V>| {};
@@ -1326,7 +1337,7 @@ where
     K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
     V: Clone + HamtCodec,
     Q: Eq + ?Sized,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
     Slot: FnMut(&K) -> usize,
 {
     let (outcome, old_value) = {
@@ -1368,7 +1379,7 @@ where
     K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
     V: Clone + HamtCodec,
     Q: Hash + Eq + ?Sized,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let path_hash = key_path_hash(structural_key, key);
     let mut sink = |_: &NodePtr<K, V>| {};
@@ -1394,7 +1405,7 @@ where
     K: Hash + Eq + Borrow<Q> + Clone + HamtCodec,
     V: Clone + HamtCodec,
     Q: Eq + ?Sized,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     if depth >= HAMT_MAX_DEPTH {
         return Err(HamtMutateError::MaxDepthExceeded { depth });
@@ -1538,7 +1549,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let path_hash = key_hash(key);
     let mut sink = |_: &NodePtr<K, V>| {};
@@ -1603,7 +1614,7 @@ pub fn persist_mutation<K, V, F, E>(
 where
     K: Hash + Eq + Clone + HamtCodec,
     V: Hash + Clone + HamtCodec,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     persist_mutation_with_key_hash(
         prev_root,
@@ -1636,7 +1647,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Hash + Clone + HamtCodec,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut created = Vec::new();
     let (new_root, displaced) = {
@@ -1689,7 +1700,7 @@ fn finalize_persisted_mutations<K, V, F, E>(
 where
     K: Hash + Eq + Clone + HamtCodec,
     V: Hash + Clone + HamtCodec,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     if current_root.structural_hash == prev_root.structural_hash {
         return Ok((current_root, displaced_vec, Vec::new()));
@@ -1750,7 +1761,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Hash + Clone + HamtCodec,
     I: IntoIterator<Item = (K, Option<V>)>,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     persist_mutations_with_key_hash(
         prev_root,
@@ -1782,7 +1793,7 @@ where
     V: Hash + Clone + HamtCodec,
     I: IntoIterator<Item = (K, Option<V>)>,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut current_root = prev_root.clone();
     let mut displaced_vec = Vec::new();
@@ -1835,7 +1846,7 @@ where
     K: Hash + Eq + Clone + HamtCodec,
     V: Hash + Clone + HamtCodec,
     I: IntoIterator<Item = (K, Option<V>)>,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     persist_chain_with_key_hash(
         prev_root,
@@ -1867,7 +1878,7 @@ where
     V: Hash + Clone + HamtCodec,
     I: IntoIterator<Item = (K, Option<V>)>,
     KeyHash: FnMut(&K) -> StructuralHash,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut steps = Vec::new();
     let mut current_root = prev_root.clone();

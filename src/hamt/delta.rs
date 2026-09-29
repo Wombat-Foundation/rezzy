@@ -5,7 +5,7 @@ use core::{fmt, hash::Hash};
 
 use crate::state::LtHash;
 
-use super::{map_index, NodePtr, NodeRef, StructuralHash, HAMT_MAX_DEPTH};
+use super::{map_index, NodePtr, NodeRef, NodeResolver, StructuralHash, HAMT_MAX_DEPTH};
 
 pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
@@ -28,7 +28,7 @@ pub fn isolate_delta<K, V, F, E>(
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     // Short-circuit only when both the lattice and the root structural hashes
     // match. A lattice collision alone must not suppress a real structural
@@ -61,7 +61,7 @@ pub fn diff_hamt_nodes<K, V, F, E>(
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     if root_a.structural_hash == root_b.structural_hash {
         return Ok((Vec::new(), Vec::new()));
@@ -127,7 +127,7 @@ fn diff_nodes<K, V, F, E>(
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     if diff_short_circuit(node_a, node_b, depth)? {
         return Ok(());
@@ -214,7 +214,7 @@ pub(super) fn resolve_node<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<NodePtr<K, V>, E>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     match node_ref {
         NodeRef::Resolved(arc) => Ok(arc.clone()),
@@ -229,7 +229,7 @@ pub(super) fn resolve_node_checked<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<NodePtr<K, V>, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     resolve_node(node_ref, resolver).map_err(HamtTraversalError::Resolve)
 }
@@ -253,7 +253,7 @@ fn resolve_changed_pair<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<Option<ChangedChildPair<K, V>>, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let child_a = &node_a.children[map_index(nodemap_a, slot)];
     let child_b = &node_b.children[map_index(nodemap_b, slot)];
@@ -275,7 +275,7 @@ fn resolve_only_child<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<NodePtr<K, V>, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     resolve_node_checked(&node.children[map_index(nodemap, slot)], resolver)
 }
@@ -370,7 +370,7 @@ pub fn diff_node_hashes<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<NodeHashDelta, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut superseded_node_hashes = Vec::new();
     let mut new_node_hashes = Vec::new();
@@ -398,7 +398,7 @@ fn diff_node_hashes_rec<K, V, F, E>(
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     if diff_short_circuit(node_a, node_b, depth)? {
         return Ok(());
@@ -468,7 +468,7 @@ pub fn reachable_node_hashes<K, V, F, E>(
     resolver: &mut F,
 ) -> Result<Vec<StructuralHash>, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut hashes = Vec::new();
     append_reachable_node_hashes(root, &mut hashes, resolver, 0)?;
@@ -493,7 +493,7 @@ pub fn walk_reachable_node_hashes<K, V, F, E, M>(
     mark: &mut M,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
     M: FnMut(StructuralHash) -> bool,
 {
     if !mark(root.structural_hash) {
@@ -517,7 +517,7 @@ fn walk_reachable_children<K, V, F, E, M>(
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
     M: FnMut(StructuralHash) -> bool,
 {
     check_depth(depth)?;
@@ -543,7 +543,7 @@ fn append_reachable_node_hashes<K, V, F, E>(
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     collection.push(node.structural_hash);
     check_depth(depth)?;
@@ -564,7 +564,7 @@ fn collect_all_leaves<K, V, F, E>(
 where
     K: Hash + Clone + Eq,
     V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+    F: NodeResolver<K, V, E>,
 {
     check_depth(depth)?;
     let next_depth = depth.saturating_add(1);
