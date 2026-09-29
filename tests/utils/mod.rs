@@ -8,6 +8,7 @@ pub fn parse_event_json(input: &str) -> Result<LeanEvent, String> {
     LeanEvent::from_value(&value, None)
 }
 
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
 pub fn parse_events_value(value: &rezzy::JsonValue) -> Result<Vec<LeanEvent>, String> {
     let values = value
         .as_array()

@@ -3802,7 +3802,7 @@ mod redact_top_level_tests {
         let redacted = redact_top_level(&ev, "org.matrix.msc4242.12");
         assert_eq!(redacted.get("prev_state_events"), Some(&json!(["$B"])));
         assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
-        assert!(redacted.get("foo").is_none());
+        assert!(!redacted.contains_key("foo"));
     }
 
     #[test]
@@ -3815,8 +3815,8 @@ mod redact_top_level_tests {
         });
         let redacted = redact_top_level(&ev, "12");
         assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
-        assert!(redacted.get("prev_state_events").is_none());
-        assert!(redacted.get("foo").is_none());
+        assert!(!redacted.contains_key("prev_state_events"));
+        assert!(!redacted.contains_key("foo"));
     }
 }
 

@@ -11,7 +11,6 @@
 mod utils;
 
 use rezzy::basespec::event_types::EventType;
-use rezzy::JsonValue as Value;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;
