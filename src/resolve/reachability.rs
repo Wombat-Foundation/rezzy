@@ -324,6 +324,14 @@ struct CandidateQuery {
     max_candidate_index: Option<u32>,
 }
 
+/// Mutable traversal state seeded for a reachability query over known candidates.
+struct CandidateTraversalSeed {
+    results: Vec<bool>,
+    reachable: Vec<bool>,
+    queue: VecDeque<u32>,
+    remaining_known_candidates: usize,
+}
+
 impl CandidateQuery {
     /// Get the span of positions.
     fn span(&self, node_count: usize) -> usize {
@@ -758,6 +766,32 @@ where
             .collect()
     }
 
+    /// Shared preamble for the candidate-filtering traversals: `None` when there
+    /// is nothing to search, else the result flags, visited set, seeded queue,
+    /// and remaining known-candidate count.
+    fn seed_candidate_traversal<'seed, S>(
+        &self,
+        seeds: S,
+        candidates: &CandidateQuery,
+    ) -> Option<CandidateTraversalSeed>
+    where
+        S: IntoIterator<Item = &'seed Id>,
+        Id: 'seed,
+    {
+        if candidates.candidate_count == 0 || candidates.known_candidate_position_count == 0 {
+            return None;
+        }
+        let results = vec![false; candidates.candidate_count];
+        let mut reachable = vec![false; self.children_by_index.len()];
+        let queue = self.seed_queue(seeds, &mut reachable);
+        Some(CandidateTraversalSeed {
+            results,
+            reachable,
+            queue,
+            remaining_known_candidates: candidates.known_candidate_position_count,
+        })
+    }
+
     fn filter_reachable_numeric_bfs_with_candidates<'a, S>(
         &self,
         seeds: S,
@@ -767,14 +801,15 @@ where
         S: IntoIterator<Item = &'a Id>,
         Id: 'a,
     {
-        if candidates.candidate_count == 0 || candidates.known_candidate_position_count == 0 {
+        let Some(CandidateTraversalSeed {
+            mut results,
+            mut reachable,
+            mut queue,
+            mut remaining_known_candidates,
+        }) = self.seed_candidate_traversal(seeds, candidates)
+        else {
             return Vec::new();
-        }
-
-        let mut results = vec![false; candidates.candidate_count];
-        let mut reachable = vec![false; self.children_by_index.len()];
-        let mut queue = self.seed_queue(seeds, &mut reachable);
-        let mut remaining_known_candidates = candidates.known_candidate_position_count;
+        };
 
         while let Some(curr) = queue.pop_front() {
             for position in candidates.positions_at(curr) {
@@ -804,14 +839,15 @@ where
         S: IntoIterator<Item = &'a Id>,
         Id: 'a,
     {
-        if candidates.candidate_count == 0 || candidates.known_candidate_position_count == 0 {
+        let Some(CandidateTraversalSeed {
+            mut results,
+            mut reachable,
+            mut queue,
+            mut remaining_known_candidates,
+        }) = self.seed_candidate_traversal(seeds, candidates)
+        else {
             return Vec::new();
-        }
-
-        let mut results = vec![false; candidates.candidate_count];
-        let mut reachable = vec![false; self.children_by_index.len()];
-        let mut queue = self.seed_queue(seeds, &mut reachable);
-        let mut remaining_known_candidates = candidates.known_candidate_position_count;
+        };
         let mut remaining_candidates = candidates.remaining_candidate_set();
         while let Some(curr) = queue.pop_front() {
             let mut has_position = false;
@@ -1052,6 +1088,16 @@ where
     }
 }
 
+/// Maps `from`/`to` to dense indices, or `None` when either is absent.
+fn reach_endpoints<Id>(index: &DenseIndex<Id>, from: &Id, to: &Id) -> Option<(u32, u32)>
+where
+    Id: EventId + Ord,
+{
+    let from_idx = index.index_of(from)?;
+    let to_idx = index.index_of(to)?;
+    Some((from_idx, to_idx))
+}
+
 impl<Id> Reachability for RangePrefilterReachability<Id>
 where
     Id: EventId + Ord,
@@ -1059,10 +1105,7 @@ where
     type Id = Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        let Some(from_idx) = self.index.index_of(from) else {
-            return Reach::Unknown;
-        };
-        let Some(to_idx) = self.index.index_of(to) else {
+        let Some((from_idx, to_idx)) = reach_endpoints(&self.index, from, to) else {
             return Reach::Unknown;
         };
         if self.cyclic_nodes.contains(&from_idx) || self.cyclic_nodes.contains(&to_idx) {
@@ -1083,10 +1126,7 @@ where
     type Id = Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        let Some(from_idx) = self.index.index_of(from) else {
-            return Reach::Unknown;
-        };
-        let Some(to_idx) = self.index.index_of(to) else {
+        let Some((from_idx, to_idx)) = reach_endpoints(&self.index, from, to) else {
             return Reach::Unknown;
         };
         if from_idx == to_idx {

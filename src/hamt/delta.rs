@@ -10,6 +10,23 @@ use super::{map_index, NodePtr, NodeRef, NodeResolver, StructuralHash, HAMT_MAX_
 pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
 
+/// Walks both roots and returns the accumulated added/removed leaves.
+fn collect_delta<K, V, F, E>(
+    root_a: &NodePtr<K, V>,
+    root_b: &NodePtr<K, V>,
+    resolver: &mut F,
+) -> DeltaResult<K, V, HamtTraversalError<E>>
+where
+    K: Hash + Clone + Eq,
+    V: Hash + Clone + Eq,
+    F: NodeResolver<K, V, E>,
+{
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
+    Ok((added, removed))
+}
+
 /// Isolates the delta (added/removed items) between two HAMT tries in O(|Delta|
 /// * log32 N) time. Uses the `LtHash` lattice to quickly short-circuit if the
 ///   tries are convergently identical.
@@ -37,13 +54,7 @@ where
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let mut added = Vec::new();
-    let mut removed = Vec::new();
-
-    // Begin recursive diffing
-    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
-
-    Ok((added, removed))
+    collect_delta(root_a, root_b, resolver)
 }
 
 /// Isolates the delta (added/removed items) between two HAMT root nodes directly,
@@ -67,12 +78,7 @@ where
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let mut added = Vec::new();
-    let mut removed = Vec::new();
-
-    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
-
-    Ok((added, removed))
+    collect_delta(root_a, root_b, resolver)
 }
 
 pub(super) fn check_depth<E>(depth: usize) -> Result<(), HamtTraversalError<E>> {
@@ -92,6 +98,15 @@ fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
             bits &= bits.wrapping_sub(1);
             Some(bit.trailing_zeros() as usize)
         }
+    })
+}
+
+/// Iterates the union of two nodemaps, yielding each set slot with whether the
+/// bit is present in `n_a` and/or `n_b`.
+fn union_nodemaps(n_a: u32, n_b: u32) -> impl Iterator<Item = (usize, bool, bool)> {
+    set_bits(n_a | n_b).map(move |slot| {
+        let bit = 1 << slot;
+        (slot, (n_a & bit) != 0, (n_b & bit) != 0)
     })
 }
 
@@ -174,12 +189,7 @@ where
     let n_a = node_a.nodemap;
     let n_b = node_b.nodemap;
 
-    let union = n_a | n_b;
-    for slot in set_bits(union) {
-        let bit = 1 << slot;
-        let in_a = (n_a & bit) != 0;
-        let in_b = (n_b & bit) != 0;
-
+    for (slot, in_a, in_b) in union_nodemaps(n_a, n_b) {
         if in_a && in_b {
             if let Some(children) = resolve_changed_pair(node_a, node_b, n_a, n_b, slot, resolver)?
             {
@@ -412,12 +422,7 @@ where
 
     let next_depth = depth.saturating_add(1);
 
-    let union = n_a | n_b;
-    for slot in set_bits(union) {
-        let bit = 1 << slot;
-        let in_a = (n_a & bit) != 0;
-        let in_b = (n_b & bit) != 0;
-
+    for (slot, in_a, in_b) in union_nodemaps(n_a, n_b) {
         if in_a && in_b {
             if let Some(children) = resolve_changed_pair(node_a, node_b, n_a, n_b, slot, resolver)?
             {
