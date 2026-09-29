@@ -21,6 +21,7 @@ pub mod federation;
 pub mod format;
 pub mod jsonl_merge;
 pub mod network;
+pub mod repair;
 pub mod utils;
 
 use format::{format_cli_output, FormattingContext};
@@ -179,6 +180,7 @@ pub fn cli_command() -> clap::Command {
         )
         .subcommand(aggregate::command())
         .subcommand(federation::command())
+        .subcommand(repair::command())
         .subcommand(
             clap::Command::new("completions")
                 .about("Print a shell completion script to stdout")
@@ -507,17 +509,10 @@ pub fn main_entry() {
         return;
     }
     if let Some(("federation", federation_matches)) = matches.subcommand() {
-        match federation::run_from_matches(federation_matches) {
-            Ok(output) => println!(
-                "{}",
-                rezzy::json::write_string_pretty(&output).expect("JSON formatting is infallible")
-            ),
-            Err(e) => {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            }
-        }
-        return;
+        print_json_command_result(federation::run_from_matches(federation_matches));
+    }
+    if let Some(("repair-ids", repair_matches)) = matches.subcommand() {
+        print_json_command_result(repair::run_from_matches(repair_matches));
     }
     let args = Args::from_matches(&matches);
     match run_cli(&args) {
@@ -556,6 +551,20 @@ pub fn main_entry() {
             std::process::exit(1);
         }
     }
+}
+
+fn print_json_command_result(result: Result<rezzy::JsonValue, error::AppError>) -> ! {
+    match result {
+        Ok(output) => println!(
+            "{}",
+            rezzy::json::write_string_pretty(&output).expect("JSON formatting is infallible")
+        ),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(0);
 }
 
 #[cfg(test)]

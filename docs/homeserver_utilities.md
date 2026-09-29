@@ -213,6 +213,18 @@ format. For multiple origins, use
 `MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`;
 that variable takes precedence and the file is reread for every request.
 
+For legacy v3+ JSONL exports that omitted `event_id`, repair them using the
+room-version reference hash before aggregating:
+
+```sh
+rezzy repair-ids \
+  --input remote-dag-room-v6-old.jsonl \
+  --output remote-dag-room-v6-old-repaired.jsonl \
+  --room-version 6
+```
+
+The command only fills missing IDs; it does not overwrite the source file.
+
 The key can also live directly in the OS keyring instead of a file. Store the
 complete `ed25519:<id> <seed>` line under service `rezzy` and account name
 `your.server` (for example, with Python's `keyring` package):
