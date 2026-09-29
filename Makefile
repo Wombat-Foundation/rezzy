@@ -52,8 +52,8 @@ doc: ##H Build docs
 	$(CARGO) doc --no-deps
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
-.PHONY: all format lint check doc test install
-all: format lint check doc test install
+.PHONY: all
+all: format lint check doc test
 	@echo "all: done"
 
 # `all` sequences format before the rest; lint/check/doc/install must not
