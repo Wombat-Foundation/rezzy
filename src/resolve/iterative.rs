@@ -116,7 +116,7 @@ where
 /// versus a supplemental auth-diff/MSC4297-subgraph walk — so they preserve
 /// the pre-existing (pre-fix) behavior: nothing in `conflicted_events` is
 /// blocked from deciding its own key. Callers that *do* know the real
-/// distinction (`resolve_multiple_prev_states` in `state::at`, and
+/// distinction (`resolve_merged_parent_states` in `state::at`, and
 /// `resolve_state_maps`/`resolve_state_maps_lazy_with_diff` in
 /// `resolve::multi`) bypass this default and call
 /// `resolve_iterative_sort_with_all_caches` directly with the narrower,

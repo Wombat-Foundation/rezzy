@@ -817,7 +817,7 @@ fn test_compute_state_at_prev_events_cycle() {
     );
 }
 
-/// Coverage: auth chain diff interleaving in `resolve_multiple_prev_states`
+/// Coverage: auth chain diff interleaving in `resolve_merged_parent_states`
 /// (at.rs:948-982). The dual-heap interleaving requires:
 /// 1. Conflicted events whose auth chains include events NOT in unconflicted state
 /// 2. Those non-unconflicted auth events at depths overlapping with `u_heap` entries

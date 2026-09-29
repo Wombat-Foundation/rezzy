@@ -35,7 +35,7 @@ use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
 };
 use crate::state::at::{
-    collapse_resolved_parents, take_finalized_parent, LocalAuthCache, SharedState,
+    resolve_merged_parent_states, take_finalized_parent, LocalAuthCache, SharedState,
 };
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::VecDeque;
@@ -1331,8 +1331,8 @@ where
             );
         }
 
-        let mut state_before: SharedState<Id, K> = collapse_resolved_parents(
-            prev_states,
+        let mut state_before: SharedState<Id, K> = resolve_merged_parent_states(
+            &prev_states,
             events_map,
             &mut global_auth_cache,
             &mut mainline_cache,
@@ -1436,8 +1436,8 @@ where
         }
     }
 
-    Ok(collapse_resolved_parents(
-        parent_states,
+    Ok(resolve_merged_parent_states(
+        &parent_states,
         events_map,
         global_auth_cache,
         mainline_cache,

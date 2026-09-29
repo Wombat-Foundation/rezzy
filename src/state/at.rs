@@ -674,8 +674,8 @@ where
             );
         }
 
-        let mut state_before: SharedState<Id, K> = collapse_resolved_parents(
-            prev_states,
+        let mut state_before: SharedState<Id, K> = resolve_merged_parent_states(
+            &prev_states,
             events_map,
             &mut global_auth_cache,
             &mut mainline_cache,
@@ -1131,9 +1131,14 @@ where
     })
 }
 
-/// Fast-path resolution for merging multiple states when they are all structurally identical.
-/// Bypasses full state resolution by simply returning one of the identical parent states.
-pub(crate) fn resolve_merge_fast_path<Id, C, S, K>(
+/// Merges the resolved parent states at a fork.
+///
+/// The empty case yields fresh state; a single parent — or several structurally
+/// identical parents — is returned as-is, bypassing state resolution entirely.
+/// Multiple distinct parents go through the full state-resolution path, which
+/// groups the unconflicted state and runs the iterative sort on the conflicted
+/// subset (including the auth chain difference `auth(C) \ auth(U)`).
+pub(crate) fn resolve_merged_parent_states<Id, C, S, K>(
     prev_states: &[SharedState<Id, K>],
     events_map: &EventMap<Id, C, K, S>,
     global_auth_cache: &mut LocalAuthCache<Id, C, K>,
@@ -1148,105 +1153,16 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let first = &prev_states[0];
-    let all_match = prev_states[1..].iter().all(|state| first == state);
-
-    if all_match {
-        first.clone()
-    } else {
-        resolve_multiple_prev_states(
-            prev_states,
-            events_map,
-            global_auth_cache,
-            mainline_cache,
-            version,
-            empty_key,
-        )
-        .into_iter()
-        .collect()
+    let Some(first) = prev_states.first() else {
+        return SharedState::new();
+    };
+    if prev_states.len() == 1 || prev_states[1..].iter().all(|state| first == state) {
+        return first.clone();
     }
-}
 
-/// Creates the duplicate-parent guard used while accumulating an event's
-/// parents: only forks (more than one parent) need the extra set.
-fn parent_dedup_set(prev_events_len: usize) -> Option<crate::FastSet<usize>> {
-    (prev_events_len > 1).then(crate::FastSet::default)
-}
-
-/// Applies the `out_degree`/`state_after_map` bookkeeping for one parent as a
-/// child is processed, pushing the parent's finalized state into `prev_states`
-/// once all of its children have been visited.
-pub(crate) fn take_finalized_parent<T: Clone>(
-    pe_idx: usize,
-    out_degree: &mut [usize],
-    state_after_map: &mut [Option<T>],
-    prev_states: &mut Vec<T>,
-) {
-    out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
-    if out_degree[pe_idx] == 0 {
-        if let Some(pe_state) = state_after_map[pe_idx].take() {
-            prev_states.push(pe_state);
-        }
-    } else if let Some(ref pe_state) = state_after_map[pe_idx] {
-        prev_states.push(pe_state.clone());
-    }
-}
-
-/// Collapses the resolved parent states at a fork: the empty case yields fresh
-/// state, a single parent is returned as-is, and multiple parents go through
-/// [`resolve_merge_fast_path`].
-pub(crate) fn collapse_resolved_parents<Id, C, S, K>(
-    prev_states: Vec<SharedState<Id, K>>,
-    events_map: &EventMap<Id, C, K, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    version: StateResVersion,
-    empty_key: &K,
-) -> SharedState<Id, K>
-where
-    Id: EventId,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
-    if prev_states.is_empty() {
-        SharedState::new()
-    } else if prev_states.len() == 1 {
-        prev_states.into_iter().next().unwrap()
-    } else {
-        resolve_merge_fast_path(
-            &prev_states,
-            events_map,
-            global_auth_cache,
-            mainline_cache,
-            version,
-            empty_key,
-        )
-    }
-}
-
-/// Slow path for merging multiple parent states via the state resolution algorithm.
-/// Full state resolution path for DAG nodes with multiple parents (forks).
-/// Groups the unconflicted state and runs `resolve_iterative_sort` on the conflicted subset.
-fn resolve_multiple_prev_states<Id, C, S, K>(
-    prev_states: &[SharedState<Id, K>],
-    events_map: &EventMap<Id, C, K, S>,
-    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    version: StateResVersion,
-    empty_key: &K,
-) -> SharedState<Id, K>
-where
-    Id: EventId,
-    S: BuildHasher,
-    C: EventContent,
-    K: StateKey,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
-{
     let mut conflicted_keys = crate::FastSet::default();
     let mut conflicted_state_set = crate::HashSet::new();
-    let base = &prev_states[0];
+    let base = first;
 
     for other in &prev_states[1..] {
         for diff_item in base.diff(other) {
@@ -1301,6 +1217,31 @@ where
         mainline_cache,
         &conflicted_keys,
     )
+}
+
+/// Creates the duplicate-parent guard used while accumulating an event's
+/// parents: only forks (more than one parent) need the extra set.
+fn parent_dedup_set(prev_events_len: usize) -> Option<crate::FastSet<usize>> {
+    (prev_events_len > 1).then(crate::FastSet::default)
+}
+
+/// Applies the `out_degree`/`state_after_map` bookkeeping for one parent as a
+/// child is processed, pushing the parent's finalized state into `prev_states`
+/// once all of its children have been visited.
+pub(crate) fn take_finalized_parent<T: Clone>(
+    pe_idx: usize,
+    out_degree: &mut [usize],
+    state_after_map: &mut [Option<T>],
+    prev_states: &mut Vec<T>,
+) {
+    out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
+    if out_degree[pe_idx] == 0 {
+        if let Some(pe_state) = state_after_map[pe_idx].take() {
+            prev_states.push(pe_state);
+        }
+    } else if let Some(ref pe_state) = state_after_map[pe_idx] {
+        prev_states.push(pe_state.clone());
+    }
 }
 
 /// Computes the **auth chain difference**: `auth(C) \ auth(U)`.
@@ -2350,7 +2291,7 @@ where
     } else {
         let shared_states: Vec<SharedState<Id, K>> =
             prev_states.iter().map(|s| s.state.clone()).collect();
-        let resolved = resolve_multiple_prev_states(
+        let resolved = resolve_merged_parent_states(
             &shared_states,
             events_map,
             global_auth_cache,
@@ -3979,9 +3920,9 @@ mod tests {
 
     /// Differential guard for Path A (identical-fork fast path): for a set of
     /// identical parent states, `resolve_merge_fast_path_hashed` must produce
-    /// exactly the state the uncached full-resolution entry point
-    /// `resolve_multiple_prev_states` would, and the carried `LtHash` must
-    /// equal a from-scratch hash of the result (guards accumulator drift).
+    /// exactly the state [`resolve_merged_parent_states`] does, and the carried
+    /// `LtHash` must equal a from-scratch hash of the result (guards
+    /// accumulator drift).
     #[test]
     fn test_fast_path_differential_matches_full_resolution_on_identical_forks() {
         use crate::basespec::event_types::EventType;
@@ -4027,7 +3968,7 @@ mod tests {
             let mut full_cache = LocalAuthCache::new(crate::StateResVersion::V2);
             let mut mainline_cache: crate::FastMap<String, Option<String>> =
                 crate::FastMap::default();
-            let full = resolve_multiple_prev_states(
+            let full = resolve_merged_parent_states(
                 &prev_plain,
                 &events_map,
                 &mut full_cache,

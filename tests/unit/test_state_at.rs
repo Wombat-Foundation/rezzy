@@ -737,7 +737,7 @@ fn test_resolve_merge_fast_path_identical_parents() {
 /// `compute_state_at` on a genuinely conflicted fork: two parents share a
 /// state key with different values, so full resolution must run.
 #[test]
-fn test_resolve_multiple_prev_states_update_arm() {
+fn test_resolve_merged_parent_states_update_arm() {
     let events_map = dag_a_lines(&[
         r#"{"event_id":"B","type":"m.room.topic","state_key":"","sender":"@x:x","depth":2,"content":{"topic":"b"},"prev_events":["A"],"auth_events":["A"]}"#,
         r#"{"event_id":"C","type":"m.room.topic","state_key":"","sender":"@x:x","depth":2,"content":{"topic":"c"},"prev_events":["A"],"auth_events":["A"]}"#,
