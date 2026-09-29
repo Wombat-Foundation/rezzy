@@ -211,14 +211,18 @@ where
         }
         if in_a {
             let res_a = resolve_only_child(node_a, n_a, slot, resolver)?;
-            collect_all_leaves(&res_a, removed, resolver, next_depth)?;
+            walk_subtree(&res_a, resolver, next_depth, &mut |n| {
+                removed.extend(n.leaves.iter().cloned());
+            })?;
             continue;
         }
         // `bit` is in `union`, and reaching here means it was neither the
         // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
         // guaranteed true -- no need to re-test it.
         let res_b = resolve_only_child(node_b, n_b, slot, resolver)?;
-        collect_all_leaves(&res_b, added, resolver, next_depth)?;
+        walk_subtree(&res_b, resolver, next_depth, &mut |n| {
+            added.extend(n.leaves.iter().cloned());
+        })?;
     }
 
     Ok(())
@@ -580,20 +584,4 @@ where
         walk_subtree(&child_node, resolver, next_depth, visit)?;
     }
     Ok(())
-}
-
-fn collect_all_leaves<K, V, F, E>(
-    node: &NodePtr<K, V>,
-    collection: &mut Vec<(K, V)>,
-    resolver: &mut F,
-    depth: usize,
-) -> Result<(), HamtTraversalError<E>>
-where
-    K: DeltaElem,
-    V: DeltaElem,
-    F: NodeResolver<K, V, E>,
-{
-    walk_subtree(node, resolver, depth, &mut |node| {
-        collection.extend(node.leaves.iter().cloned());
-    })
 }

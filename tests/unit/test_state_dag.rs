@@ -21,7 +21,7 @@ use rezzy::basespec::event_types::{
 use rezzy::basespec::rezzy_types::{LeanEvent, RoomId, StateResVersion};
 use rezzy::json;
 use rezzy::state::dag::{
-    compute_state_after_from_dag, compute_state_before_from_dag, derive_auth_events_from_state_dag,
+    apply_event_to_state, compute_state_before_from_dag, derive_auth_events_from_state_dag,
     order_missing_state_events_deterministic, validate_msc4242_prev_state_events, walk_state_dag,
     DagInputs, StateDagCompleteness, StateDagValidationError, StateDagWalkOptions,
 };
@@ -687,13 +687,8 @@ fn test_compute_state_from_dag_linear_chain() {
         None
     );
 
-    let state_after = compute_state_after_from_dag(&DagInputs::new(
-        &join_alice,
-        &events,
-        StateResVersion::V2_2,
-        &empty_key,
-    ))
-    .expect("compute state after");
+    let mut state_after = state_before;
+    apply_event_to_state(&mut state_after, &join_alice);
 
     assert_eq!(
         state_after.get(&(
@@ -916,13 +911,14 @@ fn test_derive_auth_events_for_membership() {
     events.insert("$jr".to_string(), join_rules);
     events.insert("$creator_join".to_string(), creator_join.clone());
 
-    let state_at_tip = compute_state_after_from_dag(&DagInputs::new(
+    let mut state_at_tip = compute_state_before_from_dag(&DagInputs::new(
         &creator_join,
         &events,
         StateResVersion::V2_2,
         &empty_key,
     ))
-    .expect("state after creator join");
+    .expect("state before creator join");
+    apply_event_to_state(&mut state_at_tip, &creator_join);
 
     // A new user (@bob) joins the room
     let bob_join = make_state_event(

@@ -30,26 +30,22 @@ use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Deterministic xorshift64* — reproducible across runs (fixed seed).
-struct Rng(u64);
+#[path = "../support/deterministic_rng.rs"]
+mod deterministic_rng;
+use deterministic_rng::Rng;
 
 impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed | 1)
-    }
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
     fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        let bound = u64::try_from(n).expect("usize fits in u64 on supported targets");
+        let value = self
+            .next()
+            .checked_rem(bound)
+            .expect("no call site passes a zero bound");
+        usize::try_from(value).expect("value is below a usize bound")
     }
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
+
+    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        &items[self.below(items.len())]
     }
 }
 

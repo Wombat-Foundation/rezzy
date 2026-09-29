@@ -536,18 +536,17 @@ impl<'a, Id, C, Q: ?Sized, S, K> StreamingInputs<'a, Id, C, Q, S, K> {
 ///
 /// Will panic if graph invariants are violated (specifically, if an ancestor event
 /// present in the reachable subgraph is missing from `events_map` during topological processing).
-pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
+pub fn compute_state_at_streaming<Id, C, Q, S, K>(
     target_event_ids: &[&Q],
     events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
-    mut on_target_resolved: F,
+    mut on_target_resolved: impl FnMut(Id, SharedState<Id, K>),
     empty_key: &K,
 ) where
     Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: BuildHasher,
     C: EventContent,
-    F: FnMut(Id, SharedState<Id, K>),
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
@@ -621,16 +620,15 @@ where
 /// # Errors
 /// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
 /// Returns `StateComputationError::Callback(e)` if the callback yields an error.
-pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
+pub fn try_compute_state_at_streaming<Id, C, Q, S, E, K>(
     inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
-    mut on_target_resolved: F,
+    mut on_target_resolved: impl FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: BuildHasher,
     C: EventContent,
-    F: FnMut(Id, SharedState<Id, K>) -> Result<(), E>,
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
@@ -639,13 +637,7 @@ where
         inputs.events_map,
         |index, is_target| {
             run_state_pipeline_streaming(
-                PipelineRun {
-                    index,
-                    is_target,
-                    events_map: inputs.events_map,
-                    version: inputs.version,
-                    empty_key: inputs.empty_key,
-                },
+                PipelineRun::new(inputs, index, is_target),
                 |idx, shared_state| {
                     let id = index.items()[idx].clone();
                     on_target_resolved(id, shared_state)
@@ -660,15 +652,14 @@ where
 ///
 /// Topologically sorts all reachable ancestors, incrementally merges state at forks,
 /// and yields the target states as they are completed.
-fn run_state_pipeline_streaming<Id, C, S, F, E, K>(
+fn run_state_pipeline_streaming<Id, C, S, E, K>(
     run: PipelineRun<'_, Id, C, S, K>,
-    mut on_target: F,
+    mut on_target: impl FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId,
     S: BuildHasher,
     C: EventContent,
-    F: FnMut(usize, SharedState<Id, K>) -> Result<(), E>,
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
@@ -1210,6 +1201,22 @@ struct PipelineRun<'a, Id, C, S, K> {
     events_map: &'a EventMap<Id, C, K, S>,
     version: StateResVersion,
     empty_key: &'a K,
+}
+
+impl<'a, Id, C, S, K> PipelineRun<'a, Id, C, S, K> {
+    fn new<Q: ?Sized>(
+        inputs: &StreamingInputs<'a, Id, C, Q, S, K>,
+        index: &'a DenseIndex<&'a Id, usize>,
+        is_target: &'a [bool],
+    ) -> Self {
+        Self {
+            index,
+            is_target,
+            events_map: inputs.events_map,
+            version: inputs.version,
+            empty_key: inputs.empty_key,
+        }
+    }
 }
 
 impl<Id, C, S, K> Copy for PipelineRun<'_, Id, C, S, K> {}
@@ -2593,15 +2600,14 @@ where
 /// This variant reuses the persistent `mainline_cache` across the whole
 /// traversal and yields `StateUpdate` values for target events, avoiding the
 /// extra cloning performed by the plain streaming path.
-fn run_state_pipeline_streaming_optimized<Id, C, S, F, E, K>(
+fn run_state_pipeline_streaming_optimized<Id, C, S, E, K>(
     run: PipelineRun<'_, Id, C, S, K>,
-    mut on_target: F,
+    mut on_target: impl for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId,
     S: BuildHasher,
     C: EventContent,
-    F: for<'b> FnMut(usize, StateUpdate<'b, Id, K>) -> Result<(), E>,
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
@@ -2687,16 +2693,15 @@ where
 /// # Behavior
 /// Duplicate target IDs are silently deduplicated, and targets absent from `events_map`
 /// are dropped. The callback count may therefore be less than the input count.
-pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
+pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, E, K>(
     inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
-    mut on_target_resolved: F,
+    mut on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: BuildHasher,
     C: EventContent,
-    F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>) -> Result<(), E>,
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
@@ -2705,13 +2710,7 @@ where
         inputs.events_map,
         |index, is_target| {
             run_state_pipeline_streaming_optimized(
-                PipelineRun {
-                    index,
-                    is_target,
-                    events_map: inputs.events_map,
-                    version: inputs.version,
-                    empty_key: inputs.empty_key,
-                },
+                PipelineRun::new(inputs, index, is_target),
                 |idx, update| {
                     let id = index.items()[idx].clone();
                     on_target_resolved(id, update)
@@ -2728,11 +2727,11 @@ where
 /// Returns `true` if the graph traversal completed successfully, or `false` if a cycle
 /// was detected in the reachable subgraph.
 #[must_use = "a `false` return means a cycle was detected and results are incomplete; silently discarding it defeats the purpose of cycle detection"]
-pub fn compute_state_at_streaming_optimized<Id, C, Q, S, F, K>(
+pub fn compute_state_at_streaming_optimized<Id, C, Q, S, K>(
     target_event_ids: &[&Q],
     events_map: &EventMap<Id, C, K, S>,
     version: StateResVersion,
-    mut on_target_resolved: F,
+    mut on_target_resolved: impl for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
     empty_key: &K,
 ) -> bool
 where
@@ -2740,7 +2739,6 @@ where
     Q: ?Sized + Eq + core::hash::Hash + Ord,
     S: BuildHasher,
     C: EventContent,
-    F: for<'b> FnMut(Id, StateUpdate<'b, Id, K>),
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {

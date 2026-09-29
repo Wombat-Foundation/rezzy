@@ -351,26 +351,6 @@ impl<Id> Clone for CertifyParams<'_, Id> {
     }
 }
 
-/// Certify an event using the normative `tk.nutra.cdo.12` rank policy.
-///
-/// # Errors
-///
-/// Returns the authorization or verification failure reported by
-/// [`crate::auth::check_auth`].
-pub fn certify_tk_nutra_cdo12_admission<Id, C, K>(
-    event: &LeanEvent<Id, C, K>,
-    branch_auth: &crate::auth::RoomState<Id, C, K>,
-    params: CertifyParams<'_, Id>,
-) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
-where
-    Id: EventId,
-    C: EventContent,
-    K: StateKey,
-    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
-{
-    certify_v3_admission(event, branch_auth, &TkNutraCdo12RankPolicy, params)
-}
-
 /// Certify an event for V3 selection against its canonical branch-auth state.
 ///
 /// The caller supplies a canonical `(type, state_key) -> event` snapshot for
@@ -1170,9 +1150,10 @@ mod tests {
         assert!(certificate.branch_auth().state().is_empty());
         assert!(certificate.promotion_grant().is_none());
 
-        let normative = certify_tk_nutra_cdo12_admission(
+        let normative = certify_v3_admission(
             &create,
             &branch_auth,
+            &TkNutraCdo12RankPolicy,
             CertifyParams {
                 verifier: &AllowVerifier,
                 promotion_scope: PromotionScope::CreatorOnly,

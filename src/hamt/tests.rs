@@ -4009,37 +4009,19 @@ fn test_isolate_delta_boundary_straddling_class_order_invariant() {
     assert_delta_matches_oracle(&root_a, &root_b);
 }
 
-/// Deterministic xorshift64* PRNG, matching the idiom already used in
-/// `tests/differential_harness.rs` (Phase B harness).
-struct Rng(u64);
+#[path = "../../tests/support/deterministic_rng.rs"]
+mod deterministic_rng;
+use deterministic_rng::Rng;
 
 impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed | 1)
-    }
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// Returns a value in `0..n`, computed entirely in `u64` and narrowed
-    /// back to `u32` via a checked conversion. `n` is always a small,
-    /// compile-time-bounded constant at call sites in this module (well
-    /// under `u32::MAX`), so `self.next() % u64::from(n)` is itself `< n`
-    /// and the narrowing conversion below cannot fail; `expect` documents
-    /// that invariant instead of silently discarding a truncation via a
-    /// cast or a clippy allow.
-    fn below(&mut self, n: u32) -> u32 {
-        let n64 = u64::from(n);
+    /// Returns a value in `0..n` using checked conversion rather than narrowing
+    /// the generator output implicitly.
+    fn below_u32(&mut self, n: u32) -> u32 {
         let r64 = self
             .next()
-            .checked_rem(n64)
-            .expect("n64 = u64::from(n: u32) is 0 only if n is 0; no call site passes n = 0");
-        u32::try_from(r64).expect("r64 < n64 = u64::from(u32), so it always fits back in u32")
+            .checked_rem(u64::from(n))
+            .expect("no call site passes n = 0");
+        u32::try_from(r64).expect("r64 < u64::from(n: u32), so it fits in u32")
     }
 }
 
@@ -4056,15 +4038,15 @@ fn test_isolate_delta_order_invariant_randomized() {
         let key = format!("order_invariance_random_{trial}");
         let key_bytes = key.as_bytes();
 
-        let n_a = 1 + rng.below(24);
-        let n_b = 1 + rng.below(24);
+        let n_a = 1 + rng.below_u32(24);
+        let n_b = 1 + rng.below_u32(24);
         let key_space = 40_u32;
 
         let entries_a: DeltaEntries = (0..n_a)
-            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .map(|_| (rng.below_u32(key_space), rng.below_u32(1000)))
             .collect();
         let entries_b: DeltaEntries = (0..n_b)
-            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .map(|_| (rng.below_u32(key_space), rng.below_u32(1000)))
             .collect();
 
         // Later entries for the same key win (build_hamt inserts in order),

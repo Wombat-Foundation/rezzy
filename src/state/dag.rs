@@ -682,20 +682,22 @@ mod state_dag_branch_coverage_tests {
         for value in [create, left, right, target.clone()] {
             events.insert(value.event_id.clone(), value);
         }
-        assert!(compute_state_before_from_dag(&DagInputs::new(
+        let state_before = compute_state_before_from_dag(&DagInputs::new(
             &target,
             &events,
             StateResVersion::V2_2,
-            &empty_key
+            &empty_key,
         ))
-        .is_ok());
-        assert!(compute_state_after_from_dag(&DagInputs::new(
-            &target,
-            &events,
-            StateResVersion::V2_2,
-            &empty_key
-        ))
-        .is_ok());
+        .expect("state before is valid");
+        let mut state_after = state_before;
+        apply_event_to_state(&mut state_after, &target);
+        assert_eq!(
+            state_after.get(&(
+                EventType::from("m.room.message"),
+                "@target:example.org".to_string()
+            )),
+            Some(&"$target".to_string())
+        );
 
         let mut merge_create = event("$merge-create", Some(""));
         merge_create.event_type = M_ROOM_CREATE.into();
@@ -756,13 +758,14 @@ mod state_dag_branch_coverage_tests {
             events.insert(value.event_id.clone(), value);
         }
 
-        let state = compute_state_after_from_dag(&DagInputs::new(
+        let mut state = compute_state_before_from_dag(&DagInputs::new(
             &target,
             &events,
             StateResVersion::V2_2,
             &empty_key,
         ))
         .unwrap();
+        apply_event_to_state(&mut state, &target);
         assert!(state.contains_key(&(EventType::from("m.room.message"), "target".to_string())));
     }
 
@@ -1465,33 +1468,20 @@ where
     Ok(resolve_merged_parent_states(&parent_states, ctx))
 }
 
-/// Computes the resolved room state *after* an event using State DAG semantics.
+/// Applies an event's own state to `state` in place, yielding the state *after*
+/// it.
 ///
-/// If `event` is a state event (`state_key.is_some()`) and is not rejected,
-/// inserts `(event.event_type, event.state_key) -> event.event_id` into the state.
-///
-/// # Errors
-/// Returns [`StateDagError`] if state resolution fails.
-///
-/// # Panics
-/// Panics only if the event's `state_key` changes between the presence check
-/// and insertion, which cannot occur through this shared-reference API.
-pub fn compute_state_after_from_dag<Id, C, S, K>(
-    inputs: &DagInputs<'_, Id, C, S, K>,
-) -> Result<SharedState<Id, K>, StateDagError<Id>>
+/// If `event` is an accepted state event, records
+/// `(event.event_type, event.state_key) -> event.event_id`; otherwise it is a
+/// no-op. Compose with [`compute_state_before_from_dag`] to obtain the state
+/// after an event without a second DAG traversal.
+pub fn apply_event_to_state<Id, C, K>(state: &mut SharedState<Id, K>, event: &LeanEvent<Id, C, K>)
 where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: BuildHasher,
-    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let mut state = compute_state_before_from_dag(inputs)?;
-    let event = inputs.event;
-
-    record_own_state(&mut state, event);
-
-    Ok(state)
+    record_own_state(state, event);
 }
 
 /// Derives the required `auth_events` for an event from the room state computed via its State DAG.
@@ -1593,13 +1583,14 @@ mod targeted_coverage_tests {
         let create = event("$create", M_ROOM_CREATE, Some(""));
         let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
         events.insert(create.event_id.clone(), create.clone());
-        let state = compute_state_after_from_dag(&DagInputs::new(
+        let mut state = compute_state_before_from_dag(&DagInputs::new(
             &create,
             &events,
             StateResVersion::V2_2,
             &String::new(),
         ))
         .expect("create state is valid");
+        apply_event_to_state(&mut state, &create);
 
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_CREATE), String::new())),
