@@ -645,10 +645,9 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
         }
         Source::Dir { room } => {
             reject_input_output_overlap(options)?;
-            (
-                input_files(&options.input_dir, room)?,
-                options.input_dir.as_path(),
-            )
+            let files = input_files(&options.input_dir, room)?;
+            reject_explicit_output_overlap(options, &files)?;
+            (files, options.input_dir.as_path())
         }
     };
     let inputs: Vec<RawInput> = files
@@ -1253,6 +1252,37 @@ mod tests {
         options.source = Source::Files(vec![output.clone()]);
         options.output = output;
         let error = aggregate(&options).expect_err("input equal to output should be rejected");
+        assert_error(
+            &error,
+            ErrorCode::AggregateConflict,
+            "same as the output file",
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn room_mode_input_symlink_equal_to_output_is_rejected() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("raw");
+        let unmerged_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+        fs::create_dir_all(&unmerged_dir).unwrap();
+        let raw_file = raw_dir.join("room-v12.jsonl");
+        write_event(&raw_file, &event("$a", 1, 100, &[]));
+        let symlink = unmerged_dir.join("remote-room-v12.jsonl");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&raw_file, &symlink).unwrap();
+        #[cfg(not(unix))]
+        fs::copy(&raw_file, &symlink).unwrap();
+
+        let mut options = options(&root, false);
+        options.input_dir = unmerged_dir;
+        options.source = Source::Dir {
+            room: "room-v12".to_owned(),
+        };
+        options.output = raw_file;
+        let error = aggregate(&options)
+            .expect_err("symlinked input equal to output in room mode should be rejected");
         assert_error(
             &error,
             ErrorCode::AggregateConflict,

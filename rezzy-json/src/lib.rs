@@ -215,6 +215,7 @@ impl Value {
         let mut parser = Parser {
             input: input.as_bytes(),
             pos: 0,
+            depth: 0,
         };
         let value = parser.value()?;
         parser.ws();
@@ -551,6 +552,7 @@ pub enum Error {
     InvalidString,
     InvalidEscape,
     TrailingCharacters,
+    DepthLimitExceeded,
 }
 
 impl fmt::Display for Error {
@@ -559,12 +561,15 @@ impl fmt::Display for Error {
     }
 }
 
+pub const MAX_DEPTH: usize = 128;
+
 // Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each
 // increment is preceded by a `.get()` bounds check, so the operations cannot
 // overflow or wrap in practice.
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 // Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each
@@ -602,8 +607,24 @@ impl Parser<'_> {
                 Ok(Value::Bool(false))
             }
             b'"' => self.string().map(Value::String),
-            b'[' => self.array(),
-            b'{' => self.object(),
+            b'[' => {
+                if self.depth >= MAX_DEPTH {
+                    return Err(Error::DepthLimitExceeded);
+                }
+                self.depth += 1;
+                let res = self.array();
+                self.depth -= 1;
+                res
+            }
+            b'{' => {
+                if self.depth >= MAX_DEPTH {
+                    return Err(Error::DepthLimitExceeded);
+                }
+                self.depth += 1;
+                let res = self.object();
+                self.depth -= 1;
+                res
+            }
             b'-' | b'0'..=b'9' => self.number(),
             _ => Err(Error::InvalidToken),
         }
@@ -847,6 +868,21 @@ mod tests {
         assert_eq!(
             write_string_pretty(&value).unwrap(),
             "{\n  \"a\": [\n    1,\n    {\n      \"b\": \"x\\n\"\n    }\n  ],\n  \"z\": true\n}"
+        );
+    }
+
+    #[test]
+    fn rejects_deeply_nested_json() {
+        let nested_array = "[".repeat(200) + &"]".repeat(200);
+        assert_eq!(
+            Value::parse(&nested_array),
+            Err(super::Error::DepthLimitExceeded)
+        );
+
+        let nested_obj = "{\"a\":".repeat(200) + "1" + &"}".repeat(200);
+        assert_eq!(
+            Value::parse(&nested_obj),
+            Err(super::Error::DepthLimitExceeded)
         );
     }
 }

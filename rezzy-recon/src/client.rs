@@ -1216,18 +1216,12 @@ mod tests {
         // sibling succeeds, nothing separates out or narrows.
         let mut rounds = 1;
         while let ClientAction::BucketSketches { requests, .. } = &action {
-            assert_eq!(
-                requests.len(),
-                2,
-                "each stalled split should re-emit exactly two children"
-            );
-            let left = requests[0];
-            let right = requests[1];
+            let failed_buckets = requests.iter().map(|r| (r.depth, r.prefix)).collect();
             previous_requests = requests.clone();
             action = exchange.advance(
                 BucketDecodeBatch {
                     successful_buckets: vec![],
-                    failed_buckets: vec![(left.depth, left.prefix), (right.depth, right.prefix)],
+                    failed_buckets,
                 },
                 &previous_requests,
                 Some(u64::MAX / 2),

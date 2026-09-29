@@ -114,8 +114,7 @@ endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	#$(CARGO) bench --profile release --bench rezzy -- resolve
-	$(CARGO) bench --profile release --benches
+	$(CARGO) bench --manifest-path benches/Cargo.toml --profile release --benches
 
 
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false

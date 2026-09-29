@@ -40,10 +40,9 @@ jobs:
           key: bench
 
       - name: Run benchmarks (tee to file)
-        # `make rust/bench` (cargo bench --profile release --benches) drives the
-        # custom wall-clock harness in benches/. Tee the output so the metric
-        # extraction step below can parse it.
-        run: set -o pipefail; cargo bench --profile release --benches 2>&1 | tee bench-output.txt
+        # `make rust/bench` drives the custom wall-clock harness in benches/.
+        # Tee the output so the metric extraction step below can parse it.
+        run: set -o pipefail; cargo bench --manifest-path benches/Cargo.toml --profile release --benches 2>&1 | tee bench-output.txt
 
       - name: Fetch previous best metrics
         # Previous best is tracked as bench.json on the `_metadata/badges` branch.
