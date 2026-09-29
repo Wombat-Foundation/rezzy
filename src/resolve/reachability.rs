@@ -792,10 +792,13 @@ where
         })
     }
 
-    fn filter_reachable_numeric_bfs_with_candidates<'a, S>(
+    /// Candidate-filtering traversal, shared by the plain-BFS and
+    /// range-pruned strategies; `mode` selects the child-enqueue rule.
+    fn filter_reachable_with_candidates<'a, S>(
         &self,
         seeds: S,
         candidates: &CandidateQuery,
+        mode: TraversalMode,
     ) -> Vec<usize>
     where
         S: IntoIterator<Item = &'a Id>,
@@ -810,45 +813,11 @@ where
         else {
             return Vec::new();
         };
-
-        while let Some(curr) = queue.pop_front() {
-            for position in candidates.positions_at(curr) {
-                if results[position] {
-                    continue;
-                }
-                results[position] = true;
-                remaining_known_candidates = remaining_known_candidates.saturating_sub(1);
-            }
-
-            if remaining_known_candidates == 0 {
-                break;
-            }
-
-            self.enqueue_unvisited_children(curr, &mut queue, &mut reachable);
-        }
-
-        Self::collect_reachable_positions(&results)
-    }
-
-    fn filter_reachable_range_pruned_with_candidates<'a, S>(
-        &self,
-        seeds: S,
-        candidates: &CandidateQuery,
-    ) -> Vec<usize>
-    where
-        S: IntoIterator<Item = &'a Id>,
-        Id: 'a,
-    {
-        let Some(CandidateTraversalSeed {
-            mut results,
-            mut reachable,
-            mut queue,
-            mut remaining_known_candidates,
-        }) = self.seed_candidate_traversal(seeds, candidates)
-        else {
-            return Vec::new();
+        let mut remaining_candidates = match mode {
+            TraversalMode::RangePruned => candidates.remaining_candidate_set(),
+            _ => BTreeSet::new(),
         };
-        let mut remaining_candidates = candidates.remaining_candidate_set();
+
         while let Some(curr) = queue.pop_front() {
             let mut has_position = false;
             for position in candidates.positions_at(curr) {
@@ -867,12 +836,15 @@ where
                 break;
             }
 
-            self.enqueue_range_pruned_children(
-                curr,
-                &mut queue,
-                &mut reachable,
-                &remaining_candidates,
-            );
+            match mode {
+                TraversalMode::RangePruned => self.enqueue_range_pruned_children(
+                    curr,
+                    &mut queue,
+                    &mut reachable,
+                    &remaining_candidates,
+                ),
+                _ => self.enqueue_unvisited_children(curr, &mut queue, &mut reachable),
+            }
         }
 
         Self::collect_reachable_positions(&results)
@@ -1076,11 +1048,8 @@ where
         let candidates = self.collect_candidates(candidates);
         let mode = self.select_traversal_mode(&candidates);
         let hits = match mode {
-            TraversalMode::PlainIndexedBfs => {
-                self.filter_reachable_numeric_bfs_with_candidates(seeds, &candidates)
-            }
-            TraversalMode::RangePruned => {
-                self.filter_reachable_range_pruned_with_candidates(seeds, &candidates)
+            TraversalMode::PlainIndexedBfs | TraversalMode::RangePruned => {
+                self.filter_reachable_with_candidates(seeds, &candidates, mode)
             }
             TraversalMode::SegmentJumps => self.filter_reachable_segment_jumps(seeds, &candidates),
         };
@@ -1339,8 +1308,16 @@ mod tests {
     ) {
         let index = RangePrefilterReachability::build(graph);
         let query = index.collect_candidates(candidates.iter());
-        let plain = index.filter_reachable_numeric_bfs_with_candidates(seeds.iter(), &query);
-        let range = index.filter_reachable_range_pruned_with_candidates(seeds.iter(), &query);
+        let plain = index.filter_reachable_with_candidates(
+            seeds.iter(),
+            &query,
+            TraversalMode::PlainIndexedBfs,
+        );
+        let range = index.filter_reachable_with_candidates(
+            seeds.iter(),
+            &query,
+            TraversalMode::RangePruned,
+        );
         let jumps = index.filter_reachable_segment_jumps(seeds.iter(), &query);
         let naive = naive_reachable_positions(&index, seeds, candidates);
 

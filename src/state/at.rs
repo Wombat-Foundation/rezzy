@@ -1417,6 +1417,38 @@ pub struct BackwardExtremity<Id> {
     pub missing_prev_events: Vec<Id>,
 }
 
+/// Scans `events` for nodes whose `refs` reference IDs missing from both the
+/// map and `exists`, mapping each offender through `build`.
+fn collect_missing_refs<Id, Node, S, F, R, G>(
+    events: &crate::HashMap<Id, Node, S>,
+    exists: F,
+    refs: R,
+    build: impl Fn(Id, Vec<Id>) -> G,
+) -> Vec<G>
+where
+    Id: EventId,
+    Node: DagNode<Id = Id>,
+    S: BuildHasher,
+    F: Fn(&Id) -> bool,
+    R: Fn(&Node) -> &[Id],
+{
+    let mut result = Vec::new();
+
+    for node in events.values() {
+        let mut missing = Vec::new();
+        for id in refs(node) {
+            if !events.contains_key(id) && !exists(id) {
+                missing.push(id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            result.push(build(node.event_id().clone(), missing));
+        }
+    }
+
+    result
+}
+
 /// Scans a set of DAG events and identifies **backward extremities** —
 /// events whose `prev_events` reference parent IDs that are missing from
 /// both the provided `events` map and the caller's `exists` oracle.
@@ -1468,24 +1500,15 @@ where
     S: BuildHasher,
     F: Fn(&Id) -> bool,
 {
-    let mut result = Vec::new();
-
-    for node in events.values() {
-        let mut missing = Vec::new();
-        for prev_id in node.prev_events() {
-            if !events.contains_key(prev_id) && !exists(prev_id) {
-                missing.push(prev_id.clone());
-            }
-        }
-        if !missing.is_empty() {
-            result.push(BackwardExtremity {
-                event_id: node.event_id().clone(),
-                missing_prev_events: missing,
-            });
-        }
-    }
-
-    result
+    collect_missing_refs(
+        events,
+        exists,
+        |node| node.prev_events(),
+        |event_id, missing| BackwardExtremity {
+            event_id,
+            missing_prev_events: missing,
+        },
+    )
 }
 
 // ─── Auth gap detection ──────────────────────────────────────────────
@@ -1534,24 +1557,15 @@ where
     S: BuildHasher,
     F: Fn(&Id) -> bool,
 {
-    let mut result = Vec::new();
-
-    for node in events.values() {
-        let mut missing = Vec::new();
-        for auth_id in node.auth_events() {
-            if !events.contains_key(auth_id) && !exists(auth_id) {
-                missing.push(auth_id.clone());
-            }
-        }
-        if !missing.is_empty() {
-            result.push(MissingAuthEvent {
-                event_id: node.event_id().clone(),
-                missing_auth_events: missing,
-            });
-        }
-    }
-
-    result
+    collect_missing_refs(
+        events,
+        exists,
+        |node| node.auth_events(),
+        |event_id, missing| MissingAuthEvent {
+            event_id,
+            missing_auth_events: missing,
+        },
+    )
 }
 
 // ─── Position-based topological ordering ─────────────────────────────
@@ -2631,6 +2645,16 @@ mod tests {
             .collect()
     }
 
+    /// A DAG-edge fixture: id, parents, and wire `depth`, nothing else.
+    fn lean_event(id: &str, prev_events: &[&str], depth: u64) -> LeanEvent {
+        LeanEvent {
+            event_id: id.into(),
+            prev_events: prev_events.iter().map(|p| (*p).to_string()).collect(),
+            depth,
+            ..Default::default()
+        }
+    }
+
     /// Minimal fixture carrying only the identity fields; callers override
     /// whatever else they care about via struct-update syntax.
     fn test_event(id: &str, event_type: &str, sender: &str) -> LeanEvent {
@@ -2675,6 +2699,23 @@ mod tests {
             state_key: Some(state_key.into()),
             ..test_event(id, event_type, sender)
         }
+    }
+
+    /// Sort-set entry for the `$pl` power-levels event.
+    fn pl_sort_set(pl_ev: &LeanEvent) -> HashMap<String, LeanEvent> {
+        let mut sort_set = HashMap::new();
+        sort_set.insert("$pl".to_string(), pl_ev.clone());
+        sort_set
+    }
+
+    /// Local-auth entry for the `$pl` power-levels event.
+    fn pl_local_auth(pl_ev: &LeanEvent) -> BTreeMap<(EventType, String), LeanEvent> {
+        let mut local_auth = BTreeMap::new();
+        local_auth.insert(
+            (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
+            pl_ev.clone(),
+        );
+        local_auth
     }
 
     #[test]
@@ -2867,6 +2908,30 @@ mod tests {
             "@moderator:example.com",
         );
 
+        // Runs the standard `$pl` overlay against `resolved`, expecting
+        // `expect_some` from the `m.room.power_levels` query.
+        let check_pl = |resolved: &imbl::OrdMap<(EventType, String), String>,
+                        candidate_event_type: &str,
+                        expect_some: bool| {
+            let auth_context = HashMap::new();
+            let sort_set = pl_sort_set(&pl_ev);
+            let local_auth = pl_local_auth(&pl_ev);
+            let overlay = OverlayState {
+                resolved,
+                auth_context: &auth_context,
+                sort_set: &sort_set,
+                local_auth,
+                create_ev: Some(&create_ev),
+                version: StateResVersion::V2_1_1,
+                is_power_phase: true,
+                candidate_event_type,
+            };
+            assert_eq!(
+                overlay.get_event(M_ROOM_POWER_LEVELS, "").is_some(),
+                expect_some
+            );
+        };
+
         // 1. Test case: resolved_id is found but the event is missing from both auth_context and sort_set (returns None).
         {
             let mut resolved = imbl::OrdMap::new();
@@ -2874,30 +2939,7 @@ mod tests {
                 (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 "$pl_missing".to_string(),
             );
-
-            let auth_context = HashMap::new();
-            let mut sort_set = HashMap::new();
-            sort_set.insert("$pl".to_string(), pl_ev.clone());
-
-            let mut local_auth = BTreeMap::new();
-            local_auth.insert(
-                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
-                pl_ev.clone(),
-            );
-
-            let overlay = OverlayState {
-                resolved: &resolved,
-                auth_context: &auth_context,
-                sort_set: &sort_set,
-                local_auth,
-                create_ev: Some(&create_ev),
-                version: StateResVersion::V2_1_1,
-                is_power_phase: true,
-                candidate_event_type: M_ROOM_POWER_LEVELS,
-            };
-
-            let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
-            assert!(res.is_none());
+            check_pl(&resolved, M_ROOM_POWER_LEVELS, false);
         }
 
         // 2. Test case: resolved_id is NOT found, and candidate_is_power is true (returns Some(ev)).
@@ -2908,11 +2950,7 @@ mod tests {
             let mut sort_set = HashMap::new();
             sort_set.insert("$jr".to_string(), jr_ev.clone());
 
-            let mut local_auth = BTreeMap::new();
-            local_auth.insert(
-                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
-                pl_ev.clone(),
-            );
+            let local_auth = pl_local_auth(&pl_ev);
 
             let overlay = OverlayState {
                 resolved: &resolved,
@@ -2933,29 +2971,7 @@ mod tests {
         // 3. Test case: resolved_id is NOT found, and candidate_is_power is false (returns None).
         {
             let resolved = imbl::OrdMap::new();
-            let auth_context = HashMap::new();
-            let mut sort_set = HashMap::new();
-            sort_set.insert("$pl".to_string(), pl_ev.clone());
-
-            let mut local_auth = BTreeMap::new();
-            local_auth.insert(
-                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
-                pl_ev.clone(),
-            );
-
-            let overlay = OverlayState {
-                resolved: &resolved,
-                auth_context: &auth_context,
-                sort_set: &sort_set,
-                local_auth,
-                create_ev: Some(&create_ev),
-                version: StateResVersion::V2_1_1,
-                is_power_phase: true,
-                candidate_event_type: "m.room.message",
-            };
-
-            let res = overlay.get_event(M_ROOM_POWER_LEVELS, "");
-            assert!(res.is_none());
+            check_pl(&resolved, "m.room.message", false);
         }
 
         // 4. Test case: a required event (m.room.join_rules) that IS resolved.
@@ -3058,14 +3074,8 @@ mod tests {
         {
             let resolved = imbl::OrdMap::new();
             let auth_context = HashMap::new();
-            let mut sort_set = HashMap::new();
-            sort_set.insert("$pl".to_string(), pl_ev.clone());
-
-            let mut local_auth = BTreeMap::new();
-            local_auth.insert(
-                (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
-                pl_ev.clone(),
-            );
+            let sort_set = pl_sort_set(&pl_ev);
+            let local_auth = pl_local_auth(&pl_ev);
 
             for (version, expect_some) in [
                 (StateResVersion::V2_1, true),
@@ -3284,18 +3294,8 @@ mod tests {
     /// `depth` exceeds its parent's, even on a full-DAG view.
     #[test]
     fn test_find_depth_divergences_no_divergence() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: 1,
-            ..Default::default()
-        };
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into()],
-            depth: 2,
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], 1);
+        let b = lean_event("B", &["A"], 2);
 
         let events_map = test_events_map(vec![a, b]);
 
@@ -3314,18 +3314,8 @@ mod tests {
     #[test]
     fn test_find_depth_divergences_ignores_edges_outside_the_batch() {
         // "A" (parent of B) deliberately NOT inserted — it's above the gap.
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into()],
-            depth: 26,
-            ..Default::default()
-        };
-        let c = LeanEvent {
-            event_id: "C".into(),
-            prev_events: vec!["B".into()],
-            depth: 27,
-            ..Default::default()
-        };
+        let b = lean_event("B", &["A"], 26);
+        let c = lean_event("C", &["B"], 27);
 
         let events_map = test_events_map(vec![b, c]);
 
@@ -3342,19 +3332,9 @@ mod tests {
     /// parent it also claims.
     #[test]
     fn test_find_depth_divergences_detects_non_monotonic_edge() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: 5,
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], 5);
         // B claims to be a child of A but claims a *lower* depth than A.
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into()],
-            depth: 3,
-            ..Default::default()
-        };
+        let b = lean_event("B", &["A"], 3);
 
         let events_map = test_events_map(vec![a, b]);
 
@@ -3372,18 +3352,8 @@ mod tests {
     /// parent.depth` at saturation is expected, not a violation.
     #[test]
     fn test_find_depth_divergences_ignores_saturated_parent() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: u64::MAX,
-            ..Default::default()
-        };
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into()],
-            depth: u64::MAX, // correctly clamped, not incremented
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], u64::MAX);
+        let b = lean_event("B", &["A"], u64::MAX); // correctly clamped, not incremented
 
         let events_map = test_events_map(vec![a, b]);
 
@@ -3399,24 +3369,9 @@ mod tests {
     /// wrong `depth` value must not influence the derived order at all.
     #[test]
     fn test_resolve_gap_fill_order_ignores_wire_depth() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: 9999, // implausible wire depth, should be ignored entirely
-            ..Default::default()
-        };
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into()],
-            depth: 1, // claims to be *before* its own parent
-            ..Default::default()
-        };
-        let c = LeanEvent {
-            event_id: "C".into(),
-            prev_events: vec!["B".into()],
-            depth: 2,
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], 9999); // implausible wire depth, should be ignored entirely
+        let b = lean_event("B", &["A"], 1); // claims to be *before* its own parent
+        let c = lean_event("C", &["B"], 2);
 
         let events_map = test_events_map(vec![a, b, c]);
 
@@ -3528,35 +3483,11 @@ mod tests {
 
         let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
         // A references B as prev_event, but B references C which doesn't exist
-        events_map.insert(
-            "A".into(),
-            LeanEvent {
-                event_id: "A".into(),
-                depth: 3,
-                prev_events: vec!["B".into()],
-                ..Default::default()
-            },
-        );
-        events_map.insert(
-            "B".into(),
-            LeanEvent {
-                event_id: "B".into(),
-                depth: 2,
-                prev_events: vec!["orphan".into()],
-                ..Default::default()
-            },
-        );
+        events_map.insert("A".into(), lean_event("A", &["B"], 3));
+        events_map.insert("B".into(), lean_event("B", &["orphan"], 2));
         // No "orphan" in map → when B tries to push orphan's parents, orphan won't be found
         // Two extremities that don't share a common ancestor
-        events_map.insert(
-            "X".into(),
-            LeanEvent {
-                event_id: "X".into(),
-                depth: 3,
-                prev_events: vec![],
-                ..Default::default()
-            },
-        );
+        events_map.insert("X".into(), lean_event("X", &[], 3));
 
         let tips = vec!["A", "X"];
         let result = compute_merge_base(&tips, &events_map);
@@ -3919,12 +3850,7 @@ mod tests {
     /// what these functions tolerate rather than assume away.
     #[test]
     fn test_collect_ancestor_and_topo_sort_tolerate_missing_target() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: 1,
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], 1);
         let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
         events_map.insert("A".into(), a);
 
@@ -4091,26 +4017,11 @@ mod tests {
     /// only runs when there are 2+ divergences to order.
     #[test]
     fn test_find_depth_divergences_sorts_multiple_results() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: 10,
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], 10);
         // Two independent non-monotonic children of A, inserted in an order
         // that requires the comparator to actually reorder them.
-        let z = LeanEvent {
-            event_id: "Z".into(),
-            prev_events: vec!["A".into()],
-            depth: 1,
-            ..Default::default()
-        };
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into()],
-            depth: 2,
-            ..Default::default()
-        };
+        let z = lean_event("Z", &["A"], 1);
+        let b = lean_event("B", &["A"], 2);
 
         let events_map = test_events_map(vec![a, z, b]);
 
@@ -4305,19 +4216,9 @@ mod tests {
     /// is examined; the duplicate is short-circuited.
     #[test]
     fn test_find_depth_divergences_dedups_repeated_parent() {
-        let a = LeanEvent {
-            event_id: "A".into(),
-            prev_events: vec![],
-            depth: 1,
-            ..Default::default()
-        };
+        let a = lean_event("A", &[], 1);
         // B lists A twice and claims a depth that violates monotonicity.
-        let b = LeanEvent {
-            event_id: "B".into(),
-            prev_events: vec!["A".into(), "A".into()],
-            depth: 1,
-            ..Default::default()
-        };
+        let b = lean_event("B", &["A", "A"], 1);
 
         let events_map = test_events_map(vec![a, b]);
 
