@@ -143,9 +143,10 @@ pub struct BucketExchange {
     max_aggregate_capacity: usize,
     max_pending_requests: usize,
     /// Consecutive rounds in which every split-child failure came back
-    /// with its sibling either also failing or resolving zero roots --
-    /// i.e. splitting moved nothing. Reset to 0 whenever any bucket
-    /// resolves a nonzero root. See `advance`'s doc comment.
+    /// without its sibling succeeding -- i.e. neither branch of the split
+    /// could be resolved (persistently stalled). Reset to 0 whenever any split
+    /// narrows (its sibling succeeds) or any bucket resolves a root.
+    /// See `advance`'s doc comment.
     no_progress_rounds: usize,
 }
 
@@ -228,17 +229,18 @@ impl BucketExchange {
     /// constant), rather than
     /// always riding out the full `max_rounds` budget. `retry_or_split_bucket`
     /// always emits a failed bucket's two split children together (same
-    /// depth, prefixes `p<<1` and `(p<<1)|1`), so a failed bucket whose
+    /// depth, prefixes `p<<1` and `(p<<1)|1`). A failed bucket whose
     /// sibling (found via `previous_requests`, this round's submission) also
-    /// failed or resolved zero roots means the split moved nothing -- the
-    /// whole difference is still on one side, and further splits are very
-    /// unlikely to help either. This is a global signal, not per split-chain:
-    /// coarser than tracking each lineage individually, but enough to cap the
-    /// cost of an adversary who can keep a crafted difference on one side of
-    /// every split (see `ElementHash::from_digest32`'s doc comment in
-    /// algebraic.rs, and the TODO on `MAX_RECONCILIATION_ROUNDS` above, for
-    /// that scenario). Any bucket resolving a nonzero root resets the
-    /// counter.
+    /// failed means the split failed to resolve either branch (persistently
+    /// stalled), and further splits without progress are unlikely to help.
+    /// Conversely, if a sibling succeeds (even if empty with zero roots), the
+    /// split has narrowed the unresolved range and progress is being made.
+    /// This is a global signal, not per split-chain: coarser than tracking each
+    /// lineage individually, but enough to cap the cost of an adversary who can
+    /// keep a crafted difference on both sides of every split (see
+    /// `ElementHash::from_digest32`'s doc comment in algebraic.rs, and the TODO
+    /// on `MAX_RECONCILIATION_ROUNDS` above, for that scenario). Any split narrowing
+    /// or bucket resolving a nonzero root resets the counter.
     #[must_use]
     pub fn advance(
         &mut self,
@@ -271,7 +273,7 @@ impl BucketExchange {
             let sibling_prefix = prefix ^ 1;
             !successful_buckets
                 .iter()
-                .any(|s| s.depth == depth && s.prefix == sibling_prefix && !s.roots.is_empty())
+                .any(|s| s.depth == depth && s.prefix == sibling_prefix)
         });
         if saw_split_failure && all_split_failures_stalled && !any_nonempty_success {
             self.no_progress_rounds = self.no_progress_rounds.saturating_add(1);
@@ -1183,12 +1185,12 @@ mod tests {
     }
 
     /// Coverage: `BucketExchange::advance`'s no-progress detection. A
-    /// bucket that keeps splitting with the entire failing population
-    /// staying on one side (the sibling always resolves zero roots) must
-    /// bail to `ExtremityDiff` after `MAX_NO_PROGRESS_ROUNDS`, well before
-    /// `max_rounds` -- the scenario an attacker who can predict h64
-    /// placement (see `ElementHash::from_digest32`'s doc comment in
-    /// algebraic.rs) can otherwise force.
+    /// bucket that keeps splitting with both split children failing
+    /// (neither sibling succeeds) must bail to `ExtremityDiff` after
+    /// `MAX_NO_PROGRESS_ROUNDS`, well before `max_rounds` -- the scenario
+    /// an attacker who can predict h64 placement (see
+    /// `ElementHash::from_digest32`'s doc comment in algebraic.rs) can
+    /// otherwise force.
     #[test]
     fn bucket_exchange_bails_after_consecutive_no_progress_splits() {
         let mut exchange = BucketExchange::new(
@@ -1210,9 +1212,8 @@ mod tests {
             Some(u64::MAX / 2),
         );
 
-        // Rounds 2..: every split's "left" child keeps failing, and its
-        // sibling "right" child keeps succeeding with zero roots -- the
-        // whole population stays put, nothing separates out.
+        // Rounds 2..: every split's children BOTH keep failing -- neither
+        // sibling succeeds, nothing separates out or narrows.
         let mut rounds = 1;
         while let ClientAction::BucketSketches { requests, .. } = &action {
             assert_eq!(
@@ -1225,12 +1226,8 @@ mod tests {
             previous_requests = requests.clone();
             action = exchange.advance(
                 BucketDecodeBatch {
-                    successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
-                        depth: right.depth,
-                        prefix: right.prefix,
-                        roots: vec![],
-                    }],
-                    failed_buckets: vec![(left.depth, left.prefix)],
+                    successful_buckets: vec![],
+                    failed_buckets: vec![(left.depth, left.prefix), (right.depth, right.prefix)],
                 },
                 &previous_requests,
                 Some(u64::MAX / 2),
@@ -1253,6 +1250,57 @@ mod tests {
             rounds <= MAX_NO_PROGRESS_ROUNDS.saturating_add(2),
             "should bail within a couple rounds of the {MAX_NO_PROGRESS_ROUNDS}-round \
              threshold, not ride out most of max_rounds; took {rounds} rounds"
+        );
+    }
+
+    /// Coverage: narrowing splits (where one child succeeds, even with zero roots)
+    /// must NOT count as stalled, allowing the client to continue splitting the
+    /// dense child to decode the difference.
+    #[test]
+    fn bucket_exchange_continues_on_narrowing_splits() {
+        let mut exchange = BucketExchange::new(
+            vec![],
+            MAX_RECONCILIATION_ROUNDS,
+            MAX_BUCKETS_PER_ROUND,
+            MAX_BUCKETED_SKETCH_CAPACITY,
+        );
+
+        let mut previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
+        let mut action = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(7, 0)],
+            },
+            &previous_requests,
+            Some(u64::MAX / 2),
+        );
+
+        // Run 5 narrowing split rounds (more than MAX_NO_PROGRESS_ROUNDS).
+        // Each round, left fails and right succeeds with 0 roots.
+        for _ in 0..5 {
+            let ClientAction::BucketSketches { requests, .. } = &action else {
+                panic!("expected BucketSketches action on narrowing split");
+            };
+            let left = requests[0];
+            let right = requests[1];
+            previous_requests = requests.clone();
+            action = exchange.advance(
+                BucketDecodeBatch {
+                    successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
+                        depth: right.depth,
+                        prefix: right.prefix,
+                        roots: vec![],
+                    }],
+                    failed_buckets: vec![(left.depth, left.prefix)],
+                },
+                &previous_requests,
+                Some(u64::MAX / 2),
+            );
+        }
+
+        assert!(
+            matches!(action, ClientAction::BucketSketches { .. }),
+            "narrowing splits must continue splitting without bailing early: got {action:?}"
         );
     }
 
