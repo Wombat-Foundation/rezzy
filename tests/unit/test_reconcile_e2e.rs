@@ -23,48 +23,17 @@
 //! `docs/tech_debt.md` for the follow-up.
 
 use rezzy::reconcile::client::{
-    BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
+    BucketExchange, ClientAction, ReconciliationClient, MAX_BUCKETS_PER_ROUND,
 };
 use rezzy::reconcile::resident::ResidentKernel;
-use rezzy::reconcile::server::build_bucket_sketches;
 use rezzy::reconcile::triage::{
-    estimate_strata, BucketDecodeBatch, BucketDecodeSuccess, MAX_BUCKETED_SKETCH_CAPACITY,
-    MAX_STRATA_FACTOR_WORK,
+    estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
 };
-use rezzy::reconcile::ElementHash;
-
-/// Deterministic xorshift so cases are reproducible without external randomness.
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
-    }
-
-    fn hash(&mut self) -> ElementHash {
-        let high = self.next();
-        let low = self.next();
-        let h64 = self.next() | 1;
-        ElementHash {
-            h128: (u128::from(high) << 64) | u128::from(low),
-            h64,
-        }
-    }
-}
+#[path = "../../support/reconciliation.rs"]
+mod reconciliation_support;
+use reconciliation_support::{
+    build_decode_round_batch, build_remote_digest as remote_digest, Xorshift128Hash as Xorshift128,
+};
 
 /// Inserts `count` elements shared by both sides, recording each hash on both
 /// sides so the identical base cancels out of reconciliation.
@@ -157,16 +126,6 @@ fn symmetric_difference(local: &[u64], remote: &[u64]) -> Vec<u64> {
     out
 }
 
-fn remote_digest(remote: &ResidentKernel) -> RemoteDigest {
-    RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    }
-}
-
 /// Drives the full bucket-exchange loop to completion (or bails to
 /// `ExtremityDiff`), returning `(round_trip_count, resolved_roots,
 /// terminal_action_kind)`. Resolved roots carry the actual identities, so
@@ -205,28 +164,7 @@ fn run_round_trip(
 
     let mut round_trips = 1_usize; // the initial select_action round counts as one.
     loop {
-        let remote_sketches = build_bucket_sketches(remote_h64, &current_requests).unwrap();
-        let local_sketches = build_bucket_sketches(local_h64, &current_requests).unwrap();
-
-        let mut batch = BucketDecodeBatch {
-            successful_buckets: Vec::with_capacity(current_requests.len()),
-            failed_buckets: Vec::new(),
-        };
-        for ((mut remote_sketch, local_sketch), request) in remote_sketches
-            .into_iter()
-            .zip(local_sketches)
-            .zip(current_requests.iter())
-        {
-            remote_sketch.xor(&local_sketch).unwrap();
-            match remote_sketch.decode_elements(request.capacity) {
-                Ok(roots) => batch.successful_buckets.push(BucketDecodeSuccess {
-                    depth: request.depth,
-                    prefix: request.prefix,
-                    roots,
-                }),
-                Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
-            }
-        }
+        let batch = build_decode_round_batch(local_h64, remote_h64, &current_requests);
 
         match exchange.advance(batch, &current_requests, estimated_delta) {
             ClientAction::BucketSketches { requests, .. } => {

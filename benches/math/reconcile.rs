@@ -10,7 +10,7 @@ use rezzy::{
 };
 
 use crate::common::{
-    build_remote_digest, empty_decode_batch, measure, Xorshift128Hash as Xorshift128,
+    build_decode_round_batch, build_remote_digest, measure, Xorshift128Hash as Xorshift128,
 };
 
 /// `(setup, algo, rounds, requests_emitted, resolved_roots)` timing tuple
@@ -213,34 +213,6 @@ fn build_pool<const FILL_H64: bool>(
     (local, remote, local_h64, remote_h64, setup_elapsed)
 }
 
-/// Decodes one round's remote/local sketch pairs into a [`BucketDecodeBatch`],
-/// recording over-budget buckets as failures.
-fn decode_round_batch(
-    remote_sketches: Vec<SyndromeSketch>,
-    local_sketches: Vec<SyndromeSketch>,
-    current_requests: &[BucketRequest],
-) -> BucketDecodeBatch {
-    let mut batch = empty_decode_batch(current_requests.len());
-    for ((mut remote_sketch, local_sketch), request) in remote_sketches
-        .into_iter()
-        .zip(local_sketches)
-        .zip(current_requests.iter())
-    {
-        remote_sketch.xor(&local_sketch).unwrap();
-        match remote_sketch.decode_elements(request.capacity) {
-            Ok(roots) => {
-                batch.successful_buckets.push(BucketDecodeSuccess {
-                    depth: request.depth,
-                    prefix: request.prefix,
-                    roots,
-                });
-            }
-            Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
-        }
-    }
-    batch
-}
-
 /// Drives a [`BucketExchange`] to completion, returning the elapsed time and
 /// the round/request/root counters.
 fn run_exchange_loop(
@@ -257,9 +229,7 @@ fn run_exchange_loop(
 
     loop {
         rounds = rounds.saturating_add(1);
-        let remote_sketches = build_bucket_sketches(remote_h64, &current_requests).unwrap();
-        let local_sketches = build_bucket_sketches(local_h64, &current_requests).unwrap();
-        let batch = decode_round_batch(remote_sketches, local_sketches, &current_requests);
+        let batch = build_decode_round_batch(local_h64, remote_h64, &current_requests);
 
         match exchange.advance(batch, &current_requests, estimated_delta) {
             ClientAction::BucketSketches {

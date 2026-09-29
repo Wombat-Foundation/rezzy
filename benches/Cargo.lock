@@ -1103,6 +1103,7 @@ dependencies = [
  "imbl",
  "rezzy-json",
  "rezzy-recon",
+ "rezzy-types",
  "roaring",
  "sha2 0.10.9",
  "sha3",
@@ -1141,8 +1142,13 @@ name = "rezzy-recon"
 version = "0.6.0-rc.0"
 dependencies = [
  "base64",
+ "rezzy-types",
  "sha2 0.10.9",
 ]
+
+[[package]]
+name = "rezzy-types"
+version = "0.6.0-rc.0"
 
 [[package]]
 name = "roaring"

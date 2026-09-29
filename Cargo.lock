@@ -850,6 +850,7 @@ dependencies = [
  "rand",
  "rezzy-json",
  "rezzy-recon",
+ "rezzy-types",
  "roaring",
  "sha2",
  "sha3",
@@ -886,9 +887,14 @@ name = "rezzy-recon"
 version = "0.6.0-rc.0"
 dependencies = [
  "base64",
+ "rezzy-types",
  "sha2",
  "test-case",
 ]
+
+[[package]]
+name = "rezzy-types"
+version = "0.6.0-rc.0"
 
 [[package]]
 name = "roaring"

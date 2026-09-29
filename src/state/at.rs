@@ -612,6 +612,27 @@ where
     Some(f(&index, &is_target))
 }
 
+/// Builds the indexed traversal context once, then runs a plain or optimized
+/// state pipeline against it. Missing targets are a successful no-op.
+fn with_pipeline_run<Id, C, Q, S, K, E>(
+    inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
+    run: impl FnOnce(PipelineRun<'_, Id, C, S, K>) -> Result<(), StateComputationError<E>>,
+) -> Result<(), StateComputationError<E>>
+where
+    Id: EventId + Borrow<Q>,
+    Q: ?Sized + Eq + core::hash::Hash + Ord,
+    S: BuildHasher,
+    C: EventContent,
+    K: StateKey,
+{
+    with_target_index(
+        inputs.target_event_ids,
+        inputs.events_map,
+        |index, is_target| run(PipelineRun::new(inputs, index, is_target)),
+    )
+    .unwrap_or(Ok(()))
+}
+
 /// A fallible variant of [`compute_state_at_streaming`].
 ///
 /// Functions identically to `compute_state_at_streaming`, but threads a `Result` through
@@ -632,20 +653,12 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    with_target_index(
-        inputs.target_event_ids,
-        inputs.events_map,
-        |index, is_target| {
-            run_state_pipeline_streaming(
-                PipelineRun::new(inputs, index, is_target),
-                |idx, shared_state| {
-                    let id = index.items()[idx].clone();
-                    on_target_resolved(id, shared_state)
-                },
-            )
-        },
-    )
-    .unwrap_or(Ok(()))
+    with_pipeline_run(inputs, |run| {
+        let index = run.index;
+        run_state_pipeline_streaming(run, |idx, shared_state| {
+            on_target_resolved(index.items()[idx].clone(), shared_state)
+        })
+    })
 }
 
 /// Core topological graph traversal loop for batch state reconstruction.
@@ -2705,20 +2718,12 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    with_target_index(
-        inputs.target_event_ids,
-        inputs.events_map,
-        |index, is_target| {
-            run_state_pipeline_streaming_optimized(
-                PipelineRun::new(inputs, index, is_target),
-                |idx, update| {
-                    let id = index.items()[idx].clone();
-                    on_target_resolved(id, update)
-                },
-            )
-        },
-    )
-    .unwrap_or(Ok(()))
+    with_pipeline_run(inputs, |run| {
+        let index = run.index;
+        run_state_pipeline_streaming_optimized(run, |idx, update| {
+            on_target_resolved(index.items()[idx].clone(), update)
+        })
+    })
 }
 
 /// A high-performance, non-fallible variant of [`compute_state_at_streaming`] designed for

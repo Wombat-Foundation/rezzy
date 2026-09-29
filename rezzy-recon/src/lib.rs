@@ -20,15 +20,7 @@ pub mod resident;
 pub mod server;
 pub mod triage;
 
-/// Trait alias for types that can serve as event identifiers.
-///
-/// This is intentionally identical to `rezzy::basespec::rezzy_types::EventId`
-/// so that both crates accept the same concrete types (typically `String`).
-pub trait EventId:
-    Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
-{
-}
-impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
+pub use rezzy_types::EventId;
 
 /// Maximum depth of an `h64` bucket request.
 pub const MAX_DEPTH: u8 = 64;

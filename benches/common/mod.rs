@@ -12,8 +12,14 @@ use std::time::{Duration, Instant};
 
 use rezzy::hamt::codec::HamtCodec;
 use rezzy::hamt::{self, HamtNode, PersistedInternalNode};
-use rezzy::{json, BucketDecodeBatch, ElementHash, LeanEvent, RemoteDigest, ResidentKernel};
+use rezzy::{json, ElementHash, LeanEvent, ResidentKernel};
 use sha2::Digest;
+
+#[path = "../../support/reconciliation.rs"]
+mod reconciliation_support;
+pub use reconciliation_support::{
+    build_decode_round_batch, build_remote_digest, empty_decode_batch, Xorshift128Hash,
+};
 
 /// Standard-library imports every benchmark module shares, so their preambles
 /// stay identical instead of drifting apart copy by copy.
@@ -120,41 +126,6 @@ pub fn to_persisted<K: Clone, V: Clone>(node: &HamtNode<K, V>) -> PersistedInter
     }
 }
 
-/// Deterministic PRNG variant used by the reconciliation benches: seeded
-/// `[seed, seed ^ CONST]` (matching the values those benches originally
-/// hard-coded) with an [`ElementHash`] convenience.
-pub struct Xorshift128Hash {
-    state: [u64; 2],
-}
-
-impl Xorshift128Hash {
-    pub fn new(seed: u64) -> Self {
-        Self {
-            state: [seed, seed ^ 0x9e37_79b9_7f4a_7c15],
-        }
-    }
-
-    pub fn next(&mut self) -> u64 {
-        let mut value = self.state[0];
-        let other = self.state[1];
-        value ^= value << 23;
-        value ^= value >> 17;
-        value ^= other ^ (other >> 26);
-        self.state = [other, value];
-        value
-    }
-
-    pub fn hash(&mut self) -> ElementHash {
-        let high = self.next();
-        let low = self.next();
-        let h64 = self.next() | 1;
-        ElementHash {
-            h128: u128::from(high) << 64 | u128::from(low),
-            h64,
-        }
-    }
-}
-
 /// Runs `operation` `iterations` times and returns the elapsed wall time.
 pub fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
     let start = Instant::now();
@@ -162,18 +133,6 @@ pub fn measure(iterations: u32, mut operation: impl FnMut()) -> Duration {
         operation();
     }
     start.elapsed()
-}
-
-/// Builds the remote-side [`RemoteDigest`] frame header every reconciliation
-/// bench sends as its first message.
-pub fn build_remote_digest(remote: &ResidentKernel) -> RemoteDigest {
-    RemoteDigest {
-        digest: remote.accumulator().digest(),
-        known_event_count: remote.accumulator().known_event_count(),
-        strata: *remote.strata(),
-        frame_matches: true,
-        has_unknown_extremity: false,
-    }
 }
 
 /// Inserts every hash into a local/remote [`ResidentKernel`] pair and
@@ -424,14 +383,5 @@ pub fn member_event(
         rejected: false,
         soft_fail: false,
         room_id: None,
-    }
-}
-
-/// Creates an empty [`BucketDecodeBatch`] with room for `capacity` successful
-/// bucket decodes — the starting shape of every reconciliation round.
-pub fn empty_decode_batch(capacity: usize) -> BucketDecodeBatch {
-    BucketDecodeBatch {
-        successful_buckets: Vec::with_capacity(capacity),
-        failed_buckets: Vec::new(),
     }
 }

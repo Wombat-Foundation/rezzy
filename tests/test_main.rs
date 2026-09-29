@@ -1,17 +1,8 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-use rezzy::json;
-
-fn ev(id: &str, depth: u64) -> rezzy::JsonValue {
-    json!({
-        "event_id": id,
-        "type": "m.room.member",
-        "state_key": format!("@user:{id}"),
-        "origin_server_ts": 1000_u64.wrapping_add(depth),
-        "depth": depth,
-        "prev_events": [],
-        "auth_events": []
-    })
+mod shared_fixture {
+    include!("../support/cli_event.rs");
 }
+use shared_fixture::event as ev;
 
 #[test]
 fn test_filter_non_state_events() {
