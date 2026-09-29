@@ -251,6 +251,9 @@ fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(
             if let Some(&first_index) = seen_ids.get(&event_id) {
                 duplicate_copies = duplicate_copies.saturating_add(1);
                 if merged[first_index] != *val {
+                    if !quiet {
+                        eprintln!("[warn] canonical conflict for {event_id} in input file {label}");
+                    }
                     bail_code!(
                         ErrorCode::AggregateConflict,
                         "event_id {} has different payloads in input file {}",

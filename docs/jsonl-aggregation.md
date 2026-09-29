@@ -6,10 +6,17 @@ immutable evidence. `rezzy aggregate` creates one derived, sorted event set in
 aggregate filename is its identity; no manifest or
 sidecar file is created.
 
-The command discovers `.jsonl` inputs, deduplicates by `event_id`, retains
-identical duplicates only once, rejects conflicting payloads, and sorts the
-result by `depth`, `origin_server_ts`, and `event_id`. It never modifies
-`unmerged/`.
+The command discovers `.jsonl` inputs, canonicalizes each versioned event using
+Rezzy's Matrix room-version rules, deduplicates by `event_id`, retains
+identical canonical events only once, rejects conflicting canonical payloads,
+and sorts the result by `depth`, `origin_server_ts`, and `event_id`. It never
+modifies `unmerged/`. Canonicalization removes deployment-specific fields such
+as `unsigned`, `signatures`, and unknown top-level fields such as
+`__rejected` from the derived aggregate.
+
+Canonicalization diagnostics are written to stderr: changed events produce
+`[info]` lines and conflicting canonical payloads produce `[warn]` lines.
+Use `--quiet` to suppress those diagnostics without changing the JSON report.
 
 ## Selecting inputs
 

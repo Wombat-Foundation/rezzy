@@ -34,7 +34,7 @@ struct Options {
 #[must_use]
 pub fn command() -> Command {
     Command::new("aggregate")
-        .about("Aggregate raw Matrix event JSONL files without changing them")
+        .about("Aggregate canonical Matrix event JSONL files without changing inputs")
         .arg(
             Arg::new("input-dir")
                 .long("input-dir")
@@ -396,6 +396,7 @@ fn read_raw_input_with_repair(
     path: &Path,
     input_dir: &Path,
     repair_missing_ids: bool,
+    quiet: bool,
 ) -> Result<RawInput, AppError> {
     let bytes = fs::read(path)?;
     let label = path
@@ -437,9 +438,45 @@ fn read_raw_input_with_repair(
             )?;
         }
     }
+    if let Some(room_version) = filename_version(path) {
+        let room_version = room_version.trim_start_matches("-v");
+        for (index, event) in events.iter_mut().enumerate() {
+            canonicalize_event(
+                event,
+                room_version,
+                &format!("{label}:{}", index + 1),
+                quiet,
+            )?;
+        }
+    }
     validate_event_ids(&events, &label)?;
     validate_sort_metadata(&events, &label)?;
     Ok(RawInput { label, events })
+}
+
+fn canonicalize_event(
+    event: &mut rezzy::JsonValue,
+    room_version: &str,
+    label: &str,
+    quiet: bool,
+) -> Result<(), AppError> {
+    let original = event.clone();
+    let canonical = rezzy::try_canonical_redacted_json(event, room_version).map_err(|error| {
+        AppError::new(
+            ErrorCode::UnsupportedVersion,
+            format!("{label}: cannot canonicalize event: {error}"),
+        )
+    })?;
+    *event = rezzy::JsonValue::parse(&canonical).map_err(|error| {
+        AppError::new(
+            ErrorCode::MalformedJson,
+            format!("{label}: canonical event is invalid JSON: {error}"),
+        )
+    })?;
+    if !quiet && *event != original {
+        eprintln!("[info] canonicalized {label} for room version {room_version}");
+    }
+    Ok(())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
@@ -540,7 +577,9 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     };
     let inputs: Vec<RawInput> = files
         .iter()
-        .map(|path| read_raw_input_with_repair(path, label_base, options.repair_missing_ids))
+        .map(|path| {
+            read_raw_input_with_repair(path, label_base, options.repair_missing_ids, options.quiet)
+        })
         .collect::<Result<_, _>>()?;
     let sets: Vec<(String, &[rezzy::JsonValue])> = inputs
         .iter()
@@ -1040,7 +1079,7 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         let path = raw_dir.join("remote-room-v12.jsonl");
         write_event(&path, &event("$a", 1, 100, &[]));
-        let input = read_raw_input_with_repair(&path, Path::new(""), false).unwrap();
+        let input = read_raw_input_with_repair(&path, Path::new(""), false, true).unwrap();
         assert_eq!(input.label, path.to_string_lossy());
         fs::remove_dir_all(root).unwrap();
     }
