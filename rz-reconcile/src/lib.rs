@@ -22,7 +22,7 @@ pub mod triage;
 
 /// Trait alias for types that can serve as event identifiers.
 ///
-/// This is intentionally identical to `rz_core::basespec::rezzy_types::EventId`
+/// This is intentionally identical to `rezzy::basespec::rezzy_types::EventId`
 /// so that both crates accept the same concrete types (typically `String`).
 pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display

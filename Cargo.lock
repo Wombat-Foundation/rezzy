@@ -841,19 +841,37 @@ name = "rezzy"
 version = "0.6.0-rc.0"
 dependencies = [
  "base64",
+ "blake2",
+ "clap",
+ "ed25519-dalek",
  "hashbrown 0.15.5",
  "imbl",
  "insta",
  "rand",
  "roaring",
- "rz-cli",
- "rz-core",
+ "rz-json",
+ "rz-reconcile",
  "sha2",
+ "sha3",
  "simd-json",
  "similar",
  "test-case",
  "test-log",
  "zeroize",
+]
+
+[[package]]
+name = "rezzy-cli"
+version = "0.6.0-rc.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "idna_adapter",
+ "imbl",
+ "mimalloc",
+ "rezzy",
+ "roaring",
+ "ureq",
 ]
 
 [[package]]
@@ -895,44 +913,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "rz-cli"
-version = "0.6.0-rc.0"
-dependencies = [
- "clap",
- "clap_complete",
- "idna_adapter",
- "imbl",
- "mimalloc",
- "roaring",
- "rz-core",
- "ureq",
-]
-
-[[package]]
-name = "rz-core"
-version = "0.6.0-rc.0"
-dependencies = [
- "base64",
- "blake2",
- "clap",
- "ed25519-dalek",
- "hashbrown 0.15.5",
- "imbl",
- "insta",
- "rand",
- "roaring",
- "rz-json",
- "rz-reconcile",
- "sha2",
- "sha3",
- "simd-json",
- "similar",
- "test-case",
- "test-log",
- "zeroize",
-]
 
 [[package]]
 name = "rz-json"
