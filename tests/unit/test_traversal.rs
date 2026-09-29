@@ -19,14 +19,14 @@ fn resolve(
     auth: &HashMap<String, LeanEvent>,
     version: StateResVersion,
 ) -> imbl::OrdMap<(EventType, String), String> {
-    resolve_iterative_sort(
-        unconflicted,
-        conflicted,
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
+        &unconflicted,
+        &conflicted,
         auth,
         version,
         &mut HashMap::new(),
         &String::new(),
-    )
+    ))
 }
 
 fn create_for(sender: &str) -> LeanEvent {
@@ -1324,14 +1324,16 @@ fn test_missing_auth_diff_mainline_distortion() {
     conflicted_buggy.insert("S_B1", events_map["S_B1"].clone());
 
     let (resolved_buggy, _) = rezzy::resolve::resolve_iterative_sort_with_cache_and_deltas(
-        unconflicted_state.clone(),
-        conflicted_buggy,
-        &events_map,
+        rezzy::IterativeInputs::new(
+            &unconflicted_state,
+            &conflicted_buggy,
+            &events_map,
+            StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
+            &String::new(),
+        ),
         None,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
         None,
-        &String::new(),
     );
 
     // Test the "correct auth diff" scenario (FIXED)
@@ -1343,14 +1345,16 @@ fn test_missing_auth_diff_mainline_distortion() {
     conflicted_fixed.insert("S_B1", events_map["S_B1"].clone());
 
     let (resolved_fixed, _) = rezzy::resolve::resolve_iterative_sort_with_cache_and_deltas(
-        unconflicted_state.clone(),
-        conflicted_fixed,
-        &events_map,
+        rezzy::IterativeInputs::new(
+            &unconflicted_state,
+            &conflicted_fixed,
+            &events_map,
+            StateResVersion::V2,
+            &mut std::collections::HashMap::new(),
+            &String::new(),
+        ),
         None,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
         None,
-        &String::new(),
     );
 
     // Both scenarios resolve to the same winner because the mainline ordering is

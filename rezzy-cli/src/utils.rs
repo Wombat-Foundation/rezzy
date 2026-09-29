@@ -596,14 +596,14 @@ pub fn partition_and_resolve_state<S1: std::hash::BuildHasher, S2: std::hash::Bu
     }
 
     let mut pl_cache = HashMap::new();
-    let final_state_map = rezzy::resolve_iterative_sort(
+    let final_state_map = rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
         &unconflicted_state,
         &conflicted_events,
         events_map,
         version,
         &mut pl_cache,
         &String::new(),
-    );
+    ));
 
     let duration = start.elapsed();
     (final_state_map, duration)

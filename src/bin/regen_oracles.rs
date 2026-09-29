@@ -43,14 +43,14 @@ fn write_oracle(fixture_path: &str, oracle_path: &str, version: StateResVersion)
     let unconflicted = utils::build_unconflicted_state_test_helper(&map);
     let mut pl_cache = HashMap::new();
     let empty_key = String::new();
-    let resolved = resolve_iterative_sort(
+    let resolved = resolve_iterative_sort(rezzy::IterativeInputs::new(
         &unconflicted,
         &map,
         &map,
         version,
         &mut pl_cache,
         &empty_key,
-    );
+    ));
 
     let mut entries: Vec<JsonValue> = resolved
         .into_iter()

@@ -1265,15 +1265,17 @@ where
 
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        &unconflicted_state,
-        &conflicted_events,
-        events_map,
+        crate::resolve::iterative::IterativeInputs::new(
+            &unconflicted_state,
+            &conflicted_events,
+            events_map,
+            version,
+            &mut pl_cache,
+            empty_key,
+        ),
         Some(global_auth_cache),
-        version,
-        &mut pl_cache,
         mainline_cache,
         &conflicted_keys,
-        empty_key,
     )
 }
 

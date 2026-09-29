@@ -80,14 +80,14 @@ fn resolve_v2_1_from_subgraph(
     // Unconflicted state = empty for V2.1+ (MSC4297: start from empty)
     let unconflicted = utils::build_unconflicted_state_test_helper(&auth_context);
 
-    resolve_iterative_sort(
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
         &unconflicted,
         &v2_1_conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
         &String::new(),
-    )
+    ))
 }
 
 /// Find all m.room.member events for a given `state_key`, return them sorted by
@@ -375,14 +375,14 @@ fn test_checkpoint_partial_join_resolution() {
     );
 
     // Resolve from checkpoint
-    let checkpoint_resolved = resolve_iterative_sort(
+    let checkpoint_resolved = resolve_iterative_sort(rezzy::IterativeInputs::new(
         &checkpoint_state,
         &v2_1_conflicted,
         &auth_context,
         StateResVersion::V2_1,
         &mut std::collections::HashMap::new(),
         &String::new(),
-    );
+    ));
     println!(
         "Checkpoint resolution: {} entries",
         checkpoint_resolved.len()

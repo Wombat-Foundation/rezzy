@@ -181,14 +181,14 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         })
         .collect();
 
-    let resolved = resolve_iterative_sort(
+    let resolved = resolve_iterative_sort(rezzy::IterativeInputs::new(
         &unconflicted_state_typed,
         &conflicted_events,
         &events_map,
         version,
         &mut std::collections::HashMap::new(),
         &String::new(),
-    );
+    ));
 
     let mut full_state = HashMap::new();
     for (k, v) in unconflicted_state {
@@ -313,14 +313,14 @@ fn test_dueling_admins_backdated_kick(version: StateResVersion) {
     .into_iter()
     .map(|event_id| (event_id.to_owned(), auth_context[event_id].clone()))
     .collect();
-    let resolved = resolve_iterative_sort(
+    let resolved = resolve_iterative_sort(rezzy::IterativeInputs::new(
         &unconflicted,
         &conflicted,
         &auth_context,
         version,
         &mut HashMap::new(),
         &String::new(),
-    );
+    ));
 
     let b_membership = resolved.get(&("m.room.member".into(), "@b:example.com".into()));
     let power_levels = resolved.get(&("m.room.power_levels".into(), String::new()));

@@ -287,19 +287,12 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
         let Some(event) = conflicted_events.get(id).or_else(|| auth_context.get(id)) else {
             continue;
         };
-        let local_auth = compute_local_auth(
-            event,
-            auth_context,
-            conflicted_events,
-            local_auth_cache,
-            version,
-        );
-        if iterative_auth_ok(
+        if event_auth_ok(
             event,
             resolved,
             auth_context,
             conflicted_events,
-            local_auth,
+            local_auth_cache,
             create_ev,
             version,
             true,
@@ -325,6 +318,46 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
             resolved.insert(key, event.event_id.clone());
         }
     }
+}
+
+/// Computes local auth and applies the iterative auth check used by both
+/// resolution variants. Keeping this decision in one place prevents the
+/// delta-reporting path from drifting from the ordinary resolver.
+fn event_auth_ok<Id, C, K, S1, S2>(
+    event: &LeanEvent<Id, C, K>,
+    resolved: &SharedState<Id, K>,
+    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    local_auth_cache: &mut LocalAuthCache<Id, C, K>,
+    create_ev: Option<&LeanEvent<Id, C, K>>,
+    version: StateResVersion,
+    is_power: bool,
+) -> bool
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+    S1: BuildHasher,
+    S2: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
+{
+    let local_auth = compute_local_auth(
+        event,
+        auth_context,
+        conflicted_events,
+        local_auth_cache,
+        version,
+    );
+    iterative_auth_ok(
+        event,
+        resolved,
+        auth_context,
+        conflicted_events,
+        local_auth,
+        create_ev,
+        version,
+        is_power,
+    )
 }
 
 /// Returns the starting point for state resolution based on the algorithm version.
@@ -485,6 +518,47 @@ where
             .is_some_and(|m| m.get_membership() == Some(MEM_BAN))
     })
 }
+
+/// The inputs shared by every `resolve_iterative_sort*` entry point.
+///
+/// Bundling them keeps the several variants (plain, with cache, with deltas,
+/// with all caches) from each re-declaring the same six parameters.
+pub struct IterativeInputs<'a, Id, C, K, S1, S2, Spl> {
+    /// The unconflicted base state to fold winners into.
+    pub unconflicted_state: &'a SharedState<Id, K>,
+    /// Events that differ across forks.
+    pub conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    /// The auth context used to authorize conflicted events.
+    pub auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    /// Which resolution algorithm to use.
+    pub version: StateResVersion,
+    /// Scratch cache of per-event power levels across sorting passes.
+    pub pl_cache: &'a mut HashMap<Id, i64, Spl>,
+    /// Representation of the empty state key.
+    pub empty_key: &'a K,
+}
+
+impl<'a, Id, C, K, S1, S2, Spl> IterativeInputs<'a, Id, C, K, S1, S2, Spl> {
+    /// Builds the shared inputs.
+    pub fn new(
+        unconflicted_state: &'a SharedState<Id, K>,
+        conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+        auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+        version: StateResVersion,
+        pl_cache: &'a mut HashMap<Id, i64, Spl>,
+        empty_key: &'a K,
+    ) -> Self {
+        Self {
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            version,
+            pl_cache,
+            empty_key,
+        }
+    }
+}
+
 /// Resolves conflicted Matrix room state using the specified algorithm version.
 ///
 /// This is the primary entry point for state resolution. Given the set of
@@ -519,7 +593,7 @@ where
 /// history), pass the trusted state snapshot as `unconflicted_state`:
 ///
 /// ```rust,no_run
-/// # use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion, HashMap};
+/// # use rezzy::{resolve_iterative_sort, IterativeInputs, LeanEvent, StateResVersion, HashMap};
 /// # use rezzy::basespec::event_types::EventType;
 /// # use imbl::OrdMap;
 /// // State snapshot from /send_join response
@@ -530,7 +604,7 @@ where
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */
 /// # HashMap::new();
 ///
-/// let resolved = resolve_iterative_sort(&checkpoint, &new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new(), &String::new());
+/// let resolved = resolve_iterative_sort(IterativeInputs::new(&checkpoint, &new_events, &auth_ctx, StateResVersion::V2, &mut std::collections::HashMap::new(), &String::new()));
 /// ```
 ///
 /// # Auth Chain Safety
@@ -582,28 +656,14 @@ pub fn resolve_iterative_sort<
     Spl,
     K,
 >(
-    unconflicted_state: &SharedState<Id, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
-    empty_key: &K,
+    inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
 ) -> SharedState<Id, K>
 where
     K: StateKey,
     Spl: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    resolve_iterative_sort_with_cache::<Id, C, S1, S2, Spl, K>(
-        unconflicted_state,
-        conflicted_events,
-        auth_context,
-        None,
-        version,
-        pl_cache,
-        None,
-        empty_key,
-    )
+    resolve_iterative_sort_with_cache::<Id, C, S1, S2, Spl, K>(inputs, None, None)
 }
 
 /// Like [`resolve_iterative_sort`], but allows passing an external local auth cache to amortize
@@ -623,14 +683,9 @@ pub fn resolve_iterative_sort_with_cache<
     Spl,
     K,
 >(
-    unconflicted_state: &SharedState<Id, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
     conflicted_keys_override: Option<&crate::FastSet<(EventType, K)>>,
-    empty_key: &K,
 ) -> SharedState<Id, K>
 where
     K: StateKey,
@@ -641,19 +696,15 @@ where
     let conflicted_keys = if let Some(ck) = conflicted_keys_override {
         ck
     } else {
-        derived_conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
+        derived_conflicted_keys =
+            derive_all_conflicted_keys(inputs.conflicted_events, inputs.empty_key);
         &derived_conflicted_keys
     };
     resolve_iterative_sort_with_all_caches::<Id, C, S1, S2, Spl, K>(
-        unconflicted_state,
-        conflicted_events,
-        auth_context,
+        inputs,
         external_auth_cache,
-        version,
-        pl_cache,
         &mut FastMap::default(),
         conflicted_keys,
-        empty_key,
     )
 }
 
@@ -680,14 +731,16 @@ pub fn resolve_iterative_sort_with_conflicted_keys<
     let mut pl_cache: HashMap<Id, i64> = HashMap::default();
     let empty_key = String::new();
     resolve_iterative_sort_with_cache(
-        unconflicted_state,
-        conflicted_events,
-        auth_context,
+        IterativeInputs::new(
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            version,
+            &mut pl_cache,
+            &empty_key,
+        ),
         None,
-        version,
-        &mut pl_cache,
         Some(conflicted_keys),
-        &empty_key,
     )
 }
 
@@ -706,21 +759,24 @@ pub(crate) fn resolve_iterative_sort_with_all_caches<
     Spl,
     K,
 >(
-    unconflicted_state: &SharedState<Id, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
     mainline_cache: &mut FastMap<Id, Option<Id>>,
     conflicted_keys: &crate::FastSet<(EventType, K)>,
-    empty_key: &K,
 ) -> SharedState<Id, K>
 where
     K: StateKey,
     Spl: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
+    let IterativeInputs {
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        version,
+        pl_cache,
+        empty_key,
+    } = inputs;
     require_legacy_iterative_version(version);
     let original_conflicted_keys =
         prepare_conflicted_and_keys(conflicted_events, auth_context, version);
@@ -788,13 +844,12 @@ where
     mainline_sort(&mut non_power_list, &mainline, &sort_context, version);
 
     for ev in non_power_list {
-        let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
-        if iterative_auth_ok(
+        if event_auth_ok(
             ev,
             &resolved,
             auth_context,
             sort_set,
-            local_auth,
+            local_auth_cache,
             create_ev,
             version,
             false,
@@ -892,12 +947,7 @@ pub fn resolve_iterative_sort_with_deltas<
     Spl,
     K,
 >(
-    unconflicted_state: SharedState<Id, K>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
-    empty_key: &K,
+    inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
 ) -> (
     SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
@@ -907,16 +957,7 @@ where
     Spl: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
-    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, Spl, K>(
-        unconflicted_state,
-        conflicted_events,
-        auth_context,
-        None,
-        version,
-        pl_cache,
-        None,
-        empty_key,
-    )
+    resolve_iterative_sort_with_cache_and_deltas::<Id, C, S1, S2, Spl, K>(inputs, None, None)
 }
 
 /// Internal helper combining the functionality of [`resolve_iterative_sort_with_deltas`] and
@@ -948,14 +989,9 @@ pub fn resolve_iterative_sort_with_cache_and_deltas<
     Spl,
     K,
 >(
-    unconflicted_state: SharedState<Id, K>,
-    conflicted_events: HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    inputs: IterativeInputs<'_, Id, C, K, S1, S2, Spl>,
     external_auth_cache: Option<&mut LocalAuthCache<Id, C, K>>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
     conflicted_keys_override: Option<&crate::FastSet<(EventType, K)>>,
-    empty_key: &K,
 ) -> (
     SharedState<Id, K>,
     alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
@@ -965,25 +1001,33 @@ where
     Spl: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
+    let IterativeInputs {
+        unconflicted_state,
+        conflicted_events,
+        auth_context,
+        version,
+        pl_cache,
+        empty_key,
+    } = inputs;
     require_legacy_iterative_version(version);
     let derived_conflicted_keys;
     let conflicted_keys = if let Some(ck) = conflicted_keys_override {
         ck
     } else {
-        derived_conflicted_keys = derive_all_conflicted_keys(&conflicted_events, empty_key);
+        derived_conflicted_keys = derive_all_conflicted_keys(conflicted_events, empty_key);
         &derived_conflicted_keys
     };
     let original_conflicted_keys =
-        prepare_conflicted_and_keys(&conflicted_events, auth_context, version);
+        prepare_conflicted_and_keys(conflicted_events, auth_context, version);
 
-    let mut resolved = get_initial_resolved_state(&unconflicted_state, version);
+    let mut resolved = get_initial_resolved_state(unconflicted_state, version);
     let mut deltas = alloc::vec::Vec::new();
 
     // --- Power phase (with delta tracking) ---
 
     let (sort_context, power_events, non_power_events, create_ev) = execute_power_phase(
-        &unconflicted_state,
-        &conflicted_events,
+        unconflicted_state,
+        conflicted_events,
         auth_context,
         &original_conflicted_keys,
         version,
@@ -1013,14 +1057,12 @@ where
             continue;
         };
         let key = (EventType::from(event.event_type.as_str()), sk.clone());
-        let local_auth =
-            compute_local_auth(event, auth_context, sort_set, local_auth_cache, version);
-        let accepted = iterative_auth_ok(
+        let accepted = event_auth_ok(
             event,
             &resolved,
             auth_context,
             sort_set,
-            local_auth,
+            local_auth_cache,
             create_ev,
             version,
             true,
@@ -1045,7 +1087,7 @@ where
 
     // --- Non-power phase (with delta tracking) ---
 
-    merge_unconflicted_power_events(version, &unconflicted_state, &mut resolved, empty_key);
+    merge_unconflicted_power_events(version, unconflicted_state, &mut resolved, empty_key);
 
     let mainline = build_mainline(&resolved, &sort_context, empty_key, version);
     // Same resolved-state screening pass (V2.1.1+) as the main path in
@@ -1068,7 +1110,7 @@ where
         let key = (EventType::from(ev.event_type.as_str()), sk.clone());
         if version.has_ban_evasion_hardening()
             // is_sender_banned(ev, resolved, unconflicted_state, events)
-            && is_sender_banned(ev, &resolved, &unconflicted_state, &sort_context)
+            && is_sender_banned(ev, &resolved, unconflicted_state, &sort_context)
         {
             let replaced = resolved.get(&key).cloned();
             deltas.push(ResolutionDelta {
@@ -1080,13 +1122,12 @@ where
             });
             continue;
         }
-        let local_auth = compute_local_auth(ev, auth_context, sort_set, local_auth_cache, version);
-        let accepted = iterative_auth_ok(
+        let accepted = event_auth_ok(
             ev,
             &resolved,
             auth_context,
             sort_set,
-            local_auth,
+            local_auth_cache,
             create_ev,
             version,
             false,
@@ -1110,8 +1151,7 @@ where
     // Same version-gated fix as resolve_iterative_sort_with_all_caches: see
     // the comment there for why V1/V2 and V2.1+ need opposite merge
     // directions for this final step.
-    let final_resolved = merge_final_resolved(version, unconflicted_state, resolved);
-    drop(conflicted_events);
+    let final_resolved = merge_final_resolved(version, unconflicted_state.clone(), resolved);
     (final_resolved, deltas)
 }
 
@@ -1312,14 +1352,16 @@ mod tests {
         version: StateResVersion,
     ) -> Vec<ResolutionDelta<String, String>> {
         resolve_iterative_sort_with_cache_and_deltas(
-            unconflicted,
-            conflicted,
-            auth_context,
+            IterativeInputs::new(
+                &unconflicted,
+                &conflicted,
+                auth_context,
+                version,
+                &mut HashMap::new(),
+                &String::new(),
+            ),
             None,
-            version,
-            &mut HashMap::new(),
             None,
-            &String::new(),
         )
         .1
     }

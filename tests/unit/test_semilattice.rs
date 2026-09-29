@@ -213,14 +213,14 @@ fn test_lattice_fold_parity_with_iterative() {
     let unconflicted = utils::build_unconflicted_state_test_helper(&map);
 
     let lattice = resolve_semilattice_fold(&unconflicted, &conflicted, &map, StateResVersion::V2);
-    let iterative = rezzy::resolve_iterative_sort(
+    let iterative = rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
         &unconflicted,
         &conflicted,
         &map,
         StateResVersion::V2,
         &mut std::collections::HashMap::new(),
         &String::new(),
-    );
+    ));
 
     // Lattice and iterative should agree on the topic winner
     let topic_key = topic_key();

@@ -328,14 +328,14 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
 }
 
 fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
-    resolve_iterative_sort(
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
         &p.unconflicted,
         &p.conflicted,
         &p.auth_context,
         version,
         &mut HashMap::new(),
         &String::new(),
-    )
+    ))
 }
 
 /// Differential coverage over the multi-level random DAG generator.

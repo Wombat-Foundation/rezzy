@@ -299,15 +299,17 @@ where
 
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
     let resolved = crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        &unconflicted_state,
-        &conflicted_events,
-        event_context,
+        crate::resolve::iterative::IterativeInputs::new(
+            &unconflicted_state,
+            &conflicted_events,
+            event_context,
+            version,
+            &mut pl_cache,
+            empty_key,
+        ),
         None,
-        version,
-        &mut pl_cache,
         &mut crate::FastMap::default(),
         &conflicted_keys,
-        empty_key,
     );
     (resolved, conflicted_keys)
 }
@@ -616,15 +618,17 @@ where
 
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
     crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
-        &unconflicted_state,
-        &conflicted_events,
-        &auth_context,
+        crate::resolve::iterative::IterativeInputs::new(
+            &unconflicted_state,
+            &conflicted_events,
+            &auth_context,
+            version,
+            &mut pl_cache,
+            &empty_key,
+        ),
         None,
-        version,
-        &mut pl_cache,
         &mut crate::FastMap::default(),
         &conflicted_keys,
-        &empty_key,
     )
 }
 

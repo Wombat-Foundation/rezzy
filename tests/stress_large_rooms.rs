@@ -38,14 +38,14 @@ type ResolvedState = imbl::OrdMap<(rezzy::basespec::event_types::EventType, Stri
 
 /// Resolves an already-built event map at the given state resolution version.
 fn resolve_map(map: &HashMap<String, LeanEvent>, version: StateResVersion) -> ResolvedState {
-    resolve_iterative_sort(
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
         &utils::build_unconflicted_state_test_helper(map),
         map,
         map,
         version,
         &mut std::collections::HashMap::new(),
         &String::new(),
-    )
+    ))
 }
 
 /// Builds the event map for `events` and resolves it at the given version.
