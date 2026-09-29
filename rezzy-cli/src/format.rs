@@ -418,9 +418,9 @@ pub fn format_event_description(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             match membership {
-                "join" => Some(format!("{target} joined the room")),
+                "join" => Some(format!("joined the room — {target}")),
                 "leave" if ev.state_key.as_ref() == Some(&ev.sender) => {
-                    Some(format!("{target} left the room"))
+                    Some(format!("left the room — {target}"))
                 }
                 "leave" => Some(format!(
                     "{} kicked {}{}",
@@ -443,7 +443,7 @@ pub fn format_event_description(
                     }
                 )),
                 "invite" => Some(format!("{sender} invited {target}")),
-                "knock" => Some(format!("{target} knocked")),
+                "knock" => Some(format!("knocked — {target}")),
                 _ => Some(format!(
                     "{sender} set {target}'s membership to {membership}"
                 )),
@@ -564,7 +564,14 @@ fn render_timeline(ctx: &FormattingContext) -> String {
         log_redaction_report(&redaction_report);
     }
 
-    sorted_events.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.event_id.cmp(&b.event_id)));
+    // Human-facing timelines follow origin time first. Depth remains a useful
+    // deterministic tie-breaker, but is not a wall-clock ordering.
+    sorted_events.sort_by(|a, b| {
+        a.origin_server_ts
+            .cmp(&b.origin_server_ts)
+            .then(a.depth.cmp(&b.depth))
+            .then(a.event_id.cmp(&b.event_id))
+    });
 
     let mut displaynames: HashMap<String, String> = HashMap::new();
     for ev in &sorted_events {
