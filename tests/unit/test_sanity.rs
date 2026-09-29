@@ -751,6 +751,7 @@ fn test_compute_merge_bases_max_steps() {
 fn test_compute_state_at_prev_events_cycle() {
     use rezzy::state::at::{
         compute_state_at_streaming, try_compute_state_at_streaming, StateComputationError,
+        StreamingInputs,
     };
     use rezzy::{LeanEvent, StateResVersion};
 
@@ -789,11 +790,8 @@ fn test_compute_state_at_prev_events_cycle() {
 
     // try_compute_state_at_streaming should return CycleDetected
     let result = try_compute_state_at_streaming(
-        &["$A"],
-        &events_map,
-        StateResVersion::V2,
+        &StreamingInputs::new(&["$A"], &events_map, StateResVersion::V2, &String::new()),
         |_id, _state| -> Result<(), std::convert::Infallible> { Ok(()) },
-        &String::new(),
     );
     assert!(
         matches!(result, Err(StateComputationError::CycleDetected)),

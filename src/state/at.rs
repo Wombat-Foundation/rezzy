@@ -479,6 +479,45 @@ impl<E: core::fmt::Display> core::fmt::Display for StateComputationError<E> {
 
 impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for StateComputationError<E> {}
 
+/// Borrowed inputs shared by the fallible streaming state-reconstruction entry
+/// points ([`try_compute_state_at_streaming`] and its optimized sibling).
+pub struct StreamingInputs<'a, Id, C, Q: ?Sized, S, K> {
+    /// Target event ids whose resolved states should be reported.
+    pub target_event_ids: &'a [&'a Q],
+    /// Event map containing the reachable subgraph.
+    pub events_map: &'a EventMap<Id, C, K, S>,
+    /// State resolution version selecting the auth rules.
+    pub version: StateResVersion,
+    /// Empty-key sentinel used for `(EventType, K)` lookups.
+    pub empty_key: &'a K,
+}
+
+impl<Id, C, Q: ?Sized, S, K> Copy for StreamingInputs<'_, Id, C, Q, S, K> {}
+
+impl<Id, C, Q: ?Sized, S, K> Clone for StreamingInputs<'_, Id, C, Q, S, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, Id, C, Q: ?Sized, S, K> StreamingInputs<'a, Id, C, Q, S, K> {
+    /// Bundles the inputs accepted by the streaming entry points.
+    #[must_use]
+    pub fn new(
+        target_event_ids: &'a [&'a Q],
+        events_map: &'a EventMap<Id, C, K, S>,
+        version: StateResVersion,
+        empty_key: &'a K,
+    ) -> Self {
+        Self {
+            target_event_ids,
+            events_map,
+            version,
+            empty_key,
+        }
+    }
+}
+
 /// Same as [`compute_state_at_batch`] but yields each resolved room state
 /// to a callback (as soon as it is ready).
 ///
@@ -513,14 +552,11 @@ pub fn compute_state_at_streaming<Id, C, Q, S, F, K>(
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming(
-        target_event_ids,
-        events_map,
-        version,
+        &StreamingInputs::new(target_event_ids, events_map, version, empty_key),
         |id, state| -> Result<(), core::convert::Infallible> {
             on_target_resolved(id, state);
             Ok(())
         },
-        empty_key,
     );
 
     match result {
@@ -586,11 +622,8 @@ where
 /// Returns `StateComputationError::CycleDetected` if a cycle is found in the reachable graph.
 /// Returns `StateComputationError::Callback(e)` if the callback yields an error.
 pub fn try_compute_state_at_streaming<Id, C, Q, S, F, E, K>(
-    target_event_ids: &[&Q],
-    events_map: &EventMap<Id, C, K, S>,
-    version: StateResVersion,
+    inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
     mut on_target_resolved: F,
-    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId + Borrow<Q>,
@@ -601,19 +634,23 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    with_target_index(target_event_ids, events_map, |index, is_target| {
-        run_state_pipeline_streaming(
-            index,
-            is_target,
-            events_map,
-            version,
-            |idx, shared_state| {
-                let id = index.items()[idx].clone();
-                on_target_resolved(id, shared_state)
-            },
-            empty_key,
-        )
-    })
+    with_target_index(
+        inputs.target_event_ids,
+        inputs.events_map,
+        |index, is_target| {
+            run_state_pipeline_streaming(
+                index,
+                is_target,
+                inputs.events_map,
+                inputs.version,
+                |idx, shared_state| {
+                    let id = index.items()[idx].clone();
+                    on_target_resolved(id, shared_state)
+                },
+                inputs.empty_key,
+            )
+        },
+    )
     .unwrap_or(Ok(()))
 }
 
@@ -637,42 +674,24 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let TopologicalPlan {
+    let PipelineSetup {
         sorted_ancestors,
         mut out_degree,
-    } = checked_topological_plan(index, events_map).ok_or(StateComputationError::CycleDetected)?;
-
-    let mut global_auth_cache = LocalAuthCache::new(version);
-    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
-
-    let mut state_after_map: Vec<Option<SharedState<Id, K>>> =
-        core::iter::repeat_with(|| None).take(index.len()).collect();
+        mut global_auth_cache,
+        mut mainline_cache,
+        mut state_after_map,
+    } = prepare_pipeline(index, events_map, version)?;
 
     for idx in sorted_ancestors {
         let id_val = index.items()[idx];
         let ev = events_map.get(id_val).unwrap();
 
-        let mut prev_states = Vec::with_capacity(ev.prev_events.len());
-        let mut seen_parents = parent_dedup_set(ev.prev_events.len());
-        for pe in &ev.prev_events {
-            let Some(pe_idx) = index.index_of(&pe) else {
-                continue;
-            };
-            if let Some(seen) = &mut seen_parents {
-                if !seen.insert(pe_idx) {
-                    continue;
-                }
-            }
-            if out_degree[pe_idx] == 0 {
-                continue;
-            }
-            take_finalized_parent(
-                pe_idx,
-                &mut out_degree,
-                &mut state_after_map,
-                &mut prev_states,
-            );
-        }
+        let prev_states: Vec<SharedState<Id, K>> = finalized_parent_states(
+            &ev.prev_events,
+            index,
+            &mut out_degree,
+            &mut state_after_map,
+        );
 
         let mut state_before: SharedState<Id, K> = resolve_merged_parent_states(
             &prev_states,
@@ -1131,6 +1150,84 @@ where
     })
 }
 
+/// [`checked_topological_plan`] mapped onto the streaming error type.
+fn checked_topological_plan_or_cycle<Id, C, S, K, E>(
+    index: &DenseIndex<&Id, usize>,
+    events_map: &EventMap<Id, C, K, S>,
+) -> Result<TopologicalPlan, StateComputationError<E>>
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: Clone,
+{
+    checked_topological_plan(index, events_map).ok_or(StateComputationError::CycleDetected)
+}
+
+/// Allocates the per-traversal caches and per-node state slots shared by the
+/// plain, optimized, and State-DAG topological pipelines.
+pub(crate) struct PipelineBookkeeping<Id, C, K, T> {
+    pub(crate) global_auth_cache: LocalAuthCache<Id, C, K>,
+    pub(crate) mainline_cache: FastMap<Id, Option<Id>>,
+    pub(crate) state_after_map: Vec<Option<T>>,
+}
+
+pub(crate) fn pipeline_bookkeeping<Id, C, K, T>(
+    len: usize,
+    version: StateResVersion,
+) -> PipelineBookkeeping<Id, C, K, T>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+{
+    PipelineBookkeeping {
+        global_auth_cache: LocalAuthCache::new(version),
+        mainline_cache: FastMap::default(),
+        state_after_map: core::iter::repeat_with(|| None).take(len).collect(),
+    }
+}
+
+/// Topological plan plus the caches and per-node state slots it drives,
+/// bundled for the streaming pipelines.
+struct PipelineSetup<Id, C, K, T> {
+    sorted_ancestors: Vec<usize>,
+    out_degree: Vec<usize>,
+    global_auth_cache: LocalAuthCache<Id, C, K>,
+    mainline_cache: FastMap<Id, Option<Id>>,
+    state_after_map: Vec<Option<T>>,
+}
+
+/// Prepares the topological plan and bookkeeping shared by the streaming
+/// pipelines, failing with [`StateComputationError::CycleDetected`] on a cycle.
+fn prepare_pipeline<Id, C, S, K, T, E>(
+    index: &DenseIndex<&Id, usize>,
+    events_map: &EventMap<Id, C, K, S>,
+    version: StateResVersion,
+) -> Result<PipelineSetup<Id, C, K, T>, StateComputationError<E>>
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: Clone + EventContent,
+    K: StateKey,
+{
+    let TopologicalPlan {
+        sorted_ancestors,
+        out_degree,
+    } = checked_topological_plan_or_cycle(index, events_map)?;
+    let PipelineBookkeeping {
+        global_auth_cache,
+        mainline_cache,
+        state_after_map,
+    } = pipeline_bookkeeping(index.len(), version);
+    Ok(PipelineSetup {
+        sorted_ancestors,
+        out_degree,
+        global_auth_cache,
+        mainline_cache,
+        state_after_map,
+    })
+}
+
 /// Merges the resolved parent states at a fork.
 ///
 /// The empty case yields fresh state; a single parent — or several structurally
@@ -1242,6 +1339,41 @@ pub(crate) fn take_finalized_parent<T: Clone>(
     } else if let Some(ref pe_state) = state_after_map[pe_idx] {
         prev_states.push(pe_state.clone());
     }
+}
+
+/// Collects an event's finalized parent states while walking its `prev_events`.
+///
+/// Repeated parents are deduplicated (adversarial events may cite the same
+/// parent twice, which would otherwise decrement its `out_degree` twice and
+/// take a premature merge), and parents whose children are not all done are
+/// skipped.
+fn finalized_parent_states<Id, T>(
+    prev_events: &[Id],
+    index: &DenseIndex<&Id, usize>,
+    out_degree: &mut [usize],
+    state_after_map: &mut [Option<T>],
+) -> Vec<T>
+where
+    Id: EventId,
+    T: Clone,
+{
+    let mut prev_states = Vec::with_capacity(prev_events.len());
+    let mut seen_parents = parent_dedup_set(prev_events.len());
+    for pe in prev_events {
+        let Some(pe_idx) = index.index_of(&pe) else {
+            continue;
+        };
+        if let Some(seen) = &mut seen_parents {
+            if !seen.insert(pe_idx) {
+                continue;
+            }
+        }
+        if out_degree[pe_idx] == 0 {
+            continue;
+        }
+        take_finalized_parent(pe_idx, out_degree, state_after_map, &mut prev_states);
+    }
+    prev_states
 }
 
 /// Computes the **auth chain difference**: `auth(C) \ auth(U)`.
@@ -2348,42 +2480,24 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let TopologicalPlan {
+    let PipelineSetup {
         sorted_ancestors,
         mut out_degree,
-    } = checked_topological_plan(index, events_map).ok_or(StateComputationError::CycleDetected)?;
-
-    let mut global_auth_cache = LocalAuthCache::new(version);
-    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
-
-    let mut state_after_map: Vec<Option<HashedState<Id, K>>> =
-        core::iter::repeat_with(|| None).take(index.len()).collect();
+        mut global_auth_cache,
+        mut mainline_cache,
+        mut state_after_map,
+    } = prepare_pipeline::<Id, C, S, K, HashedState<Id, K>, E>(index, events_map, version)?;
 
     for idx in sorted_ancestors {
         let id_val = index.items()[idx];
         let ev = events_map.get(id_val).unwrap();
 
-        let mut prev_states = Vec::with_capacity(ev.prev_events.len());
-        let mut seen_parents = parent_dedup_set(ev.prev_events.len());
-        for pe in &ev.prev_events {
-            let Some(pe_idx) = index.index_of(&pe) else {
-                continue;
-            };
-            // Dedup: adversarial events may carry duplicate prev_events.
-            // Without this, out_degree is decremented twice for one child,
-            // causing premature take() and wrong merge results.
-            if let Some(seen) = &mut seen_parents {
-                if !seen.insert(pe_idx) {
-                    continue;
-                }
-            }
-            take_finalized_parent(
-                pe_idx,
-                &mut out_degree,
-                &mut state_after_map,
-                &mut prev_states,
-            );
-        }
+        let prev_states: Vec<HashedState<Id, K>> = finalized_parent_states(
+            &ev.prev_events,
+            index,
+            &mut out_degree,
+            &mut state_after_map,
+        );
 
         let is_state = ev.state_key.is_some();
         let has_single_parent = prev_states.len() == 1;
@@ -2464,11 +2578,8 @@ where
 /// Duplicate target IDs are silently deduplicated, and targets absent from `events_map`
 /// are dropped. The callback count may therefore be less than the input count.
 pub fn try_compute_state_at_streaming_optimized<Id, C, Q, S, F, E, K>(
-    target_event_ids: &[&Q],
-    events_map: &EventMap<Id, C, K, S>,
-    version: StateResVersion,
+    inputs: &StreamingInputs<'_, Id, C, Q, S, K>,
     mut on_target_resolved: F,
-    empty_key: &K,
 ) -> Result<(), StateComputationError<E>>
 where
     Id: EventId + Borrow<Q>,
@@ -2479,19 +2590,23 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    with_target_index(target_event_ids, events_map, |index, is_target| {
-        run_state_pipeline_streaming_optimized(
-            index,
-            is_target,
-            events_map,
-            version,
-            |idx, update| {
-                let id = index.items()[idx].clone();
-                on_target_resolved(id, update)
-            },
-            empty_key,
-        )
-    })
+    with_target_index(
+        inputs.target_event_ids,
+        inputs.events_map,
+        |index, is_target| {
+            run_state_pipeline_streaming_optimized(
+                index,
+                is_target,
+                inputs.events_map,
+                inputs.version,
+                |idx, update| {
+                    let id = index.items()[idx].clone();
+                    on_target_resolved(id, update)
+                },
+                inputs.empty_key,
+            )
+        },
+    )
     .unwrap_or(Ok(()))
 }
 
@@ -2518,14 +2633,11 @@ where
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let result = try_compute_state_at_streaming_optimized(
-        target_event_ids,
-        events_map,
-        version,
+        &StreamingInputs::new(target_event_ids, events_map, version, empty_key),
         |id, update| -> Result<(), core::convert::Infallible> {
             on_target_resolved(id, update);
             Ok(())
         },
-        empty_key,
     );
 
     match result {
@@ -3609,11 +3721,13 @@ mod tests {
 
         let target = ["A"];
         let plain_error = try_compute_state_at_streaming(
-            &target,
-            &events_map,
-            StateResVersion::V2_1_1,
+            &StreamingInputs::new(
+                &target,
+                &events_map,
+                StateResVersion::V2_1_1,
+                &String::new(),
+            ),
             |_, _| Ok::<_, ()>(()),
-            &String::new(),
         )
         .expect_err("the plain pipeline must reject a cycle");
         assert_eq!(plain_error, StateComputationError::CycleDetected);
@@ -3780,11 +3894,13 @@ mod tests {
 
         let result: Result<(), StateComputationError<&'static str>> =
             try_compute_state_at_streaming(
-                &["A"],
-                &events_map,
-                crate::StateResVersion::V2,
+                &StreamingInputs::new(
+                    &["A"],
+                    &events_map,
+                    crate::StateResVersion::V2,
+                    &String::new(),
+                ),
                 |_, _| Err("callback aborted"),
-                &String::new(),
             );
 
         assert_eq!(
@@ -3801,14 +3917,16 @@ mod tests {
         let mut callback_called = false;
 
         let result = try_compute_state_at_streaming(
-            &["ghost"],
-            &events_map,
-            crate::StateResVersion::V2,
+            &StreamingInputs::new(
+                &["ghost"],
+                &events_map,
+                crate::StateResVersion::V2,
+                &String::new(),
+            ),
             |_, _| {
                 callback_called = true;
                 Ok::<(), &'static str>(())
             },
-            &String::new(),
         );
 
         assert_eq!(result, Ok(()));
@@ -4216,14 +4334,16 @@ mod tests {
 
         let result: Result<(), StateComputationError<&'static str>> =
             try_compute_state_at_streaming_optimized(
-                &["ghost"],
-                &events_map,
-                crate::StateResVersion::V2,
+                &StreamingInputs::new(
+                    &["ghost"],
+                    &events_map,
+                    crate::StateResVersion::V2,
+                    &String::new(),
+                ),
                 |_, _| {
                     callback_called = true;
                     Ok(())
                 },
-                &String::new(),
             );
 
         assert_eq!(result, Ok(()));

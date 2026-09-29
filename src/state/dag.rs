@@ -1305,11 +1305,11 @@ where
         }
     }
 
-    let mut global_auth_cache = LocalAuthCache::new(version);
-    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
-
-    let mut state_after_map: Vec<Option<SharedState<Id, K>>> =
-        core::iter::repeat_with(|| None).take(index.len()).collect();
+    let crate::state::at::PipelineBookkeeping {
+        mut global_auth_cache,
+        mut mainline_cache,
+        mut state_after_map,
+    } = crate::state::at::pipeline_bookkeeping(index.len(), version);
 
     for idx in sorted_ancestors {
         let id_val = index.items()[idx];
