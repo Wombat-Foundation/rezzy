@@ -181,18 +181,22 @@ fn test_supplemental_key_does_not_overwrite_resolved_state(version: StateResVers
     let conflicted_keys = rezzy::FastSet::default();
 
     let semilattice = resolve_semilattice_fold_with_conflicted_keys(
-        &unconflicted,
-        &supplemental_events,
-        &map,
-        version,
-        &conflicted_keys,
+        rezzy::resolve::iterative::ConflictedKeysInputs::new(
+            &unconflicted,
+            &supplemental_events,
+            &map,
+            version,
+            &conflicted_keys,
+        ),
     );
     let iterative = rezzy::resolve::iterative::resolve_iterative_sort_with_conflicted_keys(
-        &unconflicted,
-        &supplemental_events,
-        &map,
-        version,
-        &conflicted_keys,
+        rezzy::resolve::iterative::ConflictedKeysInputs::new(
+            &unconflicted,
+            &supplemental_events,
+            &map,
+            version,
+            &conflicted_keys,
+        ),
     );
 
     let topic_key = topic_key();

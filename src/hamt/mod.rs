@@ -1107,11 +1107,11 @@ where
             return Ok((new_node, Some(old_value)));
         }
 
-        return insert_into_leaf_slot(node, structural_key, step, depth.saturating_add(1), ctx);
+        return insert_into_occupied_slot(node, step, depth.saturating_add(1), ctx);
     }
 
     if (node.nodemap & bit) != 0 {
-        return insert_into_child_slot(node, structural_key, step, depth.saturating_add(1), ctx);
+        return insert_into_occupied_slot(node, step, depth.saturating_add(1), ctx);
     }
 
     // Empty slot: insert directly as a new leaf.
@@ -1130,9 +1130,8 @@ where
     Ok((new_node, None))
 }
 
-fn insert_into_leaf_slot<K, V, KeyHash, F, E>(
+fn insert_into_occupied_slot<K, V, KeyHash, F, E>(
     node: &NodePtr<K, V>,
-    structural_key: &[u8],
     step: InsertStep<K, V>,
     next_depth: usize,
     ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
@@ -1143,70 +1142,66 @@ where
     KeyHash: FnMut(&K) -> StructuralHash,
     F: NodeResolver<K, V, E>,
 {
-    let InsertStep {
-        key,
-        value,
-        path_hash,
-        slot,
-        bit,
-    } = step;
-    let idx = map_index(node.datamap, slot);
-
-    let (existing_key, existing_value) = node.leaves[idx].clone();
-    let existing_path_hash = (ctx.key_hash)(&existing_key);
-    let split_entries = vec![
-        BuildEntry {
-            key: existing_key,
-            value: existing_value,
-            path_hash: existing_path_hash,
-        },
-        BuildEntry {
+    if (node.datamap & step.bit) != 0 {
+        // Leaf slot: split the displaced leaf and this one into a new child.
+        let InsertStep {
             key,
             value,
             path_hash,
-        },
-    ];
-    let child = build_node(structural_key, split_entries, next_depth)?;
-    emit_split_nodes_to_sink(&child, ctx.sink);
+            slot,
+            bit,
+        } = step;
+        let idx = map_index(node.datamap, slot);
 
-    let mut leaves = node.leaves.clone();
-    leaves.remove(idx);
-    let new_datamap = node.datamap & !bit;
-    let new_nodemap = node.nodemap | bit;
-    let child_idx = map_index(new_nodemap, slot);
-    let mut children = node.children.clone();
-    children.insert(child_idx, NodeRef::Resolved(child));
-    let new_node = rebuild_node(structural_key, new_datamap, new_nodemap, leaves, children);
-    emit_node_to_sink(&new_node, ctx.sink);
-    Ok((new_node, None))
-}
+        let (existing_key, existing_value) = node.leaves[idx].clone();
+        let existing_path_hash = (ctx.key_hash)(&existing_key);
+        let split_entries = vec![
+            BuildEntry {
+                key: existing_key,
+                value: existing_value,
+                path_hash: existing_path_hash,
+            },
+            BuildEntry {
+                key,
+                value,
+                path_hash,
+            },
+        ];
+        let child = build_node(ctx.structural_key, split_entries, next_depth)?;
+        emit_split_nodes_to_sink(&child, ctx.sink);
 
-fn insert_into_child_slot<K, V, KeyHash, F, E>(
-    node: &NodePtr<K, V>,
-    structural_key: &[u8],
-    step: InsertStep<K, V>,
-    next_depth: usize,
-    ctx: &mut InsertCtx<'_, K, V, KeyHash, F>,
-) -> MutateResult<K, V, E>
-where
-    K: HamtKey,
-    V: HamtValue,
-    KeyHash: FnMut(&K) -> StructuralHash,
-    F: NodeResolver<K, V, E>,
-{
-    let InsertStep {
-        key,
-        value,
-        path_hash,
-        slot,
-        ..
-    } = step;
-    let idx = map_index(node.nodemap, slot);
-    let child = resolve_child_ref(&node.children[idx], ctx.resolver)?;
-    let (new_child, old_value) =
-        insert_node_with_ctx(&child, key, value, path_hash, next_depth, ctx)?;
-    let new_node = rebuild_with_child(node, structural_key, idx, new_child, ctx.sink);
-    Ok((new_node, old_value))
+        let mut leaves = node.leaves.clone();
+        leaves.remove(idx);
+        let new_datamap = node.datamap & !bit;
+        let new_nodemap = node.nodemap | bit;
+        let child_idx = map_index(new_nodemap, slot);
+        let mut children = node.children.clone();
+        children.insert(child_idx, NodeRef::Resolved(child));
+        let new_node = rebuild_node(
+            ctx.structural_key,
+            new_datamap,
+            new_nodemap,
+            leaves,
+            children,
+        );
+        emit_node_to_sink(&new_node, ctx.sink);
+        Ok((new_node, None))
+    } else {
+        // Child slot: recurse into the existing child.
+        let InsertStep {
+            key,
+            value,
+            path_hash,
+            slot,
+            ..
+        } = step;
+        let idx = map_index(node.nodemap, slot);
+        let child = resolve_child_ref(&node.children[idx], ctx.resolver)?;
+        let (new_child, old_value) =
+            insert_node_with_ctx(&child, key, value, path_hash, next_depth, ctx)?;
+        let new_node = rebuild_with_child(node, ctx.structural_key, idx, new_child, ctx.sink);
+        Ok((new_node, old_value))
+    }
 }
 
 /// Inserts or replaces a key/value pair in a HAMT via `O(log S)`

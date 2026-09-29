@@ -721,6 +721,52 @@ where
     )
 }
 
+/// Borrowed inputs for resolving with a caller-supplied set of genuinely
+/// conflicted keys, shared by the iterative and semilattice resolver
+/// strategies so their entry points stay comparable.
+pub struct ConflictedKeysInputs<'a, Id, C, S1, S2> {
+    /// State built from unconflicted (non-competing) events.
+    pub unconflicted_state: &'a SharedState<Id>,
+    /// Events competing for their state keys.
+    pub conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
+    /// Broader auth context consulted during authentication.
+    pub auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+    /// State resolution version selecting the auth rules.
+    pub version: StateResVersion,
+    /// Keys whose events are allowed to decide their own value.
+    pub conflicted_keys: &'a crate::FastSet<(EventType, String)>,
+}
+
+impl<Id, C, S1, S2> Copy for ConflictedKeysInputs<'_, Id, C, S1, S2> {}
+
+impl<Id, C, S1, S2> Clone for ConflictedKeysInputs<'_, Id, C, S1, S2> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, Id, C, S1, S2> ConflictedKeysInputs<'a, Id, C, S1, S2> {
+    /// Bundles the inputs accepted by
+    /// [`resolve_iterative_sort_with_conflicted_keys`] and
+    /// [`crate::resolve::semilattice::resolve_semilattice_fold_with_conflicted_keys`].
+    #[must_use]
+    pub fn new(
+        unconflicted_state: &'a SharedState<Id>,
+        conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
+        auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+        version: StateResVersion,
+        conflicted_keys: &'a crate::FastSet<(EventType, String)>,
+    ) -> Self {
+        Self {
+            unconflicted_state,
+            conflicted_events,
+            auth_context,
+            version,
+            conflicted_keys,
+        }
+    }
+}
+
 /// Resolves state with a caller-supplied set of genuinely conflicted keys.
 ///
 /// This is the cache-free counterpart of [`resolve_iterative_sort_with_cache`]
@@ -729,31 +775,28 @@ where
 /// [`crate::resolve::semilattice::resolve_semilattice_fold_with_conflicted_keys`]
 /// so the two resolver strategies can be compared directly.
 #[must_use]
-pub fn resolve_iterative_sort_with_conflicted_keys<
+pub fn resolve_iterative_sort_with_conflicted_keys<Id, C, S1, S2>(
+    inputs: ConflictedKeysInputs<'_, Id, C, S1, S2>,
+) -> SharedState<Id>
+where
     Id: EventId,
     C: EventContent + Clone,
     S1: BuildHasher,
     S2: BuildHasher,
->(
-    unconflicted_state: &SharedState<Id>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C>, S2>,
-    version: StateResVersion,
-    conflicted_keys: &crate::FastSet<(EventType, String)>,
-) -> SharedState<Id> {
+{
     let mut pl_cache: HashMap<Id, i64> = HashMap::default();
     let empty_key = String::new();
     resolve_iterative_sort_with_cache(
         IterativeInputs::new(
-            unconflicted_state,
-            conflicted_events,
-            auth_context,
-            version,
+            inputs.unconflicted_state,
+            inputs.conflicted_events,
+            inputs.auth_context,
+            inputs.version,
             &mut pl_cache,
             &empty_key,
         ),
         None,
-        Some(conflicted_keys),
+        Some(inputs.conflicted_keys),
     )
 }
 

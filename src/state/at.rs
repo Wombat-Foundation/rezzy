@@ -637,11 +637,10 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
-
-    if sorted_ancestors.len() != index.len() {
-        return Err(StateComputationError::CycleDetected);
-    }
+    let TopologicalPlan {
+        sorted_ancestors,
+        mut out_degree,
+    } = checked_topological_plan(index, events_map).ok_or(StateComputationError::CycleDetected)?;
 
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
@@ -1105,6 +1104,31 @@ where
     }
 
     (sorted_ancestors, out_degree)
+}
+
+/// The verified topological order and parent-use counts shared by the plain
+/// and hashed streaming pipelines.
+struct TopologicalPlan {
+    sorted_ancestors: Vec<usize>,
+    out_degree: Vec<usize>,
+}
+
+/// Sorts the reachable subgraph and returns its live-parent bookkeeping only
+/// when every indexed event was ordered (that is, the graph is acyclic).
+fn checked_topological_plan<Id, C, S, K>(
+    index: &DenseIndex<&Id, usize>,
+    events_map: &EventMap<Id, C, K, S>,
+) -> Option<TopologicalPlan>
+where
+    Id: EventId,
+    S: BuildHasher,
+    C: Clone,
+{
+    let (sorted_ancestors, out_degree) = topological_sort_short_ids(index, events_map);
+    (sorted_ancestors.len() == index.len()).then_some(TopologicalPlan {
+        sorted_ancestors,
+        out_degree,
+    })
 }
 
 /// Fast-path resolution for merging multiple states when they are all structurally identical.
@@ -2383,11 +2407,10 @@ where
     K: StateKey,
     for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
-    let (sorted_ancestors, mut out_degree) = topological_sort_short_ids(index, events_map);
-
-    if sorted_ancestors.len() != index.len() {
-        return Err(StateComputationError::CycleDetected);
-    }
+    let TopologicalPlan {
+        sorted_ancestors,
+        mut out_degree,
+    } = checked_topological_plan(index, events_map).ok_or(StateComputationError::CycleDetected)?;
 
     let mut global_auth_cache = LocalAuthCache::new(version);
     let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
@@ -3644,6 +3667,16 @@ mod tests {
         );
 
         let target = ["A"];
+        let plain_error = try_compute_state_at_streaming(
+            &target,
+            &events_map,
+            StateResVersion::V2_1_1,
+            |_, _| Ok::<_, ()>(()),
+            &String::new(),
+        )
+        .expect_err("the plain pipeline must reject a cycle");
+        assert_eq!(plain_error, StateComputationError::CycleDetected);
+
         let completed = compute_state_at_streaming_optimized(
             &target,
             &events_map,

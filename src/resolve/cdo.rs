@@ -433,6 +433,13 @@ where
 /// by an unrelated lockdown) and `test_anomaly_06b_mod_membership_evaporation`
 /// (a join into a still-public room dropped by a later, independent-branch
 /// lockdown, cascading to drop everything auth'd through that join).
+/// Borrowed pair of event maps consulted while resolving `auth_events`
+/// references: `conflicted_events` take precedence over `auth_context`.
+struct AuthLookups<'a, Id, C, K, S1, S2> {
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+}
+
 /// Yields the events cited by `auth_events`, preferring `conflicted_events`
 /// over `auth_context` and skipping ids present in neither.
 fn cited_auth_events<'a, Id, C, K, S1, S2>(
@@ -454,8 +461,7 @@ where
 
 fn join_has_prior_authorization<Id, C, K, S1, S2>(
     join_ev: &LeanEvent<Id, C, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    lookups: &AuthLookups<'_, Id, C, K, S1, S2>,
 ) -> bool
 where
     Id: EventId,
@@ -464,7 +470,12 @@ where
     S1: BuildHasher,
     S2: BuildHasher,
 {
-    cited_auth_events(&join_ev.auth_events, conflicted_events, auth_context).any(|ev| {
+    cited_auth_events(
+        &join_ev.auth_events,
+        lookups.conflicted_events,
+        lookups.auth_context,
+    )
+    .any(|ev| {
         let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
             && ev.state_key.as_ref().map(K::as_ref) == Some(join_ev.sender.as_str())
             && matches!(ev.get_membership(), Some(MEM_INVITE | MEM_JOIN));
@@ -489,8 +500,7 @@ where
 /// `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`.
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    lookups: &AuthLookups<'_, Id, C, K, S1, S2>,
 ) -> bool
 where
     Id: EventId,
@@ -499,7 +509,12 @@ where
     S1: BuildHasher,
     S2: BuildHasher,
 {
-    cited_auth_events(&target_ev.auth_events, conflicted_events, auth_context).any(|ev| {
+    cited_auth_events(
+        &target_ev.auth_events,
+        lookups.conflicted_events,
+        lookups.auth_context,
+    )
+    .any(|ev| {
         if ev.event_type != M_ROOM_POWER_LEVELS {
             return false;
         }
@@ -606,14 +621,18 @@ where
                                     && !(admin_ev.is_lockdown()
                                         && join_has_prior_authorization(
                                             target_ev,
-                                            conflicted_events,
-                                            auth_context,
+                                            &AuthLookups {
+                                                conflicted_events,
+                                                auth_context,
+                                            },
                                         ))
                                     && !(admin_ev.is_demotion()
                                         && sender_has_pre_demotion_pl(
                                             target_ev,
-                                            conflicted_events,
-                                            auth_context,
+                                            &AuthLookups {
+                                                conflicted_events,
+                                                auth_context,
+                                            },
                                         ));
                                 if dominates {
                                     dropped_ids.insert((*event_id).clone());

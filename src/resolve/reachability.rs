@@ -578,12 +578,14 @@ where
 {
     /// Builds the low-memory reachability index from a DAG snapshot.
     ///
-    /// The input graph must be acyclic with edges expressed through
-    /// `auth_events`.
+    /// Uses the same acyclic-`auth_events` input contract as
+    /// [`ForwardReachabilityIndex::build`], panicking on an internally
+    /// inconsistent or cyclic graph.
     ///
     /// # Panics
-    /// Panics if the input graph is internally inconsistent or contains a
-    /// cycle that prevents the topological build from completing.
+    /// Panics if the graph is too large for the dense index or contains an
+    /// internal inconsistency that prevents the topological build from
+    /// completing.
     #[must_use]
     pub fn build<C: Clone, S: BuildHasher>(graph: &HashMap<Id, LeanEvent<Id, C>, S>) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
@@ -1067,6 +1069,25 @@ where
     Some((from_idx, to_idx))
 }
 
+/// Shared `Reachability::reaches` body: maps endpoints to dense indices, then
+/// defers to [`reach_from_index`] with the representation-specific membership
+/// test supplied by `contains`.
+fn reaches_with<Id: EventId + Ord>(
+    index: &DenseIndex<Id>,
+    cyclic_nodes: &BTreeSet<u32>,
+    from: &Id,
+    to: &Id,
+    self_is_reachable: bool,
+    contains: impl FnOnce(u32, u32) -> bool,
+) -> Reach {
+    let Some((from_idx, to_idx)) = reach_endpoints(index, from, to) else {
+        return Reach::Unknown;
+    };
+    reach_from_index(from_idx, to_idx, cyclic_nodes, self_is_reachable, || {
+        contains(from_idx, to_idx)
+    })
+}
+
 /// Applies the shared reachability-index contract after endpoint lookup.
 /// The representation-specific index supplies only the final membership test.
 fn reach_from_index(
@@ -1096,12 +1117,14 @@ where
     type Id = Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        let Some((from_idx, to_idx)) = reach_endpoints(&self.index, from, to) else {
-            return Reach::Unknown;
-        };
-        reach_from_index(from_idx, to_idx, &self.cyclic_nodes, false, || {
-            self.reaches_index(from_idx, to_idx)
-        })
+        reaches_with(
+            &self.index,
+            &self.cyclic_nodes,
+            from,
+            to,
+            false,
+            |from_idx, to_idx| self.reaches_index(from_idx, to_idx),
+        )
     }
 }
 
@@ -1112,12 +1135,14 @@ where
     type Id = Id;
 
     fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-        let Some((from_idx, to_idx)) = reach_endpoints(&self.index, from, to) else {
-            return Reach::Unknown;
-        };
-        reach_from_index(from_idx, to_idx, &self.cyclic_nodes, true, || {
-            self.descendant_bitmaps[from_idx as usize].contains(to_idx)
-        })
+        reaches_with(
+            &self.index,
+            &self.cyclic_nodes,
+            from,
+            to,
+            true,
+            |from_idx, to_idx| self.descendant_bitmaps[from_idx as usize].contains(to_idx),
+        )
     }
 }
 

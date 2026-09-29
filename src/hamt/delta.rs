@@ -10,6 +10,12 @@ use super::{map_index, NodePtr, NodeRef, NodeResolver, StructuralHash, HAMT_MAX_
 pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
 
+/// `Hash + Eq + Clone` bounds shared by the HAMT diff key and value types.
+///
+/// Blanket-implemented, so callers never implement it directly.
+pub trait DeltaElem: Hash + Clone + Eq {}
+impl<T: Hash + Clone + Eq> DeltaElem for T {}
+
 /// Walks both roots and returns the accumulated added/removed leaves.
 fn collect_delta<K, V, E>(
     root_a: &NodePtr<K, V>,
@@ -17,8 +23,8 @@ fn collect_delta<K, V, E>(
     resolver: &mut impl FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
 ) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
+    K: DeltaElem,
+    V: DeltaElem,
 {
     let mut added = Vec::new();
     let mut removed = Vec::new();
@@ -42,8 +48,8 @@ pub fn isolate_delta<K, V, F, E>(
     resolver: &mut F,
 ) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
+    K: DeltaElem,
+    V: DeltaElem,
     F: NodeResolver<K, V, E>,
 {
     // Short-circuit only when both the lattice and the root structural hashes
@@ -69,8 +75,8 @@ pub fn diff_hamt_nodes<K, V, F, E>(
     resolver: &mut F,
 ) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
+    K: DeltaElem,
+    V: DeltaElem,
     F: NodeResolver<K, V, E>,
 {
     if root_a.structural_hash == root_b.structural_hash {
@@ -139,8 +145,8 @@ fn diff_nodes<K, V, F, E>(
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
+    K: DeltaElem,
+    V: DeltaElem,
     F: NodeResolver<K, V, E>,
 {
     if diff_short_circuit(node_a, node_b, depth)? {
@@ -566,8 +572,8 @@ fn collect_all_leaves<K, V, F, E>(
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
+    K: DeltaElem,
+    V: DeltaElem,
     F: NodeResolver<K, V, E>,
 {
     check_depth(depth)?;

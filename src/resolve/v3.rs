@@ -335,6 +335,22 @@ pub enum PromotionScope {
     AnyAuthorizedSender,
 }
 
+/// Verifier and promotion scope shared by the V3 certification entry points.
+pub struct CertifyParams<'a, Id> {
+    /// Mandatory PDU verifier applied before a certificate is issued.
+    pub verifier: &'a dyn EventVerifier<Id>,
+    /// Which senders are eligible to certify a promotion.
+    pub promotion_scope: PromotionScope,
+}
+
+impl<Id> Copy for CertifyParams<'_, Id> {}
+
+impl<Id> Clone for CertifyParams<'_, Id> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 /// Certify an event using the normative `tk.nutra.cdo.12` rank policy.
 ///
 /// # Errors
@@ -344,8 +360,7 @@ pub enum PromotionScope {
 pub fn certify_tk_nutra_cdo12_admission<Id, C, K>(
     event: &LeanEvent<Id, C, K>,
     branch_auth: &crate::auth::RoomState<Id, C, K>,
-    verifier: &dyn EventVerifier<Id>,
-    promotion_scope: PromotionScope,
+    params: CertifyParams<'_, Id>,
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
 where
     Id: EventId,
@@ -353,13 +368,7 @@ where
     K: StateKey,
     for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
-    certify_v3_admission(
-        event,
-        branch_auth,
-        &TkNutraCdo12RankPolicy,
-        verifier,
-        promotion_scope,
-    )
+    certify_v3_admission(event, branch_auth, &TkNutraCdo12RankPolicy, params)
 }
 
 /// Certify an event for V3 selection against its canonical branch-auth state.
@@ -378,8 +387,7 @@ pub fn certify_v3_admission<Id, C, K>(
     event: &LeanEvent<Id, C, K>,
     branch_auth: &crate::auth::RoomState<Id, C, K>,
     rank_policy: &impl V3RankPolicy<Id, C, K>,
-    verifier: &dyn EventVerifier<Id>,
-    promotion_scope: PromotionScope,
+    params: CertifyParams<'_, Id>,
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
 where
     Id: EventId,
@@ -391,7 +399,7 @@ where
         event,
         branch_auth,
         crate::StateResVersion::V3,
-        Some(verifier),
+        Some(params.verifier),
     )?;
     let mut state = SharedState::new();
     for ((event_type, state_key), auth_event) in branch_auth {
@@ -403,7 +411,7 @@ where
     Ok(V3Admission {
         rank: rank_policy.rank(event, branch_auth),
         branch_auth: BranchAuthSnapshot { state },
-        promotion_grant: certify_promotion_grant(event, branch_auth, promotion_scope),
+        promotion_grant: certify_promotion_grant(event, branch_auth, params.promotion_scope),
     })
 }
 
@@ -974,6 +982,30 @@ mod tests {
         branch_auth
     }
 
+    struct CreatorGrantFixture {
+        grant: LeanEvent<String, Value, String>,
+        branch_auth: crate::auth::RoomState<String, Value, String>,
+        certified: CertifiedPromotionGrant<String, String>,
+    }
+
+    /// Builds the `$prior_power`/`$grant` fixture shared by the creator-grant
+    /// certification tests, certifying the grant under `CreatorOnly` and
+    /// returning it alongside the branch state for follow-up assertions.
+    fn creator_grant_fixture(prior_content: Value, grant_content: Value) -> CreatorGrantFixture {
+        let create = create_event();
+        let b_join = join_event("$b_join", "@b:example.com");
+        let prior_power = power_event("$prior_power", "@creator:example.com", prior_content);
+        let grant = power_event("$grant", "@creator:example.com", grant_content);
+        let branch_auth = branch_auth_with("@b:example.com", b_join, create, prior_power);
+        let certified =
+            certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
+        CreatorGrantFixture {
+            grant,
+            branch_auth,
+            certified,
+        }
+    }
+
     /// The two `m.room.topic` events `$a` and `$b` that conflict on the same
     /// empty state key.
     fn two_topic_events() -> HashMap<String, LeanEvent<String, Value, String>> {
@@ -1127,8 +1159,10 @@ mod tests {
                 authority: 100,
                 ..V3Rank::default()
             }),
-            &AllowVerifier,
-            PromotionScope::CreatorOnly,
+            CertifyParams {
+                verifier: &AllowVerifier,
+                promotion_scope: PromotionScope::CreatorOnly,
+            },
         )
         .unwrap();
 
@@ -1139,8 +1173,10 @@ mod tests {
         let normative = certify_tk_nutra_cdo12_admission(
             &create,
             &branch_auth,
-            &AllowVerifier,
-            PromotionScope::CreatorOnly,
+            CertifyParams {
+                verifier: &AllowVerifier,
+                promotion_scope: PromotionScope::CreatorOnly,
+            },
         )
         .unwrap();
         assert_eq!(normative.rank().authority, 0);
@@ -1154,8 +1190,10 @@ mod tests {
             &create,
             &branch_auth,
             &FixedRank(V3Rank::default()),
-            &RejectVerifier,
-            PromotionScope::CreatorOnly,
+            CertifyParams {
+                verifier: &RejectVerifier,
+                promotion_scope: PromotionScope::CreatorOnly,
+            },
         )
         .is_err());
     }
@@ -1184,8 +1222,10 @@ mod tests {
             &message,
             &branch_auth,
             &FixedRank(V3Rank::default()),
-            &AllowVerifier,
-            PromotionScope::CreatorOnly,
+            CertifyParams {
+                verifier: &AllowVerifier,
+                promotion_scope: PromotionScope::CreatorOnly,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -1200,27 +1240,19 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn creator_grant_requires_a_maximal_join_witness_and_a_power_increase() {
-        let create = create_event();
-        let b_join = join_event("$b_join", "@b:example.com");
-        let prior_power = power_event(
-            "$prior_power",
-            "@creator:example.com",
+        let CreatorGrantFixture {
+            grant,
+            branch_auth,
+            certified,
+        } = creator_grant_fixture(
             crate::json!({
                 "users": { "@b:example.com": 0, "@not_creator:example.com": 100 },
             }),
-        );
-        let grant = power_event(
-            "$grant",
-            "@creator:example.com",
             crate::json!({
                 "users": { "@b:example.com": 100 },
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
         );
-        let branch_auth = branch_auth_with("@b:example.com", b_join, create, prior_power);
-
-        let certified =
-            certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
         assert_eq!(certified.grant_id(), &String::from("$grant"));
         assert_eq!(certified.target(), &String::from("@b:example.com"));
         assert_eq!(certified.active_member(), &String::from("$b_join"));
@@ -1326,25 +1358,17 @@ mod tests {
         // `@b:example.com` explicitly in `users`; both must fall back to
         // `users_default` (10 -> 100), matching the identical fallback in
         // `auth::user::get_sender_power_level`.
-        let create = create_event();
-        let b_join = join_event("$b_join", "@b:example.com");
-        let prior_power = power_event(
-            "$prior_power",
-            "@creator:example.com",
+        let CreatorGrantFixture {
+            grant,
+            branch_auth,
+            certified,
+        } = creator_grant_fixture(
             crate::json!({ "users_default": 10 }),
-        );
-        let grant = power_event(
-            "$grant",
-            "@creator:example.com",
             crate::json!({
                 "users_default": 100,
                 "tk.nutra.cdo": { "active_member": "$b_join" },
             }),
         );
-        let branch_auth = branch_auth_with("@b:example.com", b_join, create, prior_power);
-
-        let certified =
-            certify_promotion_grant(&grant, &branch_auth, PromotionScope::CreatorOnly).unwrap();
         assert_eq!(certified.target(), &String::from("@b:example.com"));
         assert_eq!(certified.target_power_level(), 100);
 
