@@ -192,3 +192,23 @@ a separate crate (`serde_canonical_json` already exists).
 | N-way fork resolution        | `resolve::multi::resolve_state_maps`   |
 | State-at computation         | `state::at::compute_state_at`          |
 | Auth types enumeration       | `auth::auth_types_for_event`           |
+
+## Signed federation CLI utilities
+
+The CLI can issue generic signed server-server requests and crawl a remote
+room's event DAG:
+
+```sh
+MATRIX_ORIGIN=example.org \
+MATRIX_SERVER_SIGNING_KEY=/path/to/ed25519.key \
+rezzy federation request --destination remote.example --path /_matrix/federation/v1/version
+
+rezzy federation get-remote-dag --origin example.org \
+  --destination remote.example --room '!room:example.org' \
+  --from '$event:example.org' --limit -1 --output remote.jsonl
+```
+
+The key file accepts the usual `ed25519:<id> <unpadded-base64-private-key>`
+format. For multiple origins, use
+`MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`;
+that variable takes precedence and the file is reread for every request.

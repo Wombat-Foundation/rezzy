@@ -25,8 +25,10 @@ std = ["rezzy/std", "clap/std"]
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
+base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
+ed25519-dalek.workspace = true
 # Direct version anchor for the `ureq` -> `url` -> `idna` -> `idna_adapter`
 # chain: idna_adapter >= 1.2 requires rustc 1.86, above our MSRV.
 idna_adapter = { version = ">=1.0, <1.2", default-features = false }

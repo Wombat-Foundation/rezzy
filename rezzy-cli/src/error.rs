@@ -56,6 +56,8 @@ pub enum ErrorCode {
     AggregateStale,
     /// Raw inputs contain different payloads for one event ID.
     AggregateConflict,
+    /// Signing key configuration or parsing failure.
+    SigningKey,
 }
 
 impl ErrorCode {
@@ -80,6 +82,7 @@ impl ErrorCode {
             Self::NetworkError => "E014_NETWORK_ERROR",
             Self::AggregateStale => "E015_AGGREGATE_STALE",
             Self::AggregateConflict => "E016_AGGREGATE_CONFLICT",
+            Self::SigningKey => "E017_SIGNING_KEY",
         }
     }
 }

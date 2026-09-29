@@ -864,8 +864,10 @@ dependencies = [
 name = "rezzy-cli"
 version = "0.6.0-rc.0"
 dependencies = [
+ "base64",
  "clap",
  "clap_complete",
+ "ed25519-dalek",
  "idna_adapter",
  "imbl",
  "mimalloc",

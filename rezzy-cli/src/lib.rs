@@ -17,6 +17,7 @@
 #[macro_use]
 pub mod error;
 pub mod aggregate;
+pub mod federation;
 pub mod format;
 pub mod jsonl_merge;
 pub mod network;
@@ -177,6 +178,7 @@ pub fn cli_command() -> clap::Command {
                 .default_value("matrix.org"),
         )
         .subcommand(aggregate::command())
+        .subcommand(federation::command())
         .subcommand(
             clap::Command::new("completions")
                 .about("Print a shell completion script to stdout")
@@ -497,6 +499,19 @@ pub fn main_entry() {
                     std::process::exit(1);
                 }
             }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Some(("federation", federation_matches)) = matches.subcommand() {
+        match federation::run_from_matches(federation_matches) {
+            Ok(output) => println!(
+                "{}",
+                rezzy::json::write_string_pretty(&output).expect("JSON formatting is infallible")
+            ),
             Err(e) => {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
