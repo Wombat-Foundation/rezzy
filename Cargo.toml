@@ -52,6 +52,7 @@ exclude = [
     "c.diff",
     ".markdownlint.json",
     "examples/",
+    "support/",
     "rust-toolchain.toml",
 ]
 autobins = false
