@@ -290,11 +290,13 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
         if event_auth_ok(
             event,
             resolved,
-            auth_context,
-            conflicted_events,
-            local_auth_cache,
-            create_ev,
-            version,
+            IterativeAuthCheck {
+                auth_context,
+                conflicted_events,
+                local_auth_cache,
+                create_ev,
+                version,
+            },
             true,
         ) {
             // Power events are usually state events, but malformed or
@@ -323,14 +325,18 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
 /// Computes local auth and applies the iterative auth check used by both
 /// resolution variants. Keeping this decision in one place prevents the
 /// delta-reporting path from drifting from the ordinary resolver.
+struct IterativeAuthCheck<'a, Id, C, K, S1, S2> {
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    local_auth_cache: &'a mut LocalAuthCache<Id, C, K>,
+    create_ev: Option<&'a LeanEvent<Id, C, K>>,
+    version: StateResVersion,
+}
+
 fn event_auth_ok<Id, C, K, S1, S2>(
     event: &LeanEvent<Id, C, K>,
     resolved: &SharedState<Id, K>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
-    local_auth_cache: &mut LocalAuthCache<Id, C, K>,
-    create_ev: Option<&LeanEvent<Id, C, K>>,
-    version: StateResVersion,
+    check: IterativeAuthCheck<'_, Id, C, K, S1, S2>,
     is_power: bool,
 ) -> bool
 where
@@ -341,6 +347,13 @@ where
     S2: BuildHasher,
     for<'q> (EventType, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
+    let IterativeAuthCheck {
+        auth_context,
+        conflicted_events,
+        local_auth_cache,
+        create_ev,
+        version,
+    } = check;
     let local_auth = compute_local_auth(
         event,
         auth_context,
@@ -847,11 +860,13 @@ where
         if event_auth_ok(
             ev,
             &resolved,
-            auth_context,
-            sort_set,
-            local_auth_cache,
-            create_ev,
-            version,
+            IterativeAuthCheck {
+                auth_context,
+                conflicted_events: sort_set,
+                local_auth_cache,
+                create_ev,
+                version,
+            },
             false,
         ) {
             if let Some(sk) = &ev.state_key {
@@ -1060,11 +1075,13 @@ where
         let accepted = event_auth_ok(
             event,
             &resolved,
-            auth_context,
-            sort_set,
-            local_auth_cache,
-            create_ev,
-            version,
+            IterativeAuthCheck {
+                auth_context,
+                conflicted_events: sort_set,
+                local_auth_cache,
+                create_ev,
+                version,
+            },
             true,
         );
         let replaced = if accepted && conflicted_keys.contains(&key) {
@@ -1125,11 +1142,13 @@ where
         let accepted = event_auth_ok(
             ev,
             &resolved,
-            auth_context,
-            sort_set,
-            local_auth_cache,
-            create_ev,
-            version,
+            IterativeAuthCheck {
+                auth_context,
+                conflicted_events: sort_set,
+                local_auth_cache,
+                create_ev,
+                version,
+            },
             false,
         );
         let replaced = if accepted && conflicted_keys.contains(&key) {

@@ -3047,18 +3047,39 @@ fn redaction(id: &str, sender: &str, origin_server_ts: u64, target: &str) -> Lea
     }
 }
 
+/// The `String`-keyed resolved-state map used throughout these tests.
+type StateMap = imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>;
+
 fn resolve_sort(
-    unconflicted: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    unconflicted: &StateMap,
     conflicted: &HashMap<String, LeanEvent>,
     auth_context: &HashMap<String, LeanEvent>,
     version: StateResVersion,
-) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
+) -> StateMap {
     rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
-        &unconflicted,
-        &conflicted,
+        unconflicted,
+        conflicted,
         auth_context,
         version,
         &mut HashMap::new(),
+        &String::new(),
+    ))
+}
+
+/// [`resolve_sort`] with per-event [`rezzy::ResolutionDelta`] tracking.
+fn resolve_sort_with_deltas(
+    unconflicted: &StateMap,
+    conflicted: &HashMap<String, LeanEvent>,
+    auth_context: &HashMap<String, LeanEvent>,
+    version: StateResVersion,
+) -> (StateMap, Vec<rezzy::ResolutionDelta<String, String>>) {
+    let mut pl_cache = HashMap::new();
+    rezzy::resolve_iterative_sort_with_deltas(rezzy::IterativeInputs::new(
+        unconflicted,
+        conflicted,
+        auth_context,
+        version,
+        &mut pl_cache,
         &String::new(),
     ))
 }
@@ -5065,7 +5086,7 @@ fn test_msc4289_sorting_v2_creator_gets_pl_100() {
 fn test_resolve_iterative_sort_with_deltas_parity() {
     use rezzy::json;
     use rezzy::state::delta::ResolvePhase;
-    use rezzy::{resolve_iterative_sort_with_deltas, LeanEvent, StateResVersion};
+    use rezzy::{LeanEvent, StateResVersion};
     use std::collections::HashMap;
 
     // Build auth context
@@ -5122,14 +5143,12 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
     );
 
     // resolve_iterative_sort_with_deltas
-    let (resolved_with, deltas) = resolve_iterative_sort_with_deltas(rezzy::IterativeInputs::new(
+    let (resolved_with, deltas) = resolve_sort_with_deltas(
         &unconflicted,
         &conflicted,
         &auth_context,
         StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    ));
+    );
 
     // The resolved state must be identical
     assert_eq!(
@@ -5179,7 +5198,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
 
 #[test]
 fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
-    use rezzy::{resolve_iterative_sort_with_deltas, StateResVersion};
+    use rezzy::StateResVersion;
     use std::collections::HashMap;
 
     let unconflicted = unconflicted_create();
@@ -5200,14 +5219,12 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
     let mut conflicted = HashMap::new();
     conflicted.insert("$pl_alice".into(), pl_alice.clone());
 
-    let (_, deltas) = resolve_iterative_sort_with_deltas(rezzy::IterativeInputs::new(
+    let (_, deltas) = resolve_sort_with_deltas(
         &unconflicted,
         &conflicted,
         &auth_context,
         StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    ));
+    );
 
     let power_deltas: Vec<_> = deltas
         .iter()
@@ -5227,7 +5244,7 @@ fn test_resolve_iterative_sort_with_deltas_no_duplicate_power_events() {
 /// It's NOT in `conflicted_events`, so `sort_set.get(id)` misses and the fallback fires.
 #[test]
 fn test_deltas_supplemental_power_event_from_auth_context() {
-    use rezzy::{resolve_iterative_sort_with_deltas, StateResVersion};
+    use rezzy::StateResVersion;
 
     // Two conflicting PLs (alice vs bob), both auth-chained through an ancestor PL
     // that lives only in auth_context. MSC4297 supplementation pulls $pl_ancestor
@@ -5262,14 +5279,12 @@ fn test_deltas_supplemental_power_event_from_auth_context() {
     // V2.1 triggers MSC4297 supplementation, pulling $pl from auth_context
     // into the power phase. During the delta loop, sort_set.get("$pl") misses
     // (it's not in conflicted_events), so the or_else fallback to auth_context fires.
-    let (resolved, deltas) = resolve_iterative_sort_with_deltas(rezzy::IterativeInputs::new(
+    let (resolved, deltas) = resolve_sort_with_deltas(
         &unconflicted,
         &conflicted,
         &auth_context,
         StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    ));
+    );
 
     // The PL slot must be resolved to one of the two conflicting PLs
     let pl_key = (
@@ -5896,7 +5911,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     use rezzy::resolve::semilattice::resolve_semilattice_fold;
     use rezzy::state::at::StateComputationError;
     use rezzy::state::delta::{reconstruct_state_batch, CompactedCheckpoint};
-    use rezzy::{resolve_iterative_sort_with_deltas, StateResVersion};
+    use rezzy::StateResVersion;
     use std::collections::{BTreeMap, HashMap};
 
     // Cover StateComputationError Display
@@ -6042,14 +6057,12 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     conflicted.insert("$bogus_pl".into(), bogus_power.clone());
     conflicted.insert("$bogus_topic".into(), bogus_topic.clone());
 
-    let (resolved, deltas) = resolve_iterative_sort_with_deltas(rezzy::IterativeInputs::new(
+    let (resolved, deltas) = resolve_sort_with_deltas(
         &imbl::OrdMap::new(),
         &conflicted,
         &auth,
         StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    ));
+    );
 
     assert!(!resolved.contains_key(&(
         rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
@@ -7450,7 +7463,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
 #[test]
 fn test_conflicted_keys_derived_before_cdo() {
     use rezzy::basespec::event_types::EventType;
-    use rezzy::{cdo, resolve_iterative_sort_with_deltas, StateResVersion};
+    use rezzy::{cdo, StateResVersion};
     use std::collections::HashMap;
 
     let events = utils::parse_jsonl_events(
@@ -7498,14 +7511,8 @@ fn test_conflicted_keys_derived_before_cdo() {
     .into_iter()
     .collect();
 
-    let (resolved, deltas) = resolve_iterative_sort_with_deltas(rezzy::IterativeInputs::new(
-        &unconflicted,
-        &conflicted,
-        &auth,
-        StateResVersion::V2_1_1,
-        &mut HashMap::new(),
-        &String::new(),
-    ));
+    let (resolved, deltas) =
+        resolve_sort_with_deltas(&unconflicted, &conflicted, &auth, StateResVersion::V2_1_1);
 
     // Expected resolved keys: create, alice_join, bob member (ban), join_rules, power_levels.
     let mut keys: Vec<(String, String)> = resolved

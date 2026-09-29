@@ -20,8 +20,8 @@ fn resolve(
     version: StateResVersion,
 ) -> imbl::OrdMap<(EventType, String), String> {
     resolve_iterative_sort(rezzy::IterativeInputs::new(
-        &unconflicted,
-        &conflicted,
+        unconflicted,
+        conflicted,
         auth,
         version,
         &mut HashMap::new(),

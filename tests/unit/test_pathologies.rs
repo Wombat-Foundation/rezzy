@@ -5,6 +5,45 @@ use rezzy::{
 };
 use std::collections::HashMap;
 
+/// Resolves the standard fixture for `version` with fresh caches.
+fn resolve_v(
+    auth_context: &HashMap<String, LeanEvent>,
+    conflicted_events: &HashMap<String, LeanEvent>,
+    version: StateResVersion,
+) -> rezzy::SharedState<String, String> {
+    let mut pl_cache = HashMap::new();
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
+        &utils::build_unconflicted_state_test_helper(auth_context),
+        conflicted_events,
+        auth_context,
+        version,
+        &mut pl_cache,
+        &String::new(),
+    ))
+}
+
+/// Like [`resolve_v`], but threads a caller-owned local-auth `cache`.
+fn resolve_v_with_cache(
+    auth_context: &HashMap<String, LeanEvent>,
+    conflicted_events: &HashMap<String, LeanEvent>,
+    version: StateResVersion,
+    cache: &mut LocalAuthCache,
+) -> rezzy::SharedState<String, String> {
+    let mut pl_cache = HashMap::new();
+    resolve_iterative_sort_with_cache(
+        rezzy::IterativeInputs::new(
+            &utils::build_unconflicted_state_test_helper(auth_context),
+            conflicted_events,
+            auth_context,
+            version,
+            &mut pl_cache,
+            &String::new(),
+        ),
+        Some(cache),
+        None,
+    )
+}
+
 #[test]
 fn test_pathology_duplicate_auth_poisoning() {
     let path = "tests/fixtures/pathology_data/03-duplicate-auth-poisoning.jsonl";
@@ -32,31 +71,19 @@ fn test_pathology_duplicate_auth_poisoning() {
     // not end up larger than V2.1's for the same DAG, and resolution must
     // still converge cleanly (both versions produce the same resolved state).
     let mut cache_v21 = LocalAuthCache::new(StateResVersion::V2_1);
-    let resolved_v21 = resolve_iterative_sort_with_cache(
-        rezzy::IterativeInputs::new(
-            &utils::build_unconflicted_state_test_helper(&auth_context),
-            &conflicted_events,
-            &auth_context,
-            StateResVersion::V2_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        ),
-        Some(&mut cache_v21),
-        None,
+    let resolved_v21 = resolve_v_with_cache(
+        &auth_context,
+        &conflicted_events,
+        StateResVersion::V2_1,
+        &mut cache_v21,
     );
 
     let mut cache_v211 = LocalAuthCache::new(StateResVersion::V2_1_1);
-    let resolved_v211 = resolve_iterative_sort_with_cache(
-        rezzy::IterativeInputs::new(
-            &utils::build_unconflicted_state_test_helper(&auth_context),
-            &conflicted_events,
-            &auth_context,
-            StateResVersion::V2_1_1,
-            &mut std::collections::HashMap::new(),
-            &String::new(),
-        ),
-        Some(&mut cache_v211),
-        None,
+    let resolved_v211 = resolve_v_with_cache(
+        &auth_context,
+        &conflicted_events,
+        StateResVersion::V2_1_1,
+        &mut cache_v211,
     );
 
     // The poisoned event doesn't ruin resolution: both versions converge to
@@ -117,14 +144,7 @@ fn test_pathology_invite_lock() {
 
     let expected_join_id = "$g9ncvyzCxY7U+znAlCxynnqcyZfM7jkJy140WWkxrbo";
 
-    let resolved_v21 = resolve_iterative_sort(rezzy::IterativeInputs::new(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
-        &conflicted_events,
-        &auth_context,
-        StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    ));
+    let resolved_v21 = resolve_v(&auth_context, &conflicted_events, StateResVersion::V2_1);
     let winning_v21 = resolved_v21.get(&user_key).expect(
         "V2.1 must keep @nexy:B joined: the later public join_rules wins over the invite lock",
     );
@@ -135,14 +155,7 @@ fn test_pathology_invite_lock() {
         .expect("winning event must exist");
     assert_eq!(event_v21.get_membership(), Some("join"));
 
-    let resolved_v211 = resolve_iterative_sort(rezzy::IterativeInputs::new(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
-        &conflicted_events,
-        &auth_context,
-        StateResVersion::V2_1_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    ));
+    let resolved_v211 = resolve_v(&auth_context, &conflicted_events, StateResVersion::V2_1_1);
     let winning_v211 = resolved_v211
         .get(&user_key)
         .expect("V2.1.1 must also keep @nexy:B joined (no hallucinated missing join)");

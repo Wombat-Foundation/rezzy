@@ -1067,6 +1067,28 @@ where
     Some((from_idx, to_idx))
 }
 
+/// Applies the shared reachability-index contract after endpoint lookup.
+/// The representation-specific index supplies only the final membership test.
+fn reach_from_index(
+    from_idx: u32,
+    to_idx: u32,
+    cyclic_nodes: &BTreeSet<u32>,
+    self_is_reachable: bool,
+    contains: impl FnOnce() -> bool,
+) -> Reach {
+    if self_is_reachable && from_idx == to_idx {
+        return Reach::Yes;
+    }
+    if cyclic_nodes.contains(&from_idx) || cyclic_nodes.contains(&to_idx) {
+        return Reach::Unknown;
+    }
+    if contains() {
+        Reach::Yes
+    } else {
+        Reach::No
+    }
+}
+
 impl<Id> Reachability for RangePrefilterReachability<Id>
 where
     Id: EventId + Ord,
@@ -1077,14 +1099,9 @@ where
         let Some((from_idx, to_idx)) = reach_endpoints(&self.index, from, to) else {
             return Reach::Unknown;
         };
-        if self.cyclic_nodes.contains(&from_idx) || self.cyclic_nodes.contains(&to_idx) {
-            return Reach::Unknown;
-        }
-        if self.reaches_index(from_idx, to_idx) {
-            Reach::Yes
-        } else {
-            Reach::No
-        }
+        reach_from_index(from_idx, to_idx, &self.cyclic_nodes, false, || {
+            self.reaches_index(from_idx, to_idx)
+        })
     }
 }
 
@@ -1098,17 +1115,9 @@ where
         let Some((from_idx, to_idx)) = reach_endpoints(&self.index, from, to) else {
             return Reach::Unknown;
         };
-        if from_idx == to_idx {
-            return Reach::Yes;
-        }
-        if self.cyclic_nodes.contains(&from_idx) || self.cyclic_nodes.contains(&to_idx) {
-            return Reach::Unknown;
-        }
-        if self.descendant_bitmaps[from_idx as usize].contains(to_idx) {
-            Reach::Yes
-        } else {
-            Reach::No
-        }
+        reach_from_index(from_idx, to_idx, &self.cyclic_nodes, true, || {
+            self.descendant_bitmaps[from_idx as usize].contains(to_idx)
+        })
     }
 }
 

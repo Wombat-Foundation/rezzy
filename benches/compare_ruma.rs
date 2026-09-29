@@ -528,14 +528,14 @@ fn run_shootout(
     let mut pl_cache = HashMap::new();
     for _ in 0..runs {
         pl_cache.clear();
-        let res = rezzy::resolve_iterative_sort(
+        let res = rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
             &unconflicted_state,
             &conflicted_events,
             &auth_context,
             rezzy::StateResVersion::V2,
             &mut pl_cache,
             &String::new(),
-        );
+        ));
         rezzy_result = Some(black_box(res));
     }
     let rezzy_elapsed = start_rezzy.elapsed();
