@@ -1,8 +1,9 @@
 SHELL=/bin/bash
-.DEFAULT_GOAL=_help
+.DEFAULT_GOAL=_default
 
 LAKE ?= lake
 CARGO ?= cargo
+PYTHON ?= python3
 TEST_FEATURES ?=
 CARGO_FEATURE_ARGS ?= $(if $(TEST_FEATURES),--features $(TEST_FEATURES),)
 
@@ -12,6 +13,9 @@ LINT_LOCS_SH = $$(git ls-files '*.sh')
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Formatting & linting (shared)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.PHONY: _default
+_default: format lint ##H Default: format + lint (bare `make`)
 
 .PHONY: format
 format: ##H Format codebase (Rust + Lean + scripts)
@@ -26,6 +30,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 .PHONY: check
 check:	##H Cargo check and code dupe
 	$(CARGO) check --all-targets --all-features
+	cd benches/ && $(CARGO) check --all-targets --all-features
 	-jscpd $$(git ls-files '*.rs')
 	# $(CARGO) fix --all-targets --allow-dirty
 
@@ -35,8 +40,11 @@ lint: ##H Run all linters
 	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS)
 
 .PHONY: fix
-fix:	##H Clippy auto-fix
-	$(CARGO) clippy --allow-dirty --allow-staged --fix --all-targets $(CARGO_FEATURE_ARGS)
+fix:	##H Clippy auto-fix (per-package; workspace-wide --fix silently drops fixes)
+	@for pkg in $$($(CARGO) metadata --no-deps --format-version 1 | $(PYTHON) -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); do \
+		echo "fix: $$pkg"; \
+		$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests -p $$pkg $(CARGO_FEATURE_ARGS); \
+	done
 
 
 .PHONY: doc
@@ -44,12 +52,12 @@ doc: ##H Build docs
 	$(CARGO) doc --no-deps
 	echo '<meta http-equiv="refresh" content="0;url=rezzy/index.html">' > target/doc/index.html
 
-.PHONY: all format lint check doc test install
-all: format lint check doc test install
+.PHONY: all
+all: format lint check doc test
 	@echo "all: done"
 
-# Ensure format runs before any target that reads source files
-lint check doc test install: format
+# `all` sequences format before the rest; lint/check/doc/install must not
+# mutate source files as a side effect of running.
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Lean targets
@@ -88,24 +96,24 @@ lint check doc test install: format
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: rust/build
-rust/build: format ##H Compile Rust binary (release)
-	$(CARGO) build --locked --release --timings --features cli
+rust/build: ##H Compile Rust binary (release)
+	$(CARGO) build --locked --release --timings -p rezzy-cli
 
 .PHONY: rust/so
-rust/so: format ##H Compile shared object (librezzy.so) from the library
+rust/so: ##H Compile shared object (librezzy.so) from the library
 	$(CARGO) rustc --locked --release --lib --crate-type cdylib $(CARGO_FEATURE_ARGS)
 	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
-rust/test: format ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
 ifdef p
-	$(CARGO) test --timings --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --workspace --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
-	$(CARGO) test --timings --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --timings --workspace --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 endif
 
 .PHONY: rust/bench
-rust/bench: format ##H Run benchmarks
+rust/bench: ##H Run benchmarks
 	#$(CARGO) bench --profile release --bench rezzy -- resolve
 	$(CARGO) bench --profile release --benches
 
@@ -113,32 +121,30 @@ rust/bench: format ##H Run benchmarks
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
 
 .PHONY: rust/coverage
-rust/coverage: format ##H Run code coverage and generate HTML report
+rust/coverage: ##H Run code coverage and print per-file summary
 	# TODO: include `src/bin/` in coverage
-	# Run coverage
-	$(CARGO) llvm-cov --lib --tests \
+	$(CARGO) llvm-cov --workspace --lib --tests \
+		--text --output-dir .coverage \
+		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
+	@cat .coverage/text/index.txt
+	@echo
+
+.PHONY: rust/coverage-html
+rust/coverage-html: ##H Run code coverage and generate HTML report
+	$(CARGO) llvm-cov --workspace --lib --tests \
 		--html --output-dir .coverage \
 		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
-	# Print per-file summary to the terminal (functions/lines only)
-	@echo ''
-	@echo '══════════════ COVERAGE SUMMARY ══════════════'
-	$(CARGO) llvm-cov report \
-		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$'
-	# Process report to codecov-compatible JSON
-	$(CARGO) llvm-cov report \
-		--ignore-filename-regex 'src/bin/.*|scripts/.*|build\.rs$$' \
-		--codecov --output-path .coverage/codecov.json
-	@echo DONE. You may open it with:
-	@echo firefox .coverage/html/index.html
+	@echo 'firefox .coverage/html/index.html'
 
 .PHONY: rust/clean
 rust/clean: ##H Remove Rust build artifacts
 	-$(CARGO) clean
+	-cd benches/ && $(CARGO) clean
 	rm -rf .coverage/
 
 .PHONY: rust/install
-rust/install: format ##H Install rezzy binary to cargo bin
-	$(CARGO) install --timings --locked --features cli --path . --bin rezzy
+rust/install: ##H Install rezzy binary to cargo bin
+	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy
 
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary from cargo bin
@@ -151,7 +157,7 @@ rust/e2e: ##H Run e2e integration test on real JSON
 		ARGS=""; \
 		if [ "$$f" = "res/real_dag_52k_room.json" -o "$$f" = "res/real_dag_nheko.json" ]; then ARGS="--state-res v2"; fi; \
 		if [ "$$f" = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-unredacted.org-PARTIAL.jsonl" ]; then ARGS="--state-res v2-1"; fi; \
-		$(CARGO) run --release --features cli -- $$ARGS -i "$$f" || exit 1; \
+		$(CARGO) run --release -p rezzy-cli -- $$ARGS -i "$$f" || exit 1; \
 	done
 
 .PHONY: rust/publish
@@ -166,11 +172,11 @@ rust/publish: ##H Preview package and simulate dry-run publish
 
 # Convenience aliases
 .PHONY: build test bench install clean uninstall so
-build:   rust/build format   ##H Alias for rust/build
-test:    rust/test format    ##H Alias for rust/test
-bench:   rust/bench format   ##H Alias for rust/bench
-cov:     rust/coverage format ##H Alias for rust/coverage
-install: rust/install format ##H Alias for rust/install
+build:   rust/build   ##H Alias for rust/build
+test:    rust/test           ##H Alias for rust/test
+bench:   rust/bench   ##H Alias for rust/bench
+cov:     rust/coverage      ##H Alias for rust/coverage
+install: rust/install ##H Alias for rust/install
 uninstall: rust/uninstall   ##H Alias for rust/uninstall
 so:      rust/so      ##H Alias for rust/so
 
@@ -222,7 +228,7 @@ clean:   rust/clean	##H Remove all build artifacts
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Help
+# Help / extras
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 # [ENUM] Styling / Colors
@@ -231,7 +237,11 @@ STYLE_GREEN := $(shell tput setaf 2 2>/dev/null || echo '\033[32m')
 STYLE_RESET := $(shell tput sgr0 2>/dev/null || echo '\033[0m')
 export STYLE_CYAN STYLE_GREEN STYLE_RESET
 
-.PHONY: _help
-_help:
+.PHONY: extras/cloc
+extras/cloc:
+	cloc HEAD --fmt=2
+
+.PHONY: help
+help:
 	@grep -hE '^[a-zA-Z0-9_\/-]+:[[:space:]]*##H .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":[[:space:]]*##H "}; {printf "$(STYLE_CYAN)%-18s$(STYLE_RESET) %s\n", $$1, $$2}'

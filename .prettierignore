@@ -3,7 +3,9 @@ res/
 lake-manifest.json
 ruma/
 spec/
-tests/resolve/fixtures/
+rz-core/tests/resolve/fixtures/
+rz-core/tests/critique_data/
+rz-core/tests/fixtures/
 .mypy_cache/
 .claude*
 docs/

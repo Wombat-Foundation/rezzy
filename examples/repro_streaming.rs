@@ -34,7 +34,7 @@ fn env_id_list(var: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn load_events(path: &str) -> Vec<serde_json::Value> {
+fn load_events(path: &str) -> Vec<rezzy::JsonValue> {
     let file = File::open(path).expect("open jsonl");
     let reader = BufReader::new(file);
     let mut raw_events = Vec::new();
@@ -43,13 +43,26 @@ fn load_events(path: &str) -> Vec<serde_json::Value> {
         if line.trim().is_empty() {
             continue;
         }
-        raw_events.push(serde_json::from_str(&line).unwrap());
+        raw_events.push(rezzy::JsonValue::parse(&line).unwrap());
     }
     raw_events
 }
 
+/// Reads an array-of-strings field (`prev_events`/`auth_events`), treating a
+/// missing or non-array value as empty.
+fn string_array(val: &rezzy::JsonValue, key: &str) -> Vec<String> {
+    val.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn build_lean_events(
-    raw_events: &[serde_json::Value],
+    raw_events: &[rezzy::JsonValue],
 ) -> (Vec<Meta>, HashMap<String, LeanEvent>, String) {
     let mut metas = Vec::new();
     let mut lean_events: HashMap<String, LeanEvent> = HashMap::new();
@@ -66,28 +79,12 @@ fn build_lean_events(
         let content = val
             .get("content")
             .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let prev: Vec<String> = val
-            .get("prev_events")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let auth: Vec<String> = val
-            .get("auth_events")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .unwrap_or(rezzy::JsonValue::Null);
+        let prev = string_array(val, "prev_events");
+        let auth = string_array(val, "auth_events");
         let depth = val
             .get("depth")
-            .and_then(serde_json::Value::as_u64)
+            .and_then(rezzy::JsonValue::as_u64)
             .unwrap_or(0);
         let is_state = state_key.is_some();
 
@@ -186,7 +183,7 @@ fn run_streaming(
 ) -> (HashMap<String, StateMap>, bool) {
     let mut resolved_state_at: HashMap<String, StateMap> = HashMap::new();
 
-    let completed = rezzy::compute_state_at_streaming_optimized(
+    let completed = rezzy::StreamingInputs::compute_optimized(
         target_refs,
         lean_events,
         version,
@@ -356,7 +353,7 @@ fn print_tip_state(
     check_users: &[String],
     lean_events: &HashMap<String, LeanEvent>,
     resolved_state_at: &HashMap<String, StateMap>,
-    raw_events: &[serde_json::Value],
+    raw_events: &[rezzy::JsonValue],
 ) {
     for tip in heads {
         match walk_to_resolved(tip, lean_events, resolved_state_at) {
@@ -370,8 +367,14 @@ fn print_tip_state(
                 println!("\n=== state at tip {tip} (resolved via {cur}) ===");
                 if let Some(jr) = m.get(&("m.room.join_rules".to_string(), String::new())) {
                     println!("m.room.join_rules -> {jr}");
-                    if let Some(v) = raw_events.iter().find(|e| e["event_id"] == *jr) {
-                        println!("  content: {}", v["content"]);
+                    if let Some(v) = raw_events
+                        .iter()
+                        .find(|e| e["event_id"].as_str() == Some(jr.as_str()))
+                    {
+                        println!(
+                            "  content: {}",
+                            rezzy::json::write_string_value(&v["content"]).unwrap()
+                        );
                     }
                 } else {
                     println!("m.room.join_rules -> <absent>");
