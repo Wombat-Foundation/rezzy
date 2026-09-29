@@ -243,6 +243,12 @@ pub fn build_sidecar(
             continue;
         }
         let mut group = by_event.get(event_id).cloned().unwrap_or_default();
+        // Do not emit an empty record for every ordinary event in a large
+        // aggregate. The sidecar is for retained provenance, not a second
+        // copy of the aggregate's event index.
+        if group.is_empty() {
+            continue;
+        }
         group.sort_by_key(|(source_index, observation)| (*source_index, observation.line));
         let serialized = rezzy::json::write_string_value(event).map_err(sidecar_error)?;
         let record = event_record(event_id, &sha256_id(serialized.as_bytes()), &group, sources);
@@ -751,6 +757,18 @@ mod tests {
         let bytes = build_sidecar(&sources, &observations, &events, None, None).unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("\"metadata_status\":\"single_source\""));
+    }
+
+    #[test]
+    fn sidecar_omits_events_without_observations() {
+        let sources = vec![source("aa", "a.jsonl")];
+        let observations = vec![(0, observation("$a", 1, Some(true)))];
+        let events = vec![
+            rezzy::json!({"event_id": "$a"}),
+            rezzy::json!({"event_id": "$b"}),
+        ];
+        let bytes = build_sidecar(&sources, &observations, &events, None, None).unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap().lines().count(), 2);
     }
 
     #[test]

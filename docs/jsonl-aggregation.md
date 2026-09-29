@@ -37,6 +37,34 @@ Diagnostics are written to stderr: input files with non-envelope metadata
 produce `[info]` lines and conflicting payloads produce `[warn]` lines. Use
 `--quiet` to suppress them without changing the JSON report.
 
+## Finding missing events
+
+Aggregation does not fetch missing events. To inspect references made by the
+aggregate that are not present in it, run:
+
+```sh
+rezzy inspect gaps \
+  --input merged/merged-room-v12.jsonl \
+  --json > gaps.json
+```
+
+The JSON report contains:
+
+- `missing_events`: the count of unique missing event IDs across both kinds;
+- `prev_events`: the missing IDs needed to complete the timeline DAG;
+- `auth_events`: the missing IDs needed to complete event authorization
+  chains; and
+- `references`: the present event IDs that refer to each missing ID, with
+  `kind` set to `prev_events` or `auth_events`.
+
+The flat default output is the deduplicated union of the missing IDs and is
+intended for piping into `federation get-remote-dag --from-file -`. Missing
+`prev_events` are fetched through DAG backfill; missing `auth_events` require
+the event-authentication endpoint. `federation gap-fill` can perform both in
+rounds when a valid federation signing key is configured. Fetched files must
+be included in a later `aggregate` invocation; the original aggregate is not
+mutated.
+
 ## Selecting inputs
 
 There are three ways to choose what gets aggregated.

@@ -10,6 +10,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use rezzy::JsonValue;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 pub fn command() -> Command {
@@ -449,7 +450,12 @@ pub fn get_remote_dag(
         }
     }
     let mut seen = HashSet::new();
-    let mut lines = Vec::new();
+    if let Some(parent) = output.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let output_file = fs::File::create(output)?;
+    let mut output_writer = BufWriter::new(output_file);
+    let mut event_count = 0_usize;
     let mut failures = FetchFailures::default();
     let max = if limit < 0 {
         usize::MAX
@@ -588,13 +594,26 @@ pub fn get_remote_dag(
                     }
                 }
             }
-            lines.push(line);
+            let encoded = rezzy::json::write_string_value(&line)
+                .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?;
+            writeln!(output_writer, "{encoded}")?;
+            event_count = event_count.saturating_add(1);
             if seen.len() >= max {
                 break;
             }
         }
+
+        // Make the fetched events durable before advancing the checkpoint.
+        // If interrupted after this point, re-fetching the checkpointed
+        // frontier is safe because aggregate deduplicates event IDs.
+        output_writer.flush()?;
+        let frontier = queue.iter().cloned().collect::<Vec<_>>();
+        if let Some(path) = emit_missing.filter(|path| *path != Path::new("-")) {
+            write_frontier_checkpoint(path, &frontier)?;
+        }
     }
-    if lines.is_empty() && !failures.is_empty() {
+    output_writer.flush()?;
+    if event_count == 0 && !failures.is_empty() {
         return Err(AppError::new(
             ErrorCode::NetworkError,
             format!(
@@ -603,21 +622,12 @@ pub fn get_remote_dag(
             ),
         ));
     }
-    let mut text = String::new();
-    for line in &lines {
-        text.push_str(
-            &rezzy::json::write_string_value(line)
-                .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?,
-        );
-        text.push('\n');
-    }
-    fs::write(output, text)?;
     let remaining_frontier = queue.into_iter().collect::<Vec<_>>();
     if let Some(path) = emit_missing {
         crate::repair::write_event_ids(path, &remaining_frontier)?;
     }
     let mut result = rezzy::json!({
-        "count": lines.len(),
+        "count": event_count,
         "output": output.display().to_string(),
         "remaining_frontier": remaining_frontier,
     });
@@ -810,9 +820,14 @@ fn fetch_auth_batches(
             referencing.insert(reference.event_id.clone());
         }
     }
-    let mut lines = Vec::new();
+    if let Some(parent) = output.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let output_file = fs::File::create(output)?;
+    let mut output_writer = BufWriter::new(output_file);
     let mut seen = HashSet::new();
     let mut failures = FetchFailures::default();
+    let mut written = 0_usize;
     for event_id in referencing {
         let uri = format!(
             "/_matrix/federation/v1/event_auth/{}/{}",
@@ -843,25 +858,40 @@ fn fetch_auth_batches(
                     continue;
                 };
                 if seen.insert(id) {
-                    lines.push(item.clone());
+                    let encoded = rezzy::json::write_string_value(item)
+                        .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?;
+                    writeln!(output_writer, "{encoded}")?;
+                    written = written.saturating_add(1);
                 }
             }
         }
+        // Flush after every response so an interrupted crawl keeps the auth
+        // chains it already fetched.
+        output_writer.flush()?;
     }
-    write_jsonl(output, &lines)?;
-    Ok((lines.len(), failures))
+    output_writer.flush()?;
+    Ok((written, failures))
 }
 
-fn write_jsonl(path: &Path, events: &[JsonValue]) -> Result<(), AppError> {
+/// Atomically replace the crawl frontier checkpoint.
+///
+/// The checkpoint is written to a sibling temp file and renamed into place, so
+/// a crash never leaves a truncated checkpoint that a resume would trust. It is
+/// only advanced after the corresponding backfill events have been flushed.
+fn write_frontier_checkpoint(path: &Path, frontier: &[String]) -> Result<(), AppError> {
     let mut text = String::new();
-    for event in events {
-        text.push_str(
-            &rezzy::json::write_string_value(event)
-                .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?,
-        );
+    for id in frontier {
+        text.push_str(id);
         text.push('\n');
     }
-    fs::write(path, text)?;
+    if let Some(parent) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    fs::write(&temp, text)?;
+    fs::rename(&temp, path)?;
     Ok(())
 }
 
@@ -908,5 +938,19 @@ mod tests {
     fn fetch_failures_default_is_empty() {
         assert!(FetchFailures::default().is_empty());
         assert_eq!(FetchFailures::default().total(), 0);
+    }
+
+    #[test]
+    fn frontier_checkpoint_replaces_prior_contents_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join("rezzy-frontier-checkpoint-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("frontier.jsonl");
+        super::write_frontier_checkpoint(&path, &["$first".to_string(), "$second".to_string()])
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "$first\n$second\n");
+        super::write_frontier_checkpoint(&path, &["$only".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "$only\n");
+        assert!(!dir.join("frontier.jsonl.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
