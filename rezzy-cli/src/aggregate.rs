@@ -477,8 +477,30 @@ fn canonicalize_event(
             format!("{label}: canonical event is invalid JSON: {error}"),
         )
     })?;
+    preserve_create_room_version(&original, event);
     let changed = *event != original;
     Ok(changed)
+}
+
+fn preserve_create_room_version(original: &rezzy::JsonValue, canonical: &mut rezzy::JsonValue) {
+    if original.get("type").and_then(|value| value.as_str()) != Some("m.room.create") {
+        return;
+    }
+    let Some(room_version) = original
+        .get("content")
+        .and_then(|content| content.get("room_version"))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(content) = canonical
+        .as_object_mut()
+        .and_then(|object| object.get_mut("content"))
+        .and_then(|content| content.as_object_mut())
+    else {
+        return;
+    };
+    content.insert("room_version".to_owned(), room_version);
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
