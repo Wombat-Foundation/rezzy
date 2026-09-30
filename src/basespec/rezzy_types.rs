@@ -1860,6 +1860,24 @@ pub trait RawEvent {
 /// for free.
 ///
 /// Content is parsed once at construction from [`RawEvent::raw_content_json`].
+///
+/// # Migration from `ParsedEvent::new`
+///
+/// The infallible `ParsedEvent::new` constructor was removed. It mapped any
+/// content parse failure onto `Value::Null`, which is indistinguishable from a
+/// legitimately empty/absent content object, so malformed content was silently
+/// dropped instead of reported. Replace `ParsedEvent::new(&event)` with
+/// [`ParsedEvent::try_new`] and handle the error:
+///
+/// ```rust,no_run
+/// use rezzy::{ParsedEvent, RawEvent};
+///
+/// fn wrap(event: &impl RawEvent) -> Result<(), String> {
+///     let parsed = ParsedEvent::try_new(event)?;
+///     let _ = parsed;
+///     Ok(())
+/// }
+/// ```
 pub struct ParsedEvent<'a, T: RawEvent> {
     raw: &'a T,
     content: crate::json::Value,
