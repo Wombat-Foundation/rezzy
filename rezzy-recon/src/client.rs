@@ -1184,16 +1184,16 @@ mod tests {
         );
     }
 
-    /// Drive one round where a single max-capacity bucket fails outright,
-    /// forcing an immediate depth split, and return the resulting action.
-    fn first_failing_round(exchange: &mut BucketExchange) -> ClientAction {
-        let previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
+    /// Round 1 for the no-progress/narrowing tests: one max-capacity bucket
+    /// fails outright, forcing an immediate depth split (no sibling exists
+    /// yet this round).
+    fn advance_failed_root_bucket(exchange: &mut BucketExchange) -> ClientAction {
         exchange.advance(
             BucketDecodeBatch {
                 successful_buckets: vec![],
                 failed_buckets: vec![(7, 0)],
             },
-            &previous_requests,
+            &[BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)],
             Some(u64::MAX / 2),
         )
     }
@@ -1216,7 +1216,7 @@ mod tests {
 
         // Round 1: a single bucket at max capacity fails outright, forcing
         // an immediate depth split (no sibling exists yet this round).
-        let mut action = first_failing_round(&mut exchange);
+        let mut action = advance_failed_root_bucket(&mut exchange);
 
         // Rounds 2..: every split's children BOTH keep failing -- neither
         // sibling succeeds, nothing separates out or narrows.
@@ -1265,7 +1265,7 @@ mod tests {
             MAX_BUCKETED_SKETCH_CAPACITY,
         );
 
-        let mut action = first_failing_round(&mut exchange);
+        let mut action = advance_failed_root_bucket(&mut exchange);
 
         // Run 5 narrowing split rounds (more than MAX_NO_PROGRESS_ROUNDS).
         // Each round, left fails and right succeeds with 0 roots.
