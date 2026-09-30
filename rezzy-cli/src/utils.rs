@@ -887,4 +887,126 @@ mod tests {
             "indexed fork resolution must match full-context resolution"
         );
     }
+
+    /// Adversarial regression for the borrowed-room-map optimization.
+    ///
+    /// The room contains unrelated auth/state branches and message events that
+    /// are forward-reachable from the fork's conflicted events but are *not*
+    /// auth ancestors of any parent-state event. The full room therefore has a
+    /// materially larger forward-reachable set than the fork's auth closure.
+    ///
+    /// The shared-index resolver passes the whole room by reference, so prove it
+    /// resolves identically to both the full-context resolver and the (removed)
+    /// filtered auth-closure resolver, for resolved state and HAMT roots.
+    #[test]
+    fn fork_resolution_equivalent_across_context_shapes() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:x","depth":1,"content":{"room_version":"10","creator":"@a:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"$pl_a","type":"m.room.power_levels","state_key":"","sender":"@a:x","depth":2,"content":{"users":{"@a:x":100,"@b:x":50}},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_b","type":"m.room.power_levels","state_key":"","sender":"@b:x","depth":2,"content":{"users":{"@b:x":100,"@a:x":50}},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$ma","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":3,"content":{"membership":"join"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
+{"event_id":"$mb","type":"m.room.member","state_key":"@b:x","sender":"@b:x","depth":3,"content":{"membership":"join"},"prev_events":["$pl_b"],"auth_events":["$create","$pl_b"]}
+{"event_id":"$topic_a","type":"m.room.topic","state_key":"","sender":"@a:x","depth":3,"content":{"topic":"a"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
+{"event_id":"$topic_b","type":"m.room.topic","state_key":"","sender":"@b:x","depth":3,"content":{"topic":"b"},"prev_events":["$pl_b"],"auth_events":["$create","$pl_b"]}
+{"event_id":"$m1","type":"m.room.message","sender":"@a:x","depth":4,"content":{"body":"1"},"prev_events":["$ma"],"auth_events":["$create","$pl_a"]}
+{"event_id":"$m2","type":"m.room.message","sender":"@a:x","depth":5,"content":{"body":"2"},"prev_events":["$m1"],"auth_events":["$create","$pl_a"]}
+{"event_id":"$m3","type":"m.room.message","sender":"@b:x","depth":4,"content":{"body":"3"},"prev_events":["$mb"],"auth_events":["$create","$pl_b"]}
+{"event_id":"$m4","type":"m.room.message","sender":"@b:x","depth":5,"content":{"body":"4"},"prev_events":["$m3"],"auth_events":["$create","$pl_b"]}
+"#,
+        );
+
+        let state_a: SharedStateMap = std::sync::Arc::new(
+            [
+                (EventType::from("m.room.create"), String::new(), "$create"),
+                (
+                    EventType::from("m.room.power_levels"),
+                    String::new(),
+                    "$pl_a",
+                ),
+                (EventType::from("m.room.member"), "@a:x".to_string(), "$ma"),
+                (EventType::from("m.room.topic"), String::new(), "$topic_a"),
+            ]
+            .into_iter()
+            .map(|(typ, key, id)| ((typ, key), id.to_string()))
+            .collect(),
+        );
+        let state_b: SharedStateMap = std::sync::Arc::new(
+            [
+                (EventType::from("m.room.create"), String::new(), "$create"),
+                (
+                    EventType::from("m.room.power_levels"),
+                    String::new(),
+                    "$pl_b",
+                ),
+                (EventType::from("m.room.member"), "@b:x".to_string(), "$mb"),
+                (EventType::from("m.room.topic"), String::new(), "$topic_b"),
+            ]
+            .into_iter()
+            .map(|(typ, key, id)| ((typ, key), id.to_string()))
+            .collect(),
+        );
+
+        let parents = vec![state_a, state_b];
+        let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
+
+        let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
+
+        let reachability =
+            rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
+        let borrowed =
+            resolve_parent_states(&parents, &events, StateResVersion::V2_1, &reachability);
+
+        let filtered_events = auth_closure(&events, &parents);
+        assert!(
+            filtered_events.len() < events.len(),
+            "fixture must place events outside the fork's auth closure"
+        );
+        let filtered = rezzy::resolve_state_maps(&bare, &filtered_events, StateResVersion::V2_1);
+
+        assert_eq!(borrowed.as_ref(), &full, "borrowed room must match full");
+        assert_eq!(filtered.as_ref(), &full, "filtered closure must match full");
+        assert_eq!(
+            hamt_root_hash(&full, b"room"),
+            hamt_root_hash(&filtered, b"room"),
+            "HAMT roots must match (full vs filtered)"
+        );
+        assert_eq!(
+            hamt_root_hash(&full, b"room"),
+            hamt_root_hash(borrowed.as_ref(), b"room"),
+            "HAMT roots must match (full vs borrowed)"
+        );
+    }
+
+    fn auth_closure(
+        events: &HashMap<String, LeanEvent>,
+        parents: &[SharedStateMap],
+    ) -> HashMap<String, LeanEvent> {
+        let auth_graph = rezzy::auth::roaring::AuthGraph::build(events);
+        let mut relevant = roaring::RoaringBitmap::new();
+        for state in parents {
+            for id in state.values() {
+                if let Some(idx) = auth_graph.index.index_of(id) {
+                    relevant.insert(idx);
+                    relevant |= &auth_graph.auth_bitmaps[idx as usize];
+                }
+            }
+        }
+        relevant
+            .into_iter()
+            .filter_map(|idx| {
+                let id = auth_graph.index.item_at(idx as usize)?;
+                events.get(id).map(|ev| (id.clone(), ev.clone()))
+            })
+            .collect()
+    }
+
+    fn hamt_root_hash(state: &ResolvedState, structural_key: &[u8]) -> rezzy::hamt::StructuralHash {
+        rezzy::hamt::build_hamt::<(EventType, String), String, _>(
+            structural_key,
+            state.iter().map(|(k, v)| (k.clone(), v.clone())),
+        )
+        .expect("HAMT build")
+        .structural_hash
+    }
 }
