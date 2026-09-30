@@ -220,8 +220,12 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                     let parent_states: Vec<SharedStateMap> =
                         parent_roots.iter().map(hamt_to_state_map).collect();
                     let t = std::time::Instant::now();
-                    let resolved_state =
-                        resolve_parent_states(&parent_states, ctx.events_map, ctx.version);
+                    let resolved_state = resolve_parent_states(
+                        &parent_states,
+                        ctx.events_map,
+                        ctx.version,
+                        ctx.auth_graph,
+                    );
                     let elapsed = t.elapsed();
                     fork_count = fork_count.saturating_add(1);
                     fork_time = fork_time.saturating_add(elapsed);

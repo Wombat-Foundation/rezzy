@@ -506,6 +506,7 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent, S>,
     version: StateResVersion,
+    auth_graph: &rezzy::auth::roaring::AuthGraph,
 ) -> SharedStateMap {
     // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
     // Common in linear DAGs where every parent shares the same resolved state.
@@ -519,28 +520,40 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
         }
     }
 
-    // Resolve through the library's lazy provider API instead of
-    // pre-materializing the auth-chain closure of these parent states into
-    // an owned `HashMap` on every fork. `resolve_state_maps` clones its
-    // entire `event_context` argument (and rebuilds the V2.1+ MSC4297
-    // reachability index over it) on every call; called once for the
-    // final-heads resolve that is fine, but a full-history incremental walk
-    // (e.g. `--format deltas`) visits every fork point, making it
-    // O(room size) per fork. The lazy API walks auth chains on demand from
-    // the conflicted set, so it only touches (and clones) the events that
-    // actually participate in the conflict.
-    //
-    // Unwrap Arc<OrdMap> → &OrdMap for the library call.
+    // Restrict the event context passed to the library to the auth-chain
+    // closure of the events actually referenced by these parent states,
+    // rather than the full room's event map. `resolve_state_maps`
+    // (specifically the V2.1+ MSC4297 subgraph step) walks/clones its
+    // entire `event_context` argument on every call; passing the full
+    // map here is fine when called once (the final-heads resolve in
+    // `partition_and_resolve_state`) but is O(room size) *per fork* when
+    // called from a full-history incremental walk (e.g. `--format
+    // deltas`), which visits every fork point in the DAG, not just the
+    // final heads. Using the precomputed `AuthGraph` bitmaps turns this
+    // into O(auth-chain size) per call instead.
+    let mut relevant = roaring::RoaringBitmap::new();
+    for state in parent_states {
+        for id in state.values() {
+            if let Some(idx) = auth_graph.index.index_of(id) {
+                relevant.insert(idx);
+                relevant |= &auth_graph.auth_bitmaps[idx as usize];
+            }
+        }
+    }
+    let filtered_context: HashMap<String, LeanEvent> = relevant
+        .into_iter()
+        .filter_map(|idx| {
+            let id = auth_graph.index.item_at(idx as usize)?;
+            events_map.get(id).map(|ev| (id.clone(), ev.clone()))
+        })
+        .collect();
+
+    // Unwrap Arc<OrdMap> → &OrdMap for the library call
     let bare_maps: Vec<ResolvedState> = parent_states
         .iter()
         .map(|arc| arc.as_ref().clone())
         .collect();
-    let resolved = rezzy::resolve_state_maps_lazy_with_diff(
-        &bare_maps,
-        events_map,
-        None::<Vec<String>>,
-        version,
-    );
+    let resolved = rezzy::resolve_state_maps(&bare_maps, &filtered_context, version);
     std::sync::Arc::new(resolved)
 }
 
@@ -829,6 +842,71 @@ mod tests {
         assert_eq!(
             missing_auth,
             [] as [rezzy::MissingAuthEvent<std::string::String>; 0]
+        );
+    }
+
+    /// Regression guard: the fork-context filter used by `resolve_parent_states`
+    /// (the auth-chain closure of the parent-state events) must resolve to
+    /// exactly the same state as passing the *full* room event map.
+    ///
+    /// The V2.1+ MSC4297 step needs the forward-reachable side of the conflicted
+    /// subgraph, which lives in the auth closure of the parent states. A context
+    /// narrowed to only the backward-reachable set of the conflicted events
+    /// (e.g. an on-demand lazy provider) under-resolves and silently changes the
+    /// result — this test fails if that ever becomes the implementation.
+    #[test]
+    fn filtered_parent_resolution_matches_full_context() {
+        let events = map_from_jsonl(
+            r#"
+{"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:x","depth":1,"content":{"room_version":"10","creator":"@a:x"},"prev_events":[],"auth_events":[]}
+{"event_id":"$pl_a","type":"m.room.power_levels","state_key":"","sender":"@a:x","depth":2,"content":{"users":{"@a:x":100}},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$pl_b","type":"m.room.power_levels","state_key":"","sender":"@b:x","depth":2,"content":{"users":{"@b:x":100,"@a:x":50}},"prev_events":["$create"],"auth_events":["$create"]}
+{"event_id":"$ma","type":"m.room.member","state_key":"@a:x","sender":"@a:x","depth":3,"content":{"membership":"join"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
+{"event_id":"$mb","type":"m.room.member","state_key":"@b:x","sender":"@b:x","depth":3,"content":{"membership":"join"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
+{"event_id":"$unrelated","type":"m.room.message","sender":"@a:x","depth":3,"content":{"body":"x"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
+"#,
+        );
+        let auth_graph = rezzy::auth::roaring::AuthGraph::build(&events);
+
+        let state_a: SharedStateMap = std::sync::Arc::new(
+            [
+                (EventType::from("m.room.create"), String::new(), "$create"),
+                (
+                    EventType::from("m.room.power_levels"),
+                    String::new(),
+                    "$pl_a",
+                ),
+                (EventType::from("m.room.member"), "@a:x".to_string(), "$ma"),
+            ]
+            .into_iter()
+            .map(|(typ, key, id)| ((typ, key), id.to_string()))
+            .collect(),
+        );
+        let state_b: SharedStateMap = std::sync::Arc::new(
+            [
+                (EventType::from("m.room.create"), String::new(), "$create"),
+                (
+                    EventType::from("m.room.power_levels"),
+                    String::new(),
+                    "$pl_b",
+                ),
+                (EventType::from("m.room.member"), "@b:x".to_string(), "$mb"),
+            ]
+            .into_iter()
+            .map(|(typ, key, id)| ((typ, key), id.to_string()))
+            .collect(),
+        );
+
+        let parents = vec![state_a, state_b];
+        let filtered = resolve_parent_states(&parents, &events, StateResVersion::V2_1, &auth_graph);
+
+        let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
+        let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
+
+        assert_eq!(
+            filtered.as_ref(),
+            &full,
+            "filtered fork context must match full-context resolution"
         );
     }
 }
