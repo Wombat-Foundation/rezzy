@@ -140,7 +140,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         ctx.args.tie_break.as_slice()
     };
     let raw_events: Vec<LeanEvent> = ctx.events_map.values().cloned().collect();
-    let sorted_events = reorder_by_kahn(&raw_events, tie_break, ctx.stream_order);
+    let order = reorder_by_kahn(&raw_events, tie_break, ctx.stream_order);
 
     let structural_key: &[u8] = ctx
         .args
@@ -159,7 +159,8 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         .expect("empty HAMT build must succeed");
 
     let mut child_citations: HashMap<&str, usize> = HashMap::new();
-    for ev in &sorted_events {
+    for &i in &order {
+        let ev = &raw_events[i];
         let mut seen_prevs = std::collections::HashSet::new();
         for prev in &ev.prev_events {
             if seen_prevs.insert(prev.as_str()) {
@@ -189,7 +190,8 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             std::convert::Infallible,
         > { unreachable!("in-memory HAMT nodes do not have unresolvable lazy references") };
 
-    for ev in &sorted_events {
+    for &i in &order {
+        let ev = &raw_events[i];
         processed = processed.saturating_add(1);
         if debug && processed.checked_rem(progress_interval) == Some(0) {
             eprintln!(
@@ -896,18 +898,19 @@ fn warn_once(quiet: bool, message: &str) {
 /// Render the timeline to a string, applying only authorized redactions.
 fn render_timeline(ctx: &FormattingContext) -> String {
     let events = prepare_timeline_events(ctx);
-    let sorted_events = match ctx.args.timeline_order {
+    let order = match ctx.args.timeline_order {
         TimelineOrder::Causal => sort_timeline_causal(ctx.args, ctx.stream_order, &events),
         TimelineOrder::Synapse => sort_timeline_synapse(ctx.args, ctx.stream_order, &events),
     };
-    render_timeline_events(ctx, &sorted_events)
+    render_timeline_events(ctx, &events, &order)
 }
 
 /// Render the timestamp-primary human view (`-f timeline-chronological`).
 fn render_timeline_chronological(ctx: &FormattingContext) -> String {
-    let mut sorted_events = prepare_timeline_events(ctx);
-    sort_timeline_chronological(&mut sorted_events);
-    render_timeline_events(ctx, &sorted_events)
+    let mut events = prepare_timeline_events(ctx);
+    sort_timeline_chronological(&mut events);
+    let order: Vec<usize> = (0..events.len()).collect();
+    render_timeline_events(ctx, &events, &order)
 }
 
 /// Collect events and apply only authorized redactions.
@@ -970,7 +973,7 @@ fn sort_timeline_causal(
     args: &Args,
     stream: Option<&StreamOrderIndex>,
     events: &[LeanEvent],
-) -> Vec<LeanEvent> {
+) -> Vec<usize> {
     let requested: Vec<OrderKey> = if args.tie_break.is_empty() {
         DEFAULT_TIE_BREAK.to_vec()
     } else {
@@ -1008,7 +1011,7 @@ fn sort_timeline_synapse(
     args: &Args,
     stream: Option<&StreamOrderIndex>,
     events: &[LeanEvent],
-) -> Vec<LeanEvent> {
+) -> Vec<usize> {
     let fallbacks = events
         .iter()
         .filter(|event| {
@@ -1040,16 +1043,16 @@ fn sort_timeline_chronological(events: &mut [LeanEvent]) {
     });
 }
 
-/// Reorder `events` into a parent-before-child (Kahn) order, using `keys` for
-/// the currently-ready frontier only. A requested stream component that is
-/// unknown for an event becomes [`MISSING_STREAM_ORDER`] rather than a
-/// timestamp.
+/// Compute the parent-before-child (Kahn) order of `events`, returning indices
+/// into `events` in emission order. `keys` orders only the currently-ready
+/// frontier; a requested stream component that is unknown for an event becomes
+/// [`MISSING_STREAM_ORDER`] rather than a timestamp.
 #[must_use]
 fn reorder_by_kahn(
     events: &[LeanEvent],
     keys: &[OrderKey],
     stream: Option<&StreamOrderIndex>,
-) -> Vec<LeanEvent> {
+) -> Vec<usize> {
     let ids: Vec<String> = events.iter().map(|event| event.event_id.clone()).collect();
     let parents: Vec<Vec<String>> = events
         .iter()
@@ -1071,14 +1074,16 @@ fn reorder_by_kahn(
         })
         .collect();
     kahn_order_by(&ids, &parents, &order_keys)
-        .into_iter()
-        .map(|index| events[index].clone())
-        .collect()
 }
 
-fn render_timeline_events(ctx: &FormattingContext, sorted_events: &[LeanEvent]) -> String {
+fn render_timeline_events(
+    ctx: &FormattingContext,
+    events: &[LeanEvent],
+    order: &[usize],
+) -> String {
     let mut displaynames: HashMap<String, String> = HashMap::new();
-    for ev in sorted_events {
+    for &i in order {
+        let ev = &events[i];
         if ev.event_type == "m.room.member" {
             if let Some(dn) = ev.content.get("displayname").and_then(|v| v.as_str()) {
                 if !dn.is_empty() {
@@ -1091,7 +1096,8 @@ fn render_timeline_events(ctx: &FormattingContext, sorted_events: &[LeanEvent]) 
     let mut output = String::new();
     let mut last_date = String::new();
 
-    for ev in sorted_events {
+    for &i in order {
+        let ev = &events[i];
         let sender = get_user_displayname(&ev.sender, &displaynames);
         let Some(desc) = format_event_description(ev, &sender, &displaynames) else {
             continue;
@@ -1511,6 +1517,13 @@ mod tests {
         events.iter().map(|event| event.event_id.as_str()).collect()
     }
 
+    fn ordered_ids<'a>(events: &'a [LeanEvent], order: &[usize]) -> Vec<&'a str> {
+        order
+            .iter()
+            .map(|&index| events[index].event_id.as_str())
+            .collect()
+    }
+
     fn stream_index(entries: &[(&str, u64)]) -> StreamOrderIndex {
         let mut index = StreamOrderIndex::default();
         for (event_id, stream) in entries {
@@ -1524,8 +1537,9 @@ mod tests {
         let parent = timeline_event("$parent", &[], 1, 200);
         let child = timeline_event("$child", &["$parent"], 2, 100);
         let args = test_args(OutputFormat::Timeline);
-        let out = sort_timeline_causal(&args, None, &[child, parent]);
-        assert_eq!(order_of(&out), vec!["$parent", "$child"]);
+        let events = vec![child, parent];
+        let order = sort_timeline_causal(&args, None, &events);
+        assert_eq!(ordered_ids(&events, &order), vec!["$parent", "$child"]);
     }
 
     #[test]
@@ -1534,8 +1548,9 @@ mod tests {
         let x = timeline_event("$x", &["$root"], 1, 500);
         let y = timeline_event("$y", &["$root"], 1, 100);
         let args = test_args(OutputFormat::Timeline);
-        let out = sort_timeline_causal(&args, None, &[x, y, root]);
-        assert_eq!(order_of(&out), vec!["$root", "$y", "$x"]);
+        let events = vec![x, y, root];
+        let order = sort_timeline_causal(&args, None, &events);
+        assert_eq!(ordered_ids(&events, &order), vec!["$root", "$y", "$x"]);
     }
 
     #[test]
@@ -1555,8 +1570,9 @@ mod tests {
         let y = timeline_event("$y", &["$root"], 1, 100);
         let stream = stream_index(&[("$x", 1), ("$y", 2)]);
         let args = test_args(OutputFormat::Timeline);
-        let out = sort_timeline_synapse(&args, Some(&stream), &[x, y, root]);
-        assert_eq!(order_of(&out), vec!["$root", "$x", "$y"]);
+        let events = vec![x, y, root];
+        let order = sort_timeline_synapse(&args, Some(&stream), &events);
+        assert_eq!(ordered_ids(&events, &order), vec!["$root", "$x", "$y"]);
     }
 
     #[test]
@@ -1566,8 +1582,9 @@ mod tests {
         let parent = timeline_event("$parent", &[], 5, 100);
         let child = timeline_event("$child", &["$parent"], 1, 200);
         let args = test_args(OutputFormat::Timeline);
-        let out = sort_timeline_synapse(&args, None, &[child, parent]);
-        assert_eq!(order_of(&out), vec!["$parent", "$child"]);
+        let events = vec![child, parent];
+        let order = sort_timeline_synapse(&args, None, &events);
+        assert_eq!(ordered_ids(&events, &order), vec!["$parent", "$child"]);
     }
 
     #[test]
@@ -1583,8 +1600,9 @@ mod tests {
             tie_break: vec![OrderKey::StreamOrdering],
             ..test_args(OutputFormat::Timeline)
         };
-        let out = sort_timeline_causal(&args, Some(&stream), &[root, x, y]);
-        assert_eq!(order_of(&out), vec!["$root", "$x", "$y"]);
+        let events = vec![root, x, y];
+        let order = sort_timeline_causal(&args, Some(&stream), &events);
+        assert_eq!(ordered_ids(&events, &order), vec!["$root", "$x", "$y"]);
     }
 
     #[test]
