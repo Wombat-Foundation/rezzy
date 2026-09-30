@@ -3400,14 +3400,23 @@ fn test_types_validate_syntactic_accepts_historical_sender_localparts(room_versi
 
     let outcome = ev
         .validate_syntactic(room_version)
-        .expect("uppercase sender must be accepted");
-    assert!(outcome.warnings.is_empty());
+        .expect("uppercase sender must be accepted, not rejected");
+    assert_eq!(
+        outcome.warnings,
+        vec![rezzy::warnings::Warning::CompatibilityMxid {
+            event_id: "$valid_event_id:example.com".to_string(),
+            field: "sender",
+            mxid: "@Alice:example.com".to_string(),
+        }],
+        "the strict-grammar violation must surface as a warning, not an error"
+    );
+    assert_eq!(outcome.warnings[0].code(), "W003_COMPATIBILITY_MXID");
 
     ev.sender = "@\u{00e9}lodie:example.com".to_string();
     let outcome = ev
         .validate_syntactic(room_version)
         .expect("Unicode sender must be accepted");
-    assert!(outcome.warnings.is_empty());
+    assert_eq!(outcome.warnings.len(), 1);
 
     ev.sender = "@:example.com".to_string();
     assert!(
@@ -3459,12 +3468,20 @@ fn test_types_validate_syntactic_create_rules() {
     ev.content = rezzy::json!({ "creator": "@alice:example.com" });
     assert!(ev.validate_syntactic("11").is_ok());
 
-    // A creator using the compatibility grammar is accepted in a room event.
+    // A creator using the compatibility grammar is accepted with a warning,
+    // matching the MUST-accept rule for historical user IDs in room events.
     ev.content = rezzy::json!({ "creator": "@Alice:example.com" });
     let outcome = ev
         .validate_syntactic("11")
-        .expect("creator must be accepted");
-    assert!(outcome.warnings.is_empty());
+        .expect("compatibility creator must be accepted, not rejected");
+    assert_eq!(
+        outcome.warnings,
+        vec![rezzy::warnings::Warning::CompatibilityMxid {
+            event_id: "$valid_event_id:example.com".to_string(),
+            field: "creator",
+            mxid: "@Alice:example.com".to_string(),
+        }]
+    );
 
     // Rule 1.4 (v12+): `creator` is no longer required, and
     // `additional_creators` use the same historical MXID grammar as sender.

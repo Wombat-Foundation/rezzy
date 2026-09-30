@@ -32,6 +32,15 @@ enum MxidField {
     Creator,
 }
 
+impl MxidField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sender => "sender",
+            Self::Creator => "creator",
+        }
+    }
+}
+
 /// Marker trait for types that can serve as event identifiers.
 ///
 /// Any type that is `Clone + Eq + Hash + Ord + Debug + Display` automatically
@@ -2875,9 +2884,11 @@ fn room_version_is_v12_or_later(room_version: &str) -> bool {
 /// drawn from the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`,
 /// `+`), and a non-empty domain.
 ///
-/// This is suitable for callers which create a new user ID. Incoming room
-/// events instead use [`is_acceptable_historical_mxid`]. Exposed so downstream
-/// adapters can enforce the identical grammar without copying it.
+/// This is the no-warning path for IDs found in room events; IDs which fail
+/// this but satisfy [`is_acceptable_historical_mxid`] are accepted with a
+/// [`crate::warnings::Warning::CompatibilityMxid`] instead of being rejected.
+/// It remains suitable for callers which create a new user ID. Exposed so
+/// downstream adapters can enforce the identical grammar without copying it.
 #[must_use]
 pub fn is_valid_mxid(id: &str) -> bool {
     let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
@@ -2993,7 +3004,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let mut warnings = alloc::vec::Vec::new();
         self.validate_structure(room_version)?;
         let id_str = alloc::format!("{}", self.event_id);
-        self.validate_identifiers(room_version)?;
+        self.validate_identifiers(room_version, &mut warnings)?;
         if self.depth > MAX_SAFE_JSON_INTEGER {
             return Err("depth exceeds maximum allowed value");
         }
@@ -3034,7 +3045,11 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         Ok(())
     }
 
-    fn validate_identifiers(&self, room_version: &str) -> Result<(), &'static str>
+    fn validate_identifiers(
+        &self,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
     where
         Id: core::fmt::Display + Clone,
         C: EventContent,
@@ -3043,12 +3058,28 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
-        Self::validate_mxid(&self.sender, MxidField::Sender)?;
-        self.validate_create_identifiers(room_version)
+        self.validate_mxid(&self.sender, MxidField::Sender, warnings)?;
+        self.validate_create_identifiers(room_version, warnings)
     }
 
-    fn validate_mxid(mxid: &str, field: MxidField) -> Result<(), &'static str> {
+    fn validate_mxid(
+        &self,
+        mxid: &str,
+        field: MxidField,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+    {
+        if is_valid_mxid(mxid) {
+            return Ok(());
+        }
         if is_acceptable_historical_mxid(mxid) {
+            warnings.push(crate::warnings::Warning::CompatibilityMxid {
+                event_id: self.event_id.clone(),
+                field: field.as_str(),
+                mxid: mxid.to_string(),
+            });
             return Ok(());
         }
         match field {
@@ -3059,8 +3090,13 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         }
     }
 
-    fn validate_create_identifiers(&self, room_version: &str) -> Result<(), &'static str>
+    fn validate_create_identifiers(
+        &self,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
     where
+        Id: Clone,
         C: EventContent,
     {
         if self.event_type != crate::basespec::event_types::M_ROOM_CREATE {
@@ -3078,7 +3114,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let Some(creator) = self.content.get_creator() else {
             return Err("m.room.create content must have a 'creator' property");
         };
-        Self::validate_mxid(creator, MxidField::Creator)
+        self.validate_mxid(creator, MxidField::Creator, warnings)
     }
 
     fn validate_field_lengths(
