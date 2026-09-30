@@ -12,6 +12,29 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+/// Connect timeout for outbound federation requests, so a flapping or
+/// unreachable destination fails fast instead of hanging in `SYN-SENT`.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Overall timeout for outbound federation requests (connect + transfer).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Process-wide `ureq` agent with the federation timeouts applied.
+///
+/// Request-level `.timeout_connect()` is ignored by `ureq`'s global agent, so
+/// the timeouts must be configured on an explicit agent.
+fn federation_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+    })
+}
 
 pub fn command() -> Command {
     Command::new("federation")
@@ -243,6 +266,12 @@ pub fn load_signing_key(
         })
         .or_else(|| std::env::var("MATRIX_SERVER_SIGNING_KEY_KEYRING").ok());
     if let Some(account) = keyring_account {
+        let cache_key = (origin.to_owned(), account.clone());
+        if let Ok(cache) = signing_key_cache().lock() {
+            if let Some(spec) = cache.get(&cache_key) {
+                return Ok(spec.clone());
+            }
+        }
         let entry = keyring::Entry::new("rezzy", &account).map_err(|e| {
             AppError::new(
                 ErrorCode::SigningKey,
@@ -255,12 +284,16 @@ pub fn load_signing_key(
                 format!("failed to read OS keyring entry rezzy/{account}: {e}"),
             )
         })?;
-        return parse_signing_key(&text).map_err(|message| {
+        let spec = parse_signing_key(&text).map_err(|message| {
             AppError::new(
                 ErrorCode::SigningKey,
                 format!("OS keyring entry rezzy/{account}: {message}"),
             )
-        });
+        })?;
+        if let Ok(mut cache) = signing_key_cache().lock() {
+            cache.insert(cache_key, spec.clone());
+        }
+        return Ok(spec);
     }
 
     let legacy_file_configured = explicit.is_some()
@@ -326,9 +359,117 @@ fn canonical_request(
         .map_err(|e| AppError::new(ErrorCode::NetworkError, e.to_string()))
 }
 
+/// Cache of logical server name -> resolved `https://host[:port]` endpoint.
+fn delegation_cache() -> &'static Mutex<BTreeMap<String, String>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Process-wide cache of parsed signing keys, keyed by `(origin, account)`.
+///
+/// `load_signing_key` runs once per federation request, and each call opens a
+/// fresh Secret Service session; that pattern reliably crashes gnome-keyring's
+/// `plain_negotiate` path under load. Reading each key once per process avoids
+/// the churn (and is faster).
+fn signing_key_cache() -> &'static Mutex<BTreeMap<(String, String), SigningKeySpec>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<(String, String), SigningKeySpec>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Resolve a Matrix server name to its federation endpoint, honoring
+/// server-server delegation: DNS SRV (`_matrix-fed._tcp`, then the legacy
+/// `_matrix._tcp`) first, then `/.well-known/matrix/server` (spec order).
+///
+/// Returns `None` when delegation does not apply (explicit scheme/port) or no
+/// delegation record is found, in which case callers fall back to the literal
+/// host on port 443.
+fn resolve_delegation(destination: &str) -> Option<String> {
+    if destination.contains(':') {
+        return None;
+    }
+    if let Ok(cache) = delegation_cache().lock() {
+        if let Some(cached) = cache.get(destination) {
+            return Some(cached.clone());
+        }
+    }
+    let resolved = srv_lookup(destination).or_else(|| well_known_lookup(destination));
+    if let Some(ref endpoint) = resolved {
+        eprintln!("[info] federation delegation: {destination} -> {endpoint}");
+        if let Ok(mut cache) = delegation_cache().lock() {
+            cache.insert(destination.to_owned(), endpoint.clone());
+        }
+    }
+    resolved
+}
+
+/// Query `_matrix-fed._tcp` / `_matrix._tcp` SRV records via the system
+/// resolver (`dig`). Best effort: absent `dig` or no record yields `None`.
+fn srv_lookup(destination: &str) -> Option<String> {
+    for service in ["_matrix-fed._tcp", "_matrix._tcp"] {
+        let name = format!("{service}.{destination}");
+        if let Some((target, port)) = dig_srv(&name) {
+            return Some(format!("https://{target}:{port}"));
+        }
+    }
+    None
+}
+
+fn dig_srv(name: &str) -> Option<(String, u16)> {
+    let output = std::process::Command::new("dig")
+        .args(["+short", "SRV", name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut best: Option<(u16, String, u16)> = None;
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(priority), Some(_weight), Some(port), Some(target)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let (Ok(priority), Ok(port)) = (priority.parse::<u16>(), port.parse::<u16>()) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .map_or(true, |(best_priority, _, _)| priority < *best_priority)
+        {
+            best = Some((priority, target.trim_end_matches('.').to_owned(), port));
+        }
+    }
+    best.map(|(_, target, port)| (target, port))
+}
+
+/// Fetch `https://<destination>/.well-known/matrix/server` and use `m.server`.
+fn well_known_lookup(destination: &str) -> Option<String> {
+    let url = format!("https://{destination}/.well-known/matrix/server");
+    let response = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+        .ok()?;
+    let body = response.into_string().ok()?;
+    let value = JsonValue::parse(&body).ok()?;
+    let delegated = value.get("m.server")?.as_str()?;
+    if delegated.is_empty() {
+        return None;
+    }
+    if delegated.contains(':') {
+        Some(format!("https://{delegated}"))
+    } else {
+        // Per the spec, `m.server` without a port defaults to 8448.
+        Some(format!("https://{delegated}:8448"))
+    }
+}
+
 fn base_url(destination: &str) -> String {
     if destination.starts_with("http://") || destination.starts_with("https://") {
         destination.trim_end_matches('/').to_owned()
+    } else if let Some(endpoint) = resolve_delegation(destination) {
+        endpoint
     } else {
         format!("https://{destination}")
     }
@@ -360,11 +501,12 @@ pub fn request(
             "HTTPS request requires the `tls` feature; rebuild rezzy-cli with `--features tls` or use http://",
         ));
     }
+    let agent = federation_agent();
     let mut req = match method.to_ascii_uppercase().as_str() {
-        "GET" => ureq::get(&url),
-        "POST" => ureq::post(&url),
-        "PUT" => ureq::put(&url),
-        "DELETE" => ureq::delete(&url),
+        "GET" => agent.get(&url),
+        "POST" => agent.post(&url),
+        "PUT" => agent.put(&url),
+        "DELETE" => agent.delete(&url),
         other => {
             return Err(AppError::new(
                 ErrorCode::NetworkError,
@@ -394,7 +536,7 @@ pub fn request(
                 format!("HTTP {code} from {destination}: {detail}"),
             ));
         }
-        Err(e) => return Err(AppError::new(ErrorCode::NetworkError, e.to_string())),
+        Err(e) => return Err(AppError::new(ErrorCode::RemoteUnavailable, e.to_string())),
     };
     let text = response
         .into_string()
@@ -425,6 +567,12 @@ fn open_output_writer(output: &Path) -> Result<BufWriter<fs::File>, AppError> {
         fs::create_dir_all(parent)?;
     }
     Ok(BufWriter::new(fs::File::create(output)?))
+}
+
+/// Whether `err` means the destination never answered (connect/DNS/TLS/
+/// timeout) as opposed to an HTTP status it actively returned.
+fn is_unreachable(err: &AppError) -> bool {
+    err.code() == ErrorCode::RemoteUnavailable
 }
 
 /// Crawl a remote room DAG by repeatedly fetching frontier `prev_events`.
@@ -494,6 +642,10 @@ pub fn get_remote_dag(
         );
         let mut value = match response {
             Ok(v) => v,
+            // The destination never answered: per-event fallback cannot help,
+            // and retrying thousands of IDs just turns a fast failure into a
+            // multi-hour hang. Abort the whole crawl immediately.
+            Err(e) if is_unreachable(&e) => return Err(e),
             Err(e) if !no_fallback => {
                 failures.record(&e);
                 for id in &ids {
@@ -516,6 +668,7 @@ pub fn get_remote_dag(
                         let pdu = v.get("pdu").cloned().unwrap_or(v);
                         rezzy::json!({"pdus":[pdu]})
                     }
+                    Err(e) if is_unreachable(&e) => return Err(e),
                     Err(e) => {
                         failures.record(&e);
                         continue;
@@ -553,6 +706,7 @@ pub fn get_remote_dag(
                         let pdu = event.get("pdu").cloned().unwrap_or(event);
                         value = rezzy::json!({"pdus":[pdu]});
                     }
+                    Err(e) if is_unreachable(&e) => return Err(e),
                     Err(e) => {
                         failures.record(&e);
                         queue.push_front(id);
