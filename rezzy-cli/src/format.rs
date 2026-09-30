@@ -18,7 +18,7 @@ use crate::timeline_order::{
     build_key, kahn_order_by, KeyValue, OrderKey, TimelineOrder, DEFAULT_TIE_BREAK,
     MISSING_STREAM_ORDER, SYNAPSE_TIE_BREAK,
 };
-use crate::utils::{epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
+use crate::utils::{epoch_days_to_ymd, resolve_parent_states, ResolvedState, SharedStateMap};
 use crate::{Args, OutputFormat};
 use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
@@ -150,6 +150,11 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     let mut roots_map: HashMap<String, std::sync::Arc<HamtNode<(EventType, String), String>>> =
         HashMap::new();
     let mut root_hashes_map: HashMap<String, String> = HashMap::new();
+    // Resolved-state view kept alongside each live frontier root, so a root
+    // that participates in several merges is extracted from its HAMT once.
+    // Evicted together with `roots_map` when its citation count hits zero.
+    let mut state_map_cache: HashMap<String, SharedStateMap> = HashMap::new();
+    let empty_state: SharedStateMap = std::sync::Arc::new(ResolvedState::new());
 
     let mut seen_node_hashes: std::collections::HashSet<StructuralHash> =
         std::collections::HashSet::new();
@@ -169,7 +174,10 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
     let mut fork_cache: HashMap<
         Vec<StructuralHash>,
-        std::sync::Arc<HamtNode<(EventType, String), String>>,
+        (
+            std::sync::Arc<HamtNode<(EventType, String), String>>,
+            SharedStateMap,
+        ),
     > = HashMap::new();
 
     for &i in &order {
@@ -184,6 +192,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         }
 
         let base_root: std::sync::Arc<HamtNode<(EventType, String), String>>;
+        let base_state: SharedStateMap;
         let mut parent_root_hashes: Vec<String> = Vec::with_capacity(ev.prev_events.len());
 
         for prev_id in &ev.prev_events {
@@ -194,24 +203,37 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
         if ev.prev_events.is_empty() {
             base_root = empty_root.clone();
+            base_state = empty_state.clone();
         } else if ev.prev_events.len() == 1 {
             let prev_id = &ev.prev_events[0];
             base_root = roots_map
                 .get(prev_id)
                 .cloned()
                 .unwrap_or_else(|| empty_root.clone());
+            base_state = state_map_cache
+                .get(prev_id)
+                .cloned()
+                .unwrap_or_else(|| hamt_to_state_map(&base_root));
         } else {
             let mut parent_roots = Vec::new();
+            let mut parent_states = Vec::new();
             for prev_id in &ev.prev_events {
                 if let Some(prev_root) = roots_map.get(prev_id) {
+                    let state = state_map_cache
+                        .get(prev_id)
+                        .cloned()
+                        .unwrap_or_else(|| hamt_to_state_map(prev_root));
                     parent_roots.push(prev_root.clone());
+                    parent_states.push(state);
                 }
             }
 
             if parent_roots.is_empty() {
                 base_root = empty_root.clone();
+                base_state = empty_state.clone();
             } else if parent_roots.len() == 1 {
                 base_root = parent_roots[0].clone();
+                base_state = parent_states[0].clone();
             } else {
                 let mut unique_parent_hashes: Vec<StructuralHash> =
                     parent_roots.iter().map(|r| r.structural_hash).collect();
@@ -220,11 +242,13 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
                 if unique_parent_hashes.len() == 1 {
                     base_root = parent_roots[0].clone();
-                } else if let Some(cached_root) = fork_cache.get(&unique_parent_hashes) {
+                    base_state = parent_states[0].clone();
+                } else if let Some((cached_root, cached_state)) =
+                    fork_cache.get(&unique_parent_hashes)
+                {
                     base_root = cached_root.clone();
+                    base_state = cached_state.clone();
                 } else {
-                    let parent_states: Vec<SharedStateMap> =
-                        parent_roots.iter().map(hamt_to_state_map).collect();
                     let t = std::time::Instant::now();
                     let resolved_state = resolve_parent_states(
                         &parent_states,
@@ -303,25 +327,34 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                             }
                         }
                     }
-                    fork_cache.insert(unique_parent_hashes, base_root.clone());
+                    base_state = resolved_state.clone();
+                    fork_cache.insert(
+                        unique_parent_hashes,
+                        (base_root.clone(), base_state.clone()),
+                    );
                 }
             }
         }
 
         let new_root;
+        let new_state: SharedStateMap;
 
         if let Some(state_key) = &ev.state_key {
             let key = (EventType::from(ev.event_type.clone()), state_key.clone());
             let (mutated_root, _displaced, created) = persist_mutation(
                 &base_root,
                 structural_key,
-                key,
+                key.clone(),
                 Some(ev.event_id.clone()),
                 &mut no_resolver,
             )
             .expect("persist mutation");
 
             new_root = mutated_root;
+
+            let mut updated = (*base_state).clone();
+            updated.insert(key, ev.event_id.clone());
+            new_state = std::sync::Arc::new(updated);
 
             if need_nodes {
                 for (node_hash, encoded_bytes) in created {
@@ -350,6 +383,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             }
         } else {
             new_root = base_root.clone();
+            new_state = base_state.clone();
         }
 
         let new_root_hash_str = format_structural_hash(&new_root.structural_hash);
@@ -363,6 +397,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             .unwrap_or(0);
         if remaining_citations > 0 {
             roots_map.insert(ev.event_id.clone(), new_root.clone());
+            state_map_cache.insert(ev.event_id.clone(), new_state);
         }
 
         // Decrement citation counts for parents and evict retired roots.
@@ -373,6 +408,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                     *count = count.saturating_sub(1);
                     if *count == 0 {
                         roots_map.remove(prev.as_str());
+                        state_map_cache.remove(prev.as_str());
                     }
                 }
             }
