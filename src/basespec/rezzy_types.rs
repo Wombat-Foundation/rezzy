@@ -26,6 +26,12 @@ use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, 
 
 type SyntacticWarnings<Id> = Vec<crate::warnings::Warning<Id>>;
 
+#[derive(Clone, Copy)]
+enum MxidField {
+    Sender,
+    Creator,
+}
+
 /// Marker trait for types that can serve as event identifiers.
 ///
 /// Any type that is `Clone + Eq + Hash + Ord + Debug + Display` automatically
@@ -3037,20 +3043,19 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
-        Self::validate_mxid(&self.sender, "sender")?;
+        Self::validate_mxid(&self.sender, MxidField::Sender)?;
         self.validate_create_identifiers(room_version)
     }
 
-    fn validate_mxid(mxid: &str, field: &'static str) -> Result<(), &'static str> {
+    fn validate_mxid(mxid: &str, field: MxidField) -> Result<(), &'static str> {
         if is_acceptable_historical_mxid(mxid) {
             return Ok(());
         }
         match field {
-            "sender" => Err(
+            MxidField::Sender => Err(
                 "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'",
             ),
-            "creator" => Err("m.room.create content.creator must be a valid MXID string"),
-            _ => unreachable!("only sender and creator MXIDs are validated"),
+            MxidField::Creator => Err("m.room.create content.creator must be a valid MXID string"),
         }
     }
 
@@ -3073,7 +3078,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let Some(creator) = self.content.get_creator() else {
             return Err("m.room.create content must have a 'creator' property");
         };
-        Self::validate_mxid(creator, "creator")
+        Self::validate_mxid(creator, MxidField::Creator)
     }
 
     fn validate_field_lengths(

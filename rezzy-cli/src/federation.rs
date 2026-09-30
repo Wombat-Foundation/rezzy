@@ -419,6 +419,14 @@ fn quote(s: &str) -> String {
         .collect()
 }
 
+/// Open `output` for writing, creating its parent directory when needed.
+fn open_output_writer(output: &Path) -> Result<BufWriter<fs::File>, AppError> {
+    if let Some(parent) = output.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(BufWriter::new(fs::File::create(output)?))
+}
+
 /// Crawl a remote room DAG by repeatedly fetching frontier `prev_events`.
 ///
 /// When `emit_missing` is set the unresolved frontier is written there as one
@@ -450,11 +458,7 @@ pub fn get_remote_dag(
         }
     }
     let mut seen = HashSet::new();
-    if let Some(parent) = output.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    let output_file = fs::File::create(output)?;
-    let mut output_writer = BufWriter::new(output_file);
+    let mut output_writer = open_output_writer(output)?;
     let mut event_count = 0_usize;
     let mut failures = FetchFailures::default();
     let max = if limit < 0 {
@@ -820,11 +824,7 @@ fn fetch_auth_batches(
             referencing.insert(reference.event_id.clone());
         }
     }
-    if let Some(parent) = output.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    let output_file = fs::File::create(output)?;
-    let mut output_writer = BufWriter::new(output_file);
+    let mut output_writer = open_output_writer(output)?;
     let mut seen = HashSet::new();
     let mut failures = FetchFailures::default();
     let mut written = 0_usize;

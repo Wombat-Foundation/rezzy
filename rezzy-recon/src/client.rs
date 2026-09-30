@@ -1184,6 +1184,20 @@ mod tests {
         );
     }
 
+    /// Drive one round where a single max-capacity bucket fails outright,
+    /// forcing an immediate depth split, and return the resulting action.
+    fn first_failing_round(exchange: &mut BucketExchange) -> ClientAction {
+        let previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
+        exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(7, 0)],
+            },
+            &previous_requests,
+            Some(u64::MAX / 2),
+        )
+    }
+
     /// Coverage: `BucketExchange::advance`'s no-progress detection. A
     /// bucket that keeps splitting with both split children failing
     /// (neither sibling succeeds) must bail to `ExtremityDiff` after
@@ -1202,22 +1216,14 @@ mod tests {
 
         // Round 1: a single bucket at max capacity fails outright, forcing
         // an immediate depth split (no sibling exists yet this round).
-        let mut previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
-        let mut action = exchange.advance(
-            BucketDecodeBatch {
-                successful_buckets: vec![],
-                failed_buckets: vec![(7, 0)],
-            },
-            &previous_requests,
-            Some(u64::MAX / 2),
-        );
+        let mut action = first_failing_round(&mut exchange);
 
         // Rounds 2..: every split's children BOTH keep failing -- neither
         // sibling succeeds, nothing separates out or narrows.
         let mut rounds = 1;
         while let ClientAction::BucketSketches { requests, .. } = &action {
             let failed_buckets = requests.iter().map(|r| (r.depth, r.prefix)).collect();
-            previous_requests = requests.clone();
+            let previous_requests = requests.clone();
             action = exchange.advance(
                 BucketDecodeBatch {
                     successful_buckets: vec![],
@@ -1259,15 +1265,7 @@ mod tests {
             MAX_BUCKETED_SKETCH_CAPACITY,
         );
 
-        let mut previous_requests = vec![BucketRequest::new(7, 0, MAX_BUCKET_SKETCH_CAPACITY)];
-        let mut action = exchange.advance(
-            BucketDecodeBatch {
-                successful_buckets: vec![],
-                failed_buckets: vec![(7, 0)],
-            },
-            &previous_requests,
-            Some(u64::MAX / 2),
-        );
+        let mut action = first_failing_round(&mut exchange);
 
         // Run 5 narrowing split rounds (more than MAX_NO_PROGRESS_ROUNDS).
         // Each round, left fails and right succeeds with 0 roots.
@@ -1277,7 +1275,7 @@ mod tests {
             };
             let left = requests[0];
             let right = requests[1];
-            previous_requests = requests.clone();
+            let previous_requests = requests.clone();
             action = exchange.advance(
                 BucketDecodeBatch {
                     successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
