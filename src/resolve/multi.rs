@@ -220,6 +220,37 @@ where
         event_context,
         version,
         &alloc::string::String::new(),
+        None,
+    )
+    .0
+}
+
+/// Like [`resolve_state_maps`], but reuses a caller-supplied MSC4297
+/// [`RangePrefilterReachability`](crate::resolve::reachability::RangePrefilterReachability)
+/// index built over a superset of `event_context` (e.g. the whole room),
+/// avoiding a per-call index rebuild.
+///
+/// `event_context` must be transitively closed under `auth_events` for the
+/// forward-reachability restriction to be exact (see
+/// [`conflicted_subgraph_ids_with_index`](crate::resolve::subgraph::conflicted_subgraph_ids_with_index)).
+#[must_use]
+pub fn resolve_state_maps_with_reachability<Id, C, S>(
+    state_maps: &[SharedState<Id>],
+    event_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+    reachability: &crate::resolve::reachability::RangePrefilterReachability<Id>,
+) -> SharedState<Id>
+where
+    Id: EventId,
+    C: EventContent + Clone,
+    S: core::hash::BuildHasher,
+{
+    resolve_state_maps_generic(
+        state_maps,
+        event_context,
+        version,
+        &alloc::string::String::new(),
+        Some(reachability),
     )
     .0
 }
@@ -229,6 +260,7 @@ fn resolve_state_maps_generic<Id, C, S, K>(
     event_context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     version: StateResVersion,
     empty_key: &K,
+    reachability: Option<&crate::resolve::reachability::RangePrefilterReachability<Id>>,
 ) -> (SharedState<Id, K>, crate::FastSet<(EventType, K)>)
 where
     Id: EventId,
@@ -286,8 +318,19 @@ where
 
     // For V2.1+ rooms, compute the conflicted subgraph (MSC4297).
     if matches!(version, StateResVersion::V2_1 | StateResVersion::V2_1_1) {
-        let subgraph = compute_v2_1_subgraph(event_context.iter(), &conflicted_ids);
-        for (id, _) in subgraph {
+        let subgraph_ids: Vec<Id> = if let Some(reachability) = reachability {
+            crate::resolve::subgraph::conflicted_subgraph_ids_with_index(
+                event_context,
+                reachability,
+                &conflicted_ids,
+                None,
+            )
+        } else {
+            compute_v2_1_subgraph(event_context.iter(), &conflicted_ids)
+                .into_keys()
+                .collect()
+        };
+        for id in subgraph_ids {
             conflicted_events.entry(id.clone()).or_insert_with(|| {
                 event_context
                     .get(&id)
@@ -363,7 +406,7 @@ where
         .get(base_state_index)
         .unwrap_or_else(|| panic!("base_state_index out of range: {base_state_index}"));
     let (resolved, conflicted_keys) =
-        resolve_state_maps_generic(state_maps, event_context, version, empty_key);
+        resolve_state_maps_generic(state_maps, event_context, version, empty_key, None);
 
     let mut entries = Vec::new();
     // Sort keys to emit entries in a stable, deterministic order (matching

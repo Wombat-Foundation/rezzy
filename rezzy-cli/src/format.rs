@@ -112,6 +112,11 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     };
     let raw_events: Vec<LeanEvent> = ctx.events_map.values().cloned().collect();
     let order = reorder_by_kahn(&raw_events, tie_break, ctx.stream_order);
+    // Built once over the whole room and reused for every fork: the per-fork
+    // context is transitively auth-closed, so restricting this index's forward
+    // reachability to it is exact (see `resolve_state_maps_with_reachability`).
+    let reachability =
+        rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(ctx.events_map);
 
     let structural_key: &[u8] = ctx
         .args
@@ -225,6 +230,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                         ctx.events_map,
                         ctx.version,
                         ctx.auth_graph,
+                        &reachability,
                     );
                     let elapsed = t.elapsed();
                     fork_count = fork_count.saturating_add(1);

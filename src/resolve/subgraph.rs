@@ -96,58 +96,119 @@ where
         };
     }
 
-    let mut backwards_reachable = BTreeSet::new();
-    let mut forwards_reachable = BTreeSet::new();
-    let mut missing_auth_events = BTreeSet::new();
-
-    // Calculate Backwards Reachable (Ancestors up the auth chain)
-    // Each entry is (event_id, depth_from_conflicted_set)
-    let mut b_stack: Vec<(Id, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
-    while let Some((node, depth)) = b_stack.pop() {
-        if backwards_reachable.insert(node.clone()) {
-            if let Some(max_depth) = max_auth_depth {
-                if depth >= max_depth {
-                    continue;
-                }
-            }
-            if let Some(event) = auth_graph.get(&node) {
-                for auth_id in &event.auth_events {
-                    if !auth_graph.contains_key(auth_id) {
-                        missing_auth_events.insert(auth_id.clone());
-                    }
-                    b_stack.push((auth_id.clone(), depth.saturating_add(1)));
-                }
-            }
-        }
-    }
+    let (backwards_reachable, missing_auth_events) =
+        collect_backwards_reachable(auth_graph, conflicted_set, max_auth_depth);
 
     // Forward-reachability fast path: build a compact exact accelerator once,
     // then enumerate the forward-reachable set directly (no candidate-list
     // indirection — every node in auth_graph is a candidate here anyway).
     let reachability = RangePrefilterReachability::build(auth_graph);
-    for id in reachability.forward_reachable_ids(conflicted_set.iter()) {
-        forwards_reachable.insert(id.clone());
-    }
+    let forwards_reachable = collect_forwards_reachable(auth_graph, &reachability, conflicted_set);
 
     // Intersect and build the final Conflicted Subgraph
     let mut subgraph = HashMap::new();
-    let (smaller, larger) = if backwards_reachable.len() <= forwards_reachable.len() {
-        (&backwards_reachable, &forwards_reachable)
-    } else {
-        (&forwards_reachable, &backwards_reachable)
-    };
-    for id in smaller {
-        if !larger.contains(id) {
-            continue;
+    for id in intersect_sets(&backwards_reachable, &forwards_reachable) {
+        if let Some(event) = auth_graph.get(&id) {
+            subgraph.insert(id, event.clone());
         }
-        let Some(event) = auth_graph.get(id) else {
-            continue;
-        };
-        subgraph.insert(id.clone(), event.clone());
     }
 
     SubgraphResult {
         subgraph,
         missing_auth_events: missing_auth_events.into_iter().collect(),
     }
+}
+
+/// Like [`compute_v2_1_conflicted_subgraph_bounded`], but reuses a
+/// caller-supplied [`RangePrefilterReachability`] index instead of rebuilding
+/// one per call, and returns only the subgraph event IDs.
+///
+/// `reachability` may be built over a superset of `event_context` (e.g. the
+/// whole room). Restricting the forward-reachable set to `event_context`'s keys
+/// is equivalent to building an index over `event_context` itself whenever
+/// `event_context` is transitively closed under `auth_events` — every auth path
+/// between two of its nodes stays inside it — which is exactly the auth-closure
+/// shape an incremental fork walk passes here.
+#[must_use]
+pub fn conflicted_subgraph_ids_with_index<Id, C, S, K>(
+    event_context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    reachability: &RangePrefilterReachability<Id>,
+    conflicted_set: &[Id],
+    max_auth_depth: Option<usize>,
+) -> Vec<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Ord,
+    S: core::hash::BuildHasher,
+{
+    if conflicted_set.is_empty() {
+        return Vec::new();
+    }
+    let (backwards_reachable, _missing_auth_events) =
+        collect_backwards_reachable(event_context, conflicted_set, max_auth_depth);
+    let forwards_reachable =
+        collect_forwards_reachable(event_context, reachability, conflicted_set);
+    intersect_sets(&backwards_reachable, &forwards_reachable)
+}
+
+/// Ancestors (up the `auth_events` chain) of `conflicted_set`, with an optional
+/// depth bound, plus any referenced auth events absent from `events`.
+fn collect_backwards_reachable<Id, C, S, K>(
+    events: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    conflicted_set: &[Id],
+    max_auth_depth: Option<usize>,
+) -> (BTreeSet<Id>, BTreeSet<Id>)
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    S: core::hash::BuildHasher,
+{
+    let mut backwards = BTreeSet::new();
+    let mut missing = BTreeSet::new();
+    // Each stack entry is (event_id, depth_from_conflicted_set).
+    let mut stack: Vec<(Id, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
+    while let Some((node, depth)) = stack.pop() {
+        if backwards.insert(node.clone()) {
+            if let Some(max_depth) = max_auth_depth {
+                if depth >= max_depth {
+                    continue;
+                }
+            }
+            if let Some(event) = events.get(&node) {
+                for auth_id in &event.auth_events {
+                    if !events.contains_key(auth_id) {
+                        missing.insert(auth_id.clone());
+                    }
+                    stack.push((auth_id.clone(), depth.saturating_add(1)));
+                }
+            }
+        }
+    }
+    (backwards, missing)
+}
+
+/// Forward-reachable descendants of `conflicted_set` under `reachability`,
+/// restricted to events present in `events`.
+fn collect_forwards_reachable<Id, C, S, K>(
+    events: &HashMap<Id, LeanEvent<Id, C, K>, S>,
+    reachability: &RangePrefilterReachability<Id>,
+    conflicted_set: &[Id],
+) -> BTreeSet<Id>
+where
+    Id: crate::basespec::rezzy_types::EventId + Ord,
+    S: core::hash::BuildHasher,
+{
+    reachability
+        .forward_reachable_ids(conflicted_set.iter())
+        .filter(|id| events.contains_key(*id))
+        .cloned()
+        .collect()
+}
+
+/// Intersection of two ID sets, iterating the smaller one.
+fn intersect_sets<Id: Ord + Clone>(a: &BTreeSet<Id>, b: &BTreeSet<Id>) -> Vec<Id> {
+    let (smaller, larger) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    smaller
+        .iter()
+        .filter(|id| larger.contains(*id))
+        .cloned()
+        .collect()
 }

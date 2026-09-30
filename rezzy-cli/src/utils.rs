@@ -507,6 +507,7 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
     events_map: &HashMap<String, LeanEvent, S>,
     version: StateResVersion,
     auth_graph: &rezzy::auth::roaring::AuthGraph,
+    reachability: &rezzy::resolve::reachability::RangePrefilterReachability<String>,
 ) -> SharedStateMap {
     // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
     // Common in linear DAGs where every parent shares the same resolved state.
@@ -553,7 +554,12 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
         .iter()
         .map(|arc| arc.as_ref().clone())
         .collect();
-    let resolved = rezzy::resolve_state_maps(&bare_maps, &filtered_context, version);
+    let resolved = rezzy::resolve_state_maps_with_reachability(
+        &bare_maps,
+        &filtered_context,
+        version,
+        reachability,
+    );
     std::sync::Arc::new(resolved)
 }
 
@@ -898,7 +904,15 @@ mod tests {
         );
 
         let parents = vec![state_a, state_b];
-        let filtered = resolve_parent_states(&parents, &events, StateResVersion::V2_1, &auth_graph);
+        let reachability =
+            rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
+        let filtered = resolve_parent_states(
+            &parents,
+            &events,
+            StateResVersion::V2_1,
+            &auth_graph,
+            &reachability,
+        );
 
         let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
         let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
