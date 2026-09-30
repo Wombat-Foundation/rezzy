@@ -507,6 +507,7 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
     events_map: &HashMap<String, LeanEvent, S>,
     version: StateResVersion,
     reachability: &rezzy::resolve::reachability::RangePrefilterReachability<String>,
+    caches: &mut rezzy::ForkResolveCaches<String, rezzy::JsonValue>,
 ) -> SharedStateMap {
     // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
     // Common in linear DAGs where every parent shares the same resolved state.
@@ -529,7 +530,7 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
         .map(|arc| arc.as_ref().clone())
         .collect();
     let resolved =
-        rezzy::resolve_state_maps_with_reachability(&bare_maps, events_map, version, reachability);
+        rezzy::resolve_state_maps_cached(&bare_maps, events_map, version, reachability, caches);
     std::sync::Arc::new(resolved)
 }
 
@@ -875,8 +876,15 @@ mod tests {
         let parents = vec![state_a, state_b];
         let reachability =
             rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
-        let indexed =
-            resolve_parent_states(&parents, &events, StateResVersion::V2_1, &reachability);
+        let mut caches =
+            rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(StateResVersion::V2_1);
+        let indexed = resolve_parent_states(
+            &parents,
+            &events,
+            StateResVersion::V2_1,
+            &reachability,
+            &mut caches,
+        );
 
         let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
         let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
@@ -954,8 +962,15 @@ mod tests {
 
         let reachability =
             rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
-        let borrowed =
-            resolve_parent_states(&parents, &events, StateResVersion::V2_1, &reachability);
+        let mut caches =
+            rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(StateResVersion::V2_1);
+        let borrowed = resolve_parent_states(
+            &parents,
+            &events,
+            StateResVersion::V2_1,
+            &reachability,
+            &mut caches,
+        );
 
         let filtered_events = auth_closure(&events, &parents);
         assert!(

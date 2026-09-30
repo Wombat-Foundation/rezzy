@@ -221,6 +221,8 @@ where
         version,
         &alloc::string::String::new(),
         None,
+        None,
+        None,
     )
     .0
 }
@@ -251,6 +253,58 @@ where
         version,
         &alloc::string::String::new(),
         Some(reachability),
+        None,
+        None,
+    )
+    .0
+}
+
+/// Reusable caches for repeated fork resolution against the same room.
+///
+/// Thread one instance through every [`resolve_state_maps_cached`] call for a
+/// walk so the library's local-auth checks and power-level mainline walks are
+/// amortized across forks instead of restarting each call. Caches are pure
+/// memoization of deterministic work, so resolution results are unchanged.
+pub struct ForkResolveCaches<Id, C, K = alloc::string::String> {
+    auth_cache: crate::state::at::LocalAuthCache<Id, C, K>,
+    mainline_cache: crate::FastMap<Id, Option<Id>>,
+}
+
+impl<Id, C, K> ForkResolveCaches<Id, C, K> {
+    /// Creates an empty cache set for `version`.
+    #[must_use]
+    pub fn new(version: StateResVersion) -> Self {
+        Self {
+            auth_cache: crate::state::at::LocalAuthCache::new(version),
+            mainline_cache: crate::FastMap::default(),
+        }
+    }
+}
+
+/// Like [`resolve_state_maps_with_reachability`], but also threads reusable
+/// [`ForkResolveCaches`] across calls so repeated auth/mainline work is
+/// amortized. Results are identical to the uncached path.
+#[must_use]
+pub fn resolve_state_maps_cached<Id, C, S>(
+    state_maps: &[SharedState<Id>],
+    event_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+    reachability: &crate::resolve::reachability::RangePrefilterReachability<Id>,
+    caches: &mut ForkResolveCaches<Id, C>,
+) -> SharedState<Id>
+where
+    Id: EventId,
+    C: EventContent + Clone,
+    S: core::hash::BuildHasher,
+{
+    resolve_state_maps_generic(
+        state_maps,
+        event_context,
+        version,
+        &alloc::string::String::new(),
+        Some(reachability),
+        Some(&mut caches.auth_cache),
+        Some(&mut caches.mainline_cache),
     )
     .0
 }
@@ -261,6 +315,8 @@ fn resolve_state_maps_generic<Id, C, S, K>(
     version: StateResVersion,
     empty_key: &K,
     reachability: Option<&crate::resolve::reachability::RangePrefilterReachability<Id>>,
+    auth_cache: Option<&mut crate::state::at::LocalAuthCache<Id, C, K>>,
+    mainline_cache: Option<&mut crate::FastMap<Id, Option<Id>>>,
 ) -> (SharedState<Id, K>, crate::FastSet<(EventType, K)>)
 where
     Id: EventId,
@@ -341,6 +397,11 @@ where
     }
 
     let mut pl_cache: HashMap<Id, i64, hashbrown::DefaultHashBuilder> = HashMap::default();
+    let mut fallback_mainline: crate::FastMap<Id, Option<Id>> = crate::FastMap::default();
+    let mainline_cache = match mainline_cache {
+        Some(cache) => cache,
+        None => &mut fallback_mainline,
+    };
     let resolved = crate::resolve::iterative::resolve_iterative_sort_with_all_caches(
         crate::resolve::iterative::IterativeInputs::new(
             &unconflicted_state,
@@ -350,11 +411,7 @@ where
             &mut pl_cache,
             empty_key,
         ),
-        crate::resolve::iterative::ResolveCaches::new(
-            None,
-            &mut crate::FastMap::default(),
-            &conflicted_keys,
-        ),
+        crate::resolve::iterative::ResolveCaches::new(auth_cache, mainline_cache, &conflicted_keys),
     );
     (resolved, conflicted_keys)
 }
@@ -405,8 +462,15 @@ where
     let base_state = state_maps
         .get(base_state_index)
         .unwrap_or_else(|| panic!("base_state_index out of range: {base_state_index}"));
-    let (resolved, conflicted_keys) =
-        resolve_state_maps_generic(state_maps, event_context, version, empty_key, None);
+    let (resolved, conflicted_keys) = resolve_state_maps_generic(
+        state_maps,
+        event_context,
+        version,
+        empty_key,
+        None,
+        None,
+        None,
+    );
 
     let mut entries = Vec::new();
     // Sort keys to emit entries in a stable, deterministic order (matching

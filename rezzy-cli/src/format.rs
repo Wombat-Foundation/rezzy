@@ -117,6 +117,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     // reachability to it is exact (see `resolve_state_maps_with_reachability`).
     let reachability =
         rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(ctx.events_map);
+    let mut resolve_caches = rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(ctx.version);
 
     let structural_key: &[u8] = ctx
         .args
@@ -230,6 +231,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                         ctx.events_map,
                         ctx.version,
                         &reachability,
+                        &mut resolve_caches,
                     );
                     let elapsed = t.elapsed();
                     fork_count = fork_count.saturating_add(1);
