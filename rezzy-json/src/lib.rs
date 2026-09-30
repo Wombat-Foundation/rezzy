@@ -954,7 +954,7 @@ mod tests {
             "nan",
             "Infinity",
             "tru",
-            "null",
+            "nulll",
             r#""\ud800""#,
             r#""\x41""#,
             "\"raw\ncontrol\"",
