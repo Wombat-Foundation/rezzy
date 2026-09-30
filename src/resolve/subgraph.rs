@@ -145,9 +145,18 @@ where
     }
     let (backwards_reachable, _missing_auth_events) =
         collect_backwards_reachable(event_context, conflicted_set, max_auth_depth);
-    let forwards_reachable =
-        collect_forwards_reachable(event_context, reachability, conflicted_set);
-    intersect_sets(&backwards_reachable, &forwards_reachable)
+    // The subgraph is backwards ∩ forwards. Rather than enumerate the entire
+    // forward closure (which can be the whole room when the conflicted set is
+    // near the root) and intersect afterwards, ask which of the
+    // backward-reachable ancestors are reachable from the conflicted set. The
+    // backward set is frontier-sized, so the accelerator can prune the
+    // traversal to it. Exact: same intersection, fewer visited nodes.
+    let candidates: Vec<&Id> = backwards_reachable.iter().collect();
+    reachability
+        .filter_reachable(conflicted_set.iter(), candidates.iter().copied())
+        .into_iter()
+        .map(|position| (*candidates[position]).clone())
+        .collect()
 }
 
 /// Ancestors (up the `auth_events` chain) of `conflicted_set`, with an optional
