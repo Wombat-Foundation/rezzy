@@ -16,13 +16,13 @@ use crate::error::AppError;
 use crate::provenance::{self, StreamOrderIndex};
 use crate::timeline_order::{
     build_key, kahn_order_by, KeyValue, OrderKey, TimelineOrder, DEFAULT_TIE_BREAK,
+    MISSING_STREAM_ORDER, SYNAPSE_TIE_BREAK,
 };
 use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
 use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -565,7 +565,7 @@ pub fn load_stream_order(
     if paths.is_empty() {
         warn_once(
             args.quiet,
-            "no provenance sidecar found; falling back to origin_server_ts for stream ordering",
+            "no provenance sidecar found; stream ordering unavailable",
         );
         return Ok(None);
     }
@@ -632,7 +632,7 @@ pub fn load_stream_order(
     if index.is_empty() {
         warn_once(
             args.quiet,
-            "provenance sidecar had no usable stream_ordering; falling back to origin_server_ts",
+            "provenance sidecar had no usable stream_ordering",
         );
         return Ok(None);
     }
@@ -640,7 +640,7 @@ pub fn load_stream_order(
         warn_once(
             args.quiet,
             &format!(
-                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload mismatch, {room_mismatch} room/version mismatch); those events fall back to origin_server_ts"
+                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload mismatch, {room_mismatch} room/version mismatch); those events sort after events with a known stream order"
             ),
         );
     }
@@ -656,23 +656,18 @@ fn warn_once(quiet: bool, message: &str) {
 /// Format the timeline output.
 /// Render the timeline to a string, applying only authorized redactions.
 fn render_timeline(ctx: &FormattingContext) -> String {
-    let mut sorted_events = prepare_timeline_events(ctx);
-    match ctx.args.timeline_order {
-        TimelineOrder::Causal => sort_timeline_causal(ctx, &mut sorted_events),
-        TimelineOrder::Synapse => sort_timeline_synapse(ctx, &mut sorted_events),
-    }
+    let events = prepare_timeline_events(ctx);
+    let sorted_events = match ctx.args.timeline_order {
+        TimelineOrder::Causal => sort_timeline_causal(ctx.args, ctx.stream_order, &events),
+        TimelineOrder::Synapse => sort_timeline_synapse(ctx.args, ctx.stream_order, &events),
+    };
     render_timeline_events(ctx, &sorted_events)
 }
 
 /// Render the timestamp-primary human view (`-f timeline-chronological`).
 fn render_timeline_chronological(ctx: &FormattingContext) -> String {
     let mut sorted_events = prepare_timeline_events(ctx);
-    sorted_events.sort_by(|a, b| {
-        a.origin_server_ts
-            .cmp(&b.origin_server_ts)
-            .then(a.depth.cmp(&b.depth))
-            .then(a.event_id.cmp(&b.event_id))
-    });
+    sort_timeline_chronological(&mut sorted_events);
     render_timeline_events(ctx, &sorted_events)
 }
 
@@ -731,13 +726,17 @@ fn prepare_timeline_events(ctx: &FormattingContext) -> Vec<LeanEvent> {
 /// Kahn causal order; the ready queue uses `--tie-break` (default
 /// `origin_server_ts,matrix_depth,event_id`). Stream-order key components are
 /// dropped with a warning when no sidecar supplied them.
-fn sort_timeline_causal(ctx: &FormattingContext, events: &mut Vec<LeanEvent>) {
-    let requested: Vec<OrderKey> = if ctx.args.tie_break.is_empty() {
+#[must_use]
+fn sort_timeline_causal(
+    args: &Args,
+    stream: Option<&StreamOrderIndex>,
+    events: &[LeanEvent],
+) -> Vec<LeanEvent> {
+    let requested: Vec<OrderKey> = if args.tie_break.is_empty() {
         DEFAULT_TIE_BREAK.to_vec()
     } else {
-        ctx.args.tie_break.clone()
+        args.tie_break.clone()
     };
-    let stream = ctx.stream_order;
     let mut ready_keys: Vec<OrderKey> = Vec::with_capacity(requested.len());
     let mut dropped_stream = false;
     for key in requested {
@@ -752,45 +751,25 @@ fn sort_timeline_causal(ctx: &FormattingContext, events: &mut Vec<LeanEvent>) {
     }
     if dropped_stream {
         warn_once(
-            ctx.args.quiet,
+            args.quiet,
             "stream_ordering unavailable; dropping it from --tie-break",
         );
     }
-
-    let ids: Vec<String> = events.iter().map(|event| event.event_id.clone()).collect();
-    let parents: Vec<Vec<String>> = events
-        .iter()
-        .map(|event| event.prev_events.clone())
-        .collect();
-    let keys: Vec<Vec<KeyValue>> = events
-        .iter()
-        .enumerate()
-        .map(|(index, event)| {
-            let stream_value = stream
-                .and_then(|index| index.get(&event.event_id))
-                .unwrap_or(event.origin_server_ts);
-            build_key(
-                &ready_keys,
-                &ids[index],
-                event.depth,
-                event.origin_server_ts,
-                stream_value,
-            )
-        })
-        .collect();
-    let order = kahn_order_by(&ids, &parents, &keys);
-    let reordered: Vec<LeanEvent> = order
-        .into_iter()
-        .map(|index| events[index].clone())
-        .collect();
-    *events = reordered;
+    reorder_by_kahn(events, &ready_keys, stream)
 }
 
-/// Synapse-like `matrix_depth, stream_ordering, event_id`. Events without a
-/// known stream order fall back to `origin_server_ts` and sort after those
-/// that have one.
-fn sort_timeline_synapse(ctx: &FormattingContext, events: &mut Vec<LeanEvent>) {
-    let stream = ctx.stream_order;
+/// Synapse-like causal order: `matrix_depth, stream_ordering, event_id`
+/// (`SYNAPSE_TIE_BREAK`), still routed through Kahn so parents always precede
+/// children even when the supplied `depth` is untrusted or inconsistent.
+///
+/// Events without a known stream order sort after those with one at the same
+/// depth; the missing component is a sentinel, never a substituted timestamp.
+#[must_use]
+fn sort_timeline_synapse(
+    args: &Args,
+    stream: Option<&StreamOrderIndex>,
+    events: &[LeanEvent],
+) -> Vec<LeanEvent> {
     let fallbacks = events
         .iter()
         .filter(|event| {
@@ -801,25 +780,61 @@ fn sort_timeline_synapse(ctx: &FormattingContext, events: &mut Vec<LeanEvent>) {
         .count();
     if fallbacks > 0 {
         warn_once(
-            ctx.args.quiet,
+            args.quiet,
             &format!(
-                "{fallbacks} event(s) had no stream_ordering; fell back to matrix_depth, origin_server_ts, event_id"
+                "{fallbacks} event(s) had no stream_ordering; sorted after those with one (matrix_depth, event_id)"
             ),
         );
     }
+    reorder_by_kahn(events, &SYNAPSE_TIE_BREAK, stream)
+}
+
+/// Timestamp-primary human view: `origin_server_ts, matrix_depth, event_id`.
+///
+/// Deliberately *not* causal: use `-f timeline` for parent-before-child order.
+fn sort_timeline_chronological(events: &mut [LeanEvent]) {
     events.sort_by(|a, b| {
-        let a_stream = stream.and_then(|index| index.get(&a.event_id));
-        let b_stream = stream.and_then(|index| index.get(&b.event_id));
-        a.depth
-            .cmp(&b.depth)
-            .then_with(|| match (a_stream, b_stream) {
-                (Some(left), Some(right)) => left.cmp(&right),
-                (None, None) => a.origin_server_ts.cmp(&b.origin_server_ts),
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-            })
+        a.origin_server_ts
+            .cmp(&b.origin_server_ts)
+            .then(a.depth.cmp(&b.depth))
             .then(a.event_id.cmp(&b.event_id))
     });
+}
+
+/// Reorder `events` into a parent-before-child (Kahn) order, using `keys` for
+/// the currently-ready frontier only. A requested stream component that is
+/// unknown for an event becomes [`MISSING_STREAM_ORDER`] rather than a
+/// timestamp.
+#[must_use]
+fn reorder_by_kahn(
+    events: &[LeanEvent],
+    keys: &[OrderKey],
+    stream: Option<&StreamOrderIndex>,
+) -> Vec<LeanEvent> {
+    let ids: Vec<String> = events.iter().map(|event| event.event_id.clone()).collect();
+    let parents: Vec<Vec<String>> = events
+        .iter()
+        .map(|event| event.prev_events.clone())
+        .collect();
+    let order_keys: Vec<Vec<KeyValue>> = events
+        .iter()
+        .map(|event| {
+            let stream_value = stream
+                .and_then(|index| index.get(&event.event_id))
+                .unwrap_or(MISSING_STREAM_ORDER);
+            build_key(
+                keys,
+                &event.event_id,
+                event.depth,
+                event.origin_server_ts,
+                stream_value,
+            )
+        })
+        .collect();
+    kahn_order_by(&ids, &parents, &order_keys)
+        .into_iter()
+        .map(|index| events[index].clone())
+        .collect()
 }
 
 fn render_timeline_events(ctx: &FormattingContext, sorted_events: &[LeanEvent]) -> String {
@@ -1236,5 +1251,95 @@ mod tests {
             !out.contains("secret"),
             "authorized self-redaction must strip the target content; got: {out:?}"
         );
+    }
+
+    fn timeline_event(id: &str, prev: &[&str], depth: u64, ts: u64) -> LeanEvent {
+        LeanEvent {
+            event_id: id.into(),
+            prev_events: prev.iter().map(|parent| (*parent).to_string()).collect(),
+            depth,
+            origin_server_ts: ts,
+            ..Default::default()
+        }
+    }
+
+    fn order_of(events: &[LeanEvent]) -> Vec<&str> {
+        events.iter().map(|event| event.event_id.as_str()).collect()
+    }
+
+    fn stream_index(entries: &[(&str, u64)]) -> StreamOrderIndex {
+        let mut index = StreamOrderIndex::default();
+        for (event_id, stream) in entries {
+            index.by_event.insert((*event_id).to_string(), *stream);
+        }
+        index
+    }
+
+    #[test]
+    fn causal_keeps_parent_before_child_despite_earlier_child_timestamp() {
+        let parent = timeline_event("$parent", &[], 1, 200);
+        let child = timeline_event("$child", &["$parent"], 2, 100);
+        let args = test_args(OutputFormat::Timeline);
+        let out = sort_timeline_causal(&args, None, &[child, parent]);
+        assert_eq!(order_of(&out), vec!["$parent", "$child"]);
+    }
+
+    #[test]
+    fn causal_orders_concurrent_frontier_by_timestamp() {
+        let root = timeline_event("$root", &[], 0, 0);
+        let x = timeline_event("$x", &["$root"], 1, 500);
+        let y = timeline_event("$y", &["$root"], 1, 100);
+        let args = test_args(OutputFormat::Timeline);
+        let out = sort_timeline_causal(&args, None, &[x, y, root]);
+        assert_eq!(order_of(&out), vec!["$root", "$y", "$x"]);
+    }
+
+    #[test]
+    fn chronological_sorts_by_timestamp_not_by_dag() {
+        let parent = timeline_event("$parent", &[], 1, 200);
+        let child = timeline_event("$child", &["$parent"], 2, 100);
+        let mut events = vec![parent, child];
+        sort_timeline_chronological(&mut events);
+        assert_eq!(order_of(&events), vec!["$child", "$parent"]);
+    }
+
+    #[test]
+    fn synapse_orders_by_stream_within_depth() {
+        let root = timeline_event("$root", &[], 0, 0);
+        // y has the earlier timestamp but the later stream order: stream wins.
+        let x = timeline_event("$x", &["$root"], 1, 500);
+        let y = timeline_event("$y", &["$root"], 1, 100);
+        let stream = stream_index(&[("$x", 1), ("$y", 2)]);
+        let args = test_args(OutputFormat::Timeline);
+        let out = sort_timeline_synapse(&args, Some(&stream), &[x, y, root]);
+        assert_eq!(order_of(&out), vec!["$root", "$x", "$y"]);
+    }
+
+    #[test]
+    fn synapse_stays_causal_even_with_inconsistent_depth() {
+        // The child claims a lower depth than its parent; a global depth sort
+        // would emit it first. Kahn must keep the parent first.
+        let parent = timeline_event("$parent", &[], 5, 100);
+        let child = timeline_event("$child", &["$parent"], 1, 200);
+        let args = test_args(OutputFormat::Timeline);
+        let out = sort_timeline_synapse(&args, None, &[child, parent]);
+        assert_eq!(order_of(&out), vec!["$parent", "$child"]);
+    }
+
+    #[test]
+    fn partial_stream_order_never_substitutes_timestamp() {
+        let root = timeline_event("$root", &[], 0, 0);
+        // x has a large timestamp but a known stream order; y has a tiny
+        // timestamp and no stream order. A timestamp fallback would wrongly
+        // sort y first; the missing-stream sentinel sorts it last.
+        let x = timeline_event("$x", &["$root"], 1, 1_700_000_000_000);
+        let y = timeline_event("$y", &["$root"], 1, 1);
+        let stream = stream_index(&[("$x", 100)]);
+        let args = Args {
+            tie_break: vec![OrderKey::StreamOrdering],
+            ..test_args(OutputFormat::Timeline)
+        };
+        let out = sort_timeline_causal(&args, Some(&stream), &[root, x, y]);
+        assert_eq!(order_of(&out), vec!["$root", "$x", "$y"]);
     }
 }
