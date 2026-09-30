@@ -153,8 +153,20 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     let empty_root = build_hamt::<(EventType, String), String, _>(structural_key, [])
         .expect("empty HAMT build must succeed");
 
+    let mut child_citations: HashMap<&str, usize> = HashMap::new();
+    for ev in &sorted_events {
+        let mut seen_prevs = std::collections::HashSet::new();
+        for prev in &ev.prev_events {
+            if seen_prevs.insert(prev.as_str()) {
+                *child_citations.entry(prev.as_str()).or_default() += 1;
+            }
+        }
+    }
+
+    let need_nodes = matches!(ctx.args.format, OutputFormat::Hamt);
     let mut roots_map: HashMap<String, std::sync::Arc<HamtNode<(EventType, String), String>>> =
         HashMap::new();
+    let mut root_hashes_map: HashMap<String, String> = HashMap::new();
 
     let mut seen_node_hashes: std::collections::HashSet<StructuralHash> =
         std::collections::HashSet::new();
@@ -186,8 +198,8 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         let mut parent_root_hashes: Vec<String> = Vec::with_capacity(ev.prev_events.len());
 
         for prev_id in &ev.prev_events {
-            if let Some(prev_root) = roots_map.get(prev_id) {
-                parent_root_hashes.push(format_structural_hash(&prev_root.structural_hash));
+            if let Some(hash) = root_hashes_map.get(prev_id) {
+                parent_root_hashes.push(hash.clone());
             }
         }
 
@@ -243,7 +255,9 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                         resolved_state.iter().map(|(k, v)| (k.clone(), v.clone())),
                     )
                     .expect("build merged hamt");
-                    record_hamt_subtree_nodes(&base_root, &mut seen_node_hashes, &mut unique_nodes);
+                    if need_nodes {
+                        record_hamt_subtree_nodes(&base_root, &mut seen_node_hashes, &mut unique_nodes);
+                    }
                 }
             }
         }
@@ -263,36 +277,38 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
             new_root = mutated_root;
 
-            for (node_hash, encoded_bytes) in created {
-                if seen_node_hashes.insert(node_hash) {
-                    if let Ok(decoded) =
-                        PersistedInternalNode::<(EventType, String), String>::decode_v1_unverified(
-                            &encoded_bytes,
-                        )
-                    {
-                        let leaves = decoded
-                            .leaves
-                            .into_iter()
-                            .map(|((etype, skey), eid)| {
-                                rezzy::json!({
-                                    "type": etype.as_str(),
-                                    "state_key": skey,
-                                    "event_id": eid,
+            if need_nodes {
+                for (node_hash, encoded_bytes) in created {
+                    if seen_node_hashes.insert(node_hash) {
+                        if let Ok(decoded) =
+                            PersistedInternalNode::<(EventType, String), String>::decode_v1_unverified(
+                                &encoded_bytes,
+                            )
+                        {
+                            let leaves = decoded
+                                .leaves
+                                .into_iter()
+                                .map(|((etype, skey), eid)| {
+                                    rezzy::json!({
+                                        "type": etype.as_str(),
+                                        "state_key": skey,
+                                        "event_id": eid,
+                                    })
                                 })
-                            })
-                            .collect::<Vec<_>>();
-                        let children = decoded
-                            .child_hashes
-                            .into_iter()
-                            .map(|h| format_structural_hash(&h))
-                            .collect::<Vec<_>>();
-                        unique_nodes.push(rezzy::json!({
-                            "hash": format_structural_hash(&node_hash),
-                            "datamap": decoded.datamap,
-                            "nodemap": decoded.nodemap,
-                            "leaves": leaves,
-                            "children": children,
-                        }));
+                                .collect::<Vec<_>>();
+                            let children = decoded
+                                .child_hashes
+                                .into_iter()
+                                .map(|h| format_structural_hash(&h))
+                                .collect::<Vec<_>>();
+                            unique_nodes.push(rezzy::json!({
+                                "hash": format_structural_hash(&node_hash),
+                                "datamap": decoded.datamap,
+                                "nodemap": decoded.nodemap,
+                                "leaves": leaves,
+                                "children": children,
+                            }));
+                        }
                     }
                 }
             }
@@ -301,7 +317,27 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         }
 
         let new_root_hash_str = format_structural_hash(&new_root.structural_hash);
-        roots_map.insert(ev.event_id.clone(), new_root.clone());
+        root_hashes_map.insert(ev.event_id.clone(), new_root_hash_str.clone());
+
+        // Live-frontier GC: only retain active Arc<HamtNode> in roots_map while
+        // unvisited child events in the DAG cite this event.
+        let remaining_citations = child_citations.get(ev.event_id.as_str()).copied().unwrap_or(0);
+        if remaining_citations > 0 {
+            roots_map.insert(ev.event_id.clone(), new_root.clone());
+        }
+
+        // Decrement citation counts for parents and evict retired roots.
+        let mut seen_prevs = std::collections::HashSet::new();
+        for prev in &ev.prev_events {
+            if seen_prevs.insert(prev.as_str()) {
+                if let Some(count) = child_citations.get_mut(prev.as_str()) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        roots_map.remove(prev.as_str());
+                    }
+                }
+            }
+        }
 
         roots_json.push(rezzy::json!({
             "event_id": &ev.event_id,
