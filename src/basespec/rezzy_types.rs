@@ -1751,7 +1751,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///
 /// Implement this on your native PDU type (~9 one-liner field accessors),
 /// then wrap with [`ParsedEvent`] to get [`DagNode`] + [`EventLike`] for free.
-/// Content is parsed once from raw JSON at [`ParsedEvent::new`] time; all
+/// Content is parsed once from raw JSON at [`ParsedEvent::try_new`] time; all
 /// 20 content accessors (`get_membership`, `get_join_rule`, etc.) are
 /// inherited automatically.
 ///
@@ -1804,7 +1804,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///     rejected: false,
 ///     soft_fail: false,
 /// };
-/// let _event = ParsedEvent::new(&pdu);
+/// let _event = ParsedEvent::try_new(&pdu).expect("content is valid JSON");
 /// ```
 pub trait RawEvent {
     /// The event ID type (e.g. `OwnedEventId`, `String`).
@@ -1868,33 +1868,21 @@ pub struct ParsedEvent<'a, T: RawEvent> {
 impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     /// Create a new `ParsedEvent`, parsing the raw JSON content once.
     ///
-    /// Returns an error if `raw_content_json()` is not valid JSON.
-    /// Prefer this over [`new`](Self::new) when you want to surface
-    /// parse failures instead of silently falling back to empty content.
+    /// This is the only constructor: malformed content is reported as an
+    /// error rather than silently degrading to [`Value::Null`]. That keeps
+    /// a legitimate empty object (`{}`) distinct from a parse failure, which
+    /// otherwise silently drops content and corrupts state resolution.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::json::Error`] if the raw content string is not valid JSON.
+    /// Returns a description of the [`crate::json::Error`] if the raw content
+    /// string is not valid JSON.
     pub fn try_new(event: &'a T) -> Result<Self, alloc::string::String> {
         let content = Value::parse(event.raw_content_json()).map_err(|e| e.to_string())?;
         Ok(Self {
             raw: event,
             content,
         })
-    }
-
-    /// Create a new `ParsedEvent`, parsing the raw JSON content once.
-    ///
-    /// If the content JSON is malformed, falls back to `Value::Null`
-    /// (all content accessors will return `None`/defaults).
-    /// Use [`try_new`](Self::try_new) for strict error handling.
-    #[must_use]
-    pub fn new(event: &'a T) -> Self {
-        let content = Value::parse(event.raw_content_json()).unwrap_or_default();
-        Self {
-            raw: event,
-            content,
-        }
     }
 }
 

@@ -885,4 +885,87 @@ mod tests {
             Err(super::Error::DepthLimitExceeded)
         );
     }
+
+    /// The parser must accept every valid JSON document, including the empty
+    /// object. State resolution consumes untrusted federation content, so a
+    /// rejected-but-valid document is a correctness bug: callers that map a
+    /// parse failure onto empty content would silently drop it.
+    #[test]
+    fn accepts_valid_documents() {
+        let valid = [
+            "null",
+            "true",
+            "false",
+            "0",
+            "-0",
+            "-0.0",
+            "123",
+            "-42",
+            "1.5",
+            "1e2",
+            "1E+2",
+            "1e-2",
+            "0.0001",
+            "18446744073709551616",
+            "\"string\"",
+            r#""\/""#,
+            r#""\u0061\u00e9\uD83D\uDE00""#,
+            r#""a\tb\nc\u0000d""#,
+            "[]",
+            "{}",
+            "[ ]",
+            "{ }",
+            "[1,2,3]",
+            r#"{"a":1,"b":2}"#,
+            r#"{"a":{"b":[true,null,1.5]}}"#,
+            r#"{"x":1,"x":2}"#,
+            "  {\n  \"a\" : [ 1 , 2 ]  }  ",
+        ];
+        for input in valid {
+            assert!(
+                Value::parse(input).is_ok(),
+                "rejected valid JSON: {input:?}"
+            );
+        }
+    }
+
+    /// Counterpart corpus: malformed documents must not be accepted.
+    #[test]
+    fn rejects_malformed_documents() {
+        let invalid = [
+            "",
+            " ",
+            "[",
+            "{",
+            "[1,]",
+            r#"{"a":1,}"#,
+            "{1:2}",
+            "{'a':1}",
+            r#"{"a" 1}"#,
+            r#"{"a":}"#,
+            r#""unterminated"#,
+            "01",
+            "1.",
+            ".5",
+            "1e",
+            "1e+",
+            "+1",
+            "--1",
+            "nan",
+            "Infinity",
+            "tru",
+            "null",
+            r#""\ud800""#,
+            r#""\x41""#,
+            "\"raw\ncontrol\"",
+            "1 2",
+            "{} extra",
+        ];
+        for input in invalid {
+            assert!(
+                Value::parse(input).is_err(),
+                "accepted invalid JSON: {input:?}"
+            );
+        }
+    }
 }

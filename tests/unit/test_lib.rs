@@ -6238,7 +6238,7 @@ impl rezzy::RawEvent for TestRawEvent {
     // raw_power_level uses the default impl (returns 0) — exercises line 463-465
 }
 
-/// Exercises `ParsedEvent::new`, `try_new`, all `DagNode` + `EventLike`
+/// Exercises `ParsedEvent::try_new`, all `DagNode` + `EventLike`
 /// delegations, and the `RawEvent::raw_power_level` default.
 #[test]
 fn test_parsed_event_full_coverage() {
@@ -6257,12 +6257,12 @@ fn test_parsed_event_full_coverage() {
         rejected: false,
         soft_fail: false,
     };
-    let parsed_default_flags = rezzy::ParsedEvent::new(&raw);
+    let parsed_default_flags = rezzy::ParsedEvent::try_new(&raw).expect("valid content");
     assert!(!parsed_default_flags.rejected());
     assert!(!parsed_default_flags.soft_fail());
     assert_eq!(RawEvent::raw_prev_state_events(&raw), &[] as &[String],);
 
-    // ParsedEvent::new (line 502-508)
+    // ParsedEvent::try_new (line 502-508)
     // Use a PL-like event so we can test all EventLike default methods
     let raw_pl = TestRawEvent {
         id: "$pl".into(),
@@ -6288,7 +6288,7 @@ fn test_parsed_event_full_coverage() {
         rejected: true,
         soft_fail: true,
     };
-    let parsed = rezzy::ParsedEvent::new(&raw_pl);
+    let parsed = rezzy::ParsedEvent::try_new(&raw_pl).expect("valid content");
 
     // DagNode impl (lines 514-528)
     assert_eq!(parsed.event_id(), "$pl");
@@ -6333,6 +6333,8 @@ fn test_parsed_event_full_coverage() {
 /// Exercises `ParsedEvent::try_new` success and error paths (lines 488-494).
 #[test]
 fn test_parsed_event_try_new() {
+    use rezzy::basespec::rezzy_types::EventLike;
+
     let valid = TestRawEvent {
         id: "$ok".into(),
         event_type: "m.room.message".into(),
@@ -6347,6 +6349,28 @@ fn test_parsed_event_try_new() {
         soft_fail: false,
     };
     assert!(rezzy::ParsedEvent::try_new(&valid).is_ok());
+
+    // Empty object content must survive parsing as an object, never degrade
+    // to `Value::Null` (which would be indistinguishable from a parse failure).
+    let empty = TestRawEvent {
+        id: "$empty".into(),
+        event_type: "m.room.member".into(),
+        sender: "@a:x".into(),
+        state_key: Some("@b:x".into()),
+        content_json: "{}".into(),
+        prev_events: vec![],
+        auth_events: vec![],
+        depth: 1,
+        origin_server_ts: 0,
+        rejected: false,
+        soft_fail: false,
+    };
+    let parsed_empty = rezzy::ParsedEvent::try_new(&empty).expect("{} is valid JSON");
+    assert!(parsed_empty.content().is_object());
+    assert_eq!(
+        parsed_empty.content().as_object(),
+        Some(&rezzy::json::Object::new())
+    );
 
     let invalid = TestRawEvent {
         id: "$bad".into(),
