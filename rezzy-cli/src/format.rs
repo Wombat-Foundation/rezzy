@@ -18,7 +18,7 @@ use crate::timeline_order::{
     build_key, kahn_order_by, KeyValue, OrderKey, TimelineOrder, DEFAULT_TIE_BREAK,
     MISSING_STREAM_ORDER, SYNAPSE_TIE_BREAK,
 };
-use crate::utils::{compute_state_hash, epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
+use crate::utils::{epoch_days_to_ymd, resolve_parent_states, SharedStateMap};
 use crate::{Args, OutputFormat};
 use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
@@ -102,6 +102,21 @@ fn record_hamt_subtree_nodes(
     }
 }
 
+fn hamt_to_state_map(
+    root: &std::sync::Arc<HamtNode<(EventType, String), String>>,
+) -> SharedStateMap {
+    let mut map = imbl::OrdMap::new();
+    let mut no_resolver = |_h: &StructuralHash| -> Result<
+        std::sync::Arc<HamtNode<(EventType, String), String>>,
+        std::convert::Infallible,
+    > { unreachable!() };
+    let _ = root.visit_entries(&mut no_resolver, &mut |key, event_id| {
+        map.insert(key.clone(), event_id.clone());
+        Ok::<(), std::convert::Infallible>(())
+    });
+    std::sync::Arc::new(map)
+}
+
 /// Run an incremental HAMT-backed live walk over DAG events.
 #[allow(clippy::too_many_lines)]
 #[must_use]
@@ -114,8 +129,13 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     }
     let overall_start = std::time::Instant::now();
 
-    let mut sorted_events: Vec<&LeanEvent> = ctx.events_map.values().collect();
-    sorted_events.sort_by(|a, b| a.cmp_by_depth(b));
+    let tie_break = if ctx.args.tie_break.is_empty() {
+        DEFAULT_TIE_BREAK.as_slice()
+    } else {
+        ctx.args.tie_break.as_slice()
+    };
+    let raw_events: Vec<LeanEvent> = ctx.events_map.values().cloned().collect();
+    let sorted_events = reorder_by_kahn(&raw_events, tie_break, ctx.stream_order);
 
     let structural_key: &[u8] = ctx
         .args
@@ -135,8 +155,6 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
     let mut roots_map: HashMap<String, std::sync::Arc<HamtNode<(EventType, String), String>>> =
         HashMap::new();
-    let mut state_after_map: HashMap<String, SharedStateMap> = HashMap::new();
-    let mut state_hash_map: HashMap<String, String> = HashMap::new();
 
     let mut seen_node_hashes: std::collections::HashSet<StructuralHash> =
         std::collections::HashSet::new();
@@ -164,50 +182,46 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             );
         }
 
-        let mut state_before = std::sync::Arc::new(imbl::OrdMap::new());
-        let mut base_root = empty_root.clone();
-        let mut parent_root_hash: Option<StructuralHash> = None;
-        let mut parent_fnv_hash: Option<String> = None;
+        let base_root: std::sync::Arc<HamtNode<(EventType, String), String>>;
+        let mut parent_root_hashes: Vec<String> = Vec::with_capacity(ev.prev_events.len());
+
+        for prev_id in &ev.prev_events {
+            if let Some(prev_root) = roots_map.get(prev_id) {
+                parent_root_hashes.push(format_structural_hash(&prev_root.structural_hash));
+            }
+        }
 
         if ev.prev_events.is_empty() {
-            // Empty state before
+            base_root = empty_root.clone();
         } else if ev.prev_events.len() == 1 {
             let prev_id = &ev.prev_events[0];
-            if let Some(prev_root) = roots_map.get(prev_id) {
-                base_root = prev_root.clone();
-                parent_root_hash = Some(base_root.structural_hash);
-            }
-            if let Some(prev_state) = state_after_map.get(prev_id) {
-                state_before = prev_state.clone();
-                parent_fnv_hash = state_hash_map.get(prev_id).cloned();
-            }
+            base_root = roots_map
+                .get(prev_id)
+                .cloned()
+                .unwrap_or_else(|| empty_root.clone());
         } else {
-            let mut parent_states = Vec::new();
             let mut parent_roots = Vec::new();
             for prev_id in &ev.prev_events {
-                if let Some(prev_state) = state_after_map.get(prev_id) {
-                    parent_states.push(prev_state.clone());
-                }
                 if let Some(prev_root) = roots_map.get(prev_id) {
                     parent_roots.push(prev_root.clone());
                 }
             }
 
-            if !parent_states.is_empty() {
-                if parent_states.len() == 1 {
-                    state_before = parent_states[0].clone();
-                    if let Some(first_root) = parent_roots.first() {
-                        base_root = first_root.clone();
-                        parent_root_hash = Some(base_root.structural_hash);
-                    }
-                    parent_fnv_hash = ev
-                        .prev_events
-                        .first()
-                        .and_then(|prev_id| state_hash_map.get(prev_id))
-                        .cloned();
+            if parent_roots.is_empty() {
+                base_root = empty_root.clone();
+            } else if parent_roots.len() == 1 {
+                base_root = parent_roots[0].clone();
+            } else {
+                let all_identical = parent_roots
+                    .windows(2)
+                    .all(|w| w[0].structural_hash == w[1].structural_hash);
+                if all_identical {
+                    base_root = parent_roots[0].clone();
                 } else {
+                    let parent_states: Vec<SharedStateMap> =
+                        parent_roots.iter().map(hamt_to_state_map).collect();
                     let t = std::time::Instant::now();
-                    state_before = resolve_parent_states(
+                    let resolved_state = resolve_parent_states(
                         &parent_states,
                         ctx.events_map,
                         ctx.version,
@@ -223,20 +237,17 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                             parent_states.len()
                         );
                     }
-                    parent_fnv_hash = Some(compute_state_hash(state_before.as_ref()));
 
                     base_root = build_hamt(
                         structural_key,
-                        state_before.iter().map(|(k, v)| (k.clone(), v.clone())),
+                        resolved_state.iter().map(|(k, v)| (k.clone(), v.clone())),
                     )
                     .expect("build merged hamt");
-                    parent_root_hash = Some(base_root.structural_hash);
                     record_hamt_subtree_nodes(&base_root, &mut seen_node_hashes, &mut unique_nodes);
                 }
             }
         }
 
-        let mut state_after = state_before.clone();
         let new_root;
 
         if let Some(state_key) = &ev.state_key {
@@ -244,7 +255,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             let (mutated_root, _displaced, created) = persist_mutation(
                 &base_root,
                 structural_key,
-                key.clone(),
+                key,
                 Some(ev.event_id.clone()),
                 &mut no_resolver,
             )
@@ -285,23 +296,18 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                     }
                 }
             }
-
-            let mut modified = state_before.as_ref().clone();
-            modified.insert(key, ev.event_id.clone());
-            state_after = std::sync::Arc::new(modified);
         } else {
             new_root = base_root.clone();
         }
 
-        let fnv_hash_str = compute_state_hash(&state_after);
+        let new_root_hash_str = format_structural_hash(&new_root.structural_hash);
         roots_map.insert(ev.event_id.clone(), new_root.clone());
-        state_after_map.insert(ev.event_id.clone(), state_after.clone());
-        state_hash_map.insert(ev.event_id.clone(), fnv_hash_str.clone());
 
         roots_json.push(rezzy::json!({
             "event_id": &ev.event_id,
-            "root_hash": format_structural_hash(&new_root.structural_hash),
-            "parent_root": parent_root_hash.as_ref().map(format_structural_hash),
+            "root_hash": &new_root_hash_str,
+            "parent_root": parent_root_hashes.first().cloned(),
+            "parent_roots": &parent_root_hashes,
         }));
 
         let mut deltas = Vec::new();
@@ -317,18 +323,20 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         } else if let Ok((added, removed)) =
             diff_hamt_nodes(&base_root, &new_root, &mut no_resolver)
         {
-            for (key, event_id) in added {
+            let added_keys: std::collections::HashSet<&(EventType, String)> =
+                added.iter().map(|(k, _)| k).collect();
+            for (key, event_id) in &added {
                 deltas.push(rezzy::json!({
                     "type": key.0.as_str(),
-                    "state_key": key.1,
+                    "state_key": &key.1,
                     "event_id": event_id,
                 }));
             }
-            for (key, _) in removed {
-                if state_after.get(&key).is_none() {
+            for (key, _) in &removed {
+                if !added_keys.contains(key) {
                     deltas.push(rezzy::json!({
                         "type": key.0.as_str(),
-                        "state_key": key.1,
+                        "state_key": &key.1,
                         "event_id": rezzy::JsonValue::Null,
                     }));
                 }
@@ -336,8 +344,8 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         }
 
         checkpoints.push(rezzy::json!({
-            "hash": fnv_hash_str,
-            "parent": parent_fnv_hash,
+            "hash": &new_root_hash_str,
+            "parent": parent_root_hashes.first().cloned(),
             "event_id": &ev.event_id,
             "deltas": deltas,
         }));
