@@ -506,7 +506,6 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent, S>,
     version: StateResVersion,
-    auth_graph: &rezzy::auth::roaring::AuthGraph,
     reachability: &rezzy::resolve::reachability::RangePrefilterReachability<String>,
 ) -> SharedStateMap {
     // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
@@ -521,45 +520,16 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
         }
     }
 
-    // Restrict the event context passed to the library to the auth-chain
-    // closure of the events actually referenced by these parent states,
-    // rather than the full room's event map. `resolve_state_maps`
-    // (specifically the V2.1+ MSC4297 subgraph step) walks/clones its
-    // entire `event_context` argument on every call; passing the full
-    // map here is fine when called once (the final-heads resolve in
-    // `partition_and_resolve_state`) but is O(room size) *per fork* when
-    // called from a full-history incremental walk (e.g. `--format
-    // deltas`), which visits every fork point in the DAG, not just the
-    // final heads. Using the precomputed `AuthGraph` bitmaps turns this
-    // into O(auth-chain size) per call instead.
-    let mut relevant = roaring::RoaringBitmap::new();
-    for state in parent_states {
-        for id in state.values() {
-            if let Some(idx) = auth_graph.index.index_of(id) {
-                relevant.insert(idx);
-                relevant |= &auth_graph.auth_bitmaps[idx as usize];
-            }
-        }
-    }
-    let filtered_context: HashMap<String, LeanEvent> = relevant
-        .into_iter()
-        .filter_map(|idx| {
-            let id = auth_graph.index.item_at(idx as usize)?;
-            events_map.get(id).map(|ev| (id.clone(), ev.clone()))
-        })
-        .collect();
-
-    // Unwrap Arc<OrdMap> → &OrdMap for the library call
+    // Pass the room event map by reference: no per-fork context clone. The
+    // shared reachability index restricts V2.1 forward reachability, and the
+    // full map is a superset of the former per-fork auth closure, which the
+    // full-context reference already proved resolves identically.
     let bare_maps: Vec<ResolvedState> = parent_states
         .iter()
         .map(|arc| arc.as_ref().clone())
         .collect();
-    let resolved = rezzy::resolve_state_maps_with_reachability(
-        &bare_maps,
-        &filtered_context,
-        version,
-        reachability,
-    );
+    let resolved =
+        rezzy::resolve_state_maps_with_reachability(&bare_maps, events_map, version, reachability);
     std::sync::Arc::new(resolved)
 }
 
@@ -851,17 +821,18 @@ mod tests {
         );
     }
 
-    /// Regression guard: the fork-context filter used by `resolve_parent_states`
-    /// (the auth-chain closure of the parent-state events) must resolve to
-    /// exactly the same state as passing the *full* room event map.
+    /// Regression guard: resolving a fork through the shared reachability
+    /// index must produce exactly the same state as the plain full-context
+    /// resolver.
     ///
-    /// The V2.1+ MSC4297 step needs the forward-reachable side of the conflicted
-    /// subgraph, which lives in the auth closure of the parent states. A context
-    /// narrowed to only the backward-reachable set of the conflicted events
-    /// (e.g. an on-demand lazy provider) under-resolves and silently changes the
-    /// result — this test fails if that ever becomes the implementation.
+    /// The V2.1+ MSC4297 step needs the forward-reachable side of the
+    /// conflicted subgraph. A context narrowed to only the backward-reachable
+    /// set of the conflicted events (e.g. an on-demand lazy provider)
+    /// under-resolves and silently changes the result — this test fails if that
+    /// ever becomes the implementation, or if the shared index diverges from
+    /// the per-call index.
     #[test]
-    fn filtered_parent_resolution_matches_full_context() {
+    fn indexed_parent_resolution_matches_full_context() {
         let events = map_from_jsonl(
             r#"
 {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@a:x","depth":1,"content":{"room_version":"10","creator":"@a:x"},"prev_events":[],"auth_events":[]}
@@ -872,8 +843,6 @@ mod tests {
 {"event_id":"$unrelated","type":"m.room.message","sender":"@a:x","depth":3,"content":{"body":"x"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
 "#,
         );
-        let auth_graph = rezzy::auth::roaring::AuthGraph::build(&events);
-
         let state_a: SharedStateMap = std::sync::Arc::new(
             [
                 (EventType::from("m.room.create"), String::new(), "$create"),
@@ -906,21 +875,16 @@ mod tests {
         let parents = vec![state_a, state_b];
         let reachability =
             rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
-        let filtered = resolve_parent_states(
-            &parents,
-            &events,
-            StateResVersion::V2_1,
-            &auth_graph,
-            &reachability,
-        );
+        let indexed =
+            resolve_parent_states(&parents, &events, StateResVersion::V2_1, &reachability);
 
         let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
         let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
 
         assert_eq!(
-            filtered.as_ref(),
+            indexed.as_ref(),
             &full,
-            "filtered fork context must match full-context resolution"
+            "indexed fork resolution must match full-context resolution"
         );
     }
 }

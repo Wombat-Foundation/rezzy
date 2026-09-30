@@ -229,7 +229,6 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                         &parent_states,
                         ctx.events_map,
                         ctx.version,
-                        ctx.auth_graph,
                         &reachability,
                     );
                     let elapsed = t.elapsed();
