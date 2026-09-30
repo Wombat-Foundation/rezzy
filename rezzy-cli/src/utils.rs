@@ -112,6 +112,19 @@ pub fn detect_room_version_string(events: &[rezzy::JsonValue]) -> Option<String>
     })
 }
 
+fn sort_gaps_by_depth<T, S: std::hash::BuildHasher>(
+    gaps: &mut [T],
+    events_map: &HashMap<String, LeanEvent, S>,
+    event_id: impl Fn(&T) -> &str,
+) {
+    gaps.sort_by(
+        |a, b| match (events_map.get(event_id(a)), events_map.get(event_id(b))) {
+            (Some(a_event), Some(b_event)) => a_event.cmp_by_depth(b_event),
+            _ => event_id(a).cmp(event_id(b)),
+        },
+    );
+}
+
 /// Detect `prev_events` and `auth_events` references that point to events
 /// absent from `events_map` and not known to the `exists` oracle.
 ///
@@ -140,21 +153,11 @@ where
 {
     let mut backward = rezzy::find_backward_extremities(events_map, &exists);
     let mut missing_auth = rezzy::find_missing_auth_events(events_map, &exists);
-    backward.sort_by(
-        |a, b| match (events_map.get(&a.event_id), events_map.get(&b.event_id)) {
-            (Some(a_event), Some(b_event)) => a_event.cmp_by_depth(b_event),
-            _ => a.event_id.cmp(&b.event_id),
-        },
-    );
+    sort_gaps_by_depth(&mut backward, events_map, |gap| gap.event_id.as_str());
     for gap in &mut backward {
         gap.missing_prev_events.sort();
     }
-    missing_auth.sort_by(
-        |a, b| match (events_map.get(&a.event_id), events_map.get(&b.event_id)) {
-            (Some(a_event), Some(b_event)) => a_event.cmp_by_depth(b_event),
-            _ => a.event_id.cmp(&b.event_id),
-        },
-    );
+    sort_gaps_by_depth(&mut missing_auth, events_map, |gap| gap.event_id.as_str());
     for gap in &mut missing_auth {
         gap.missing_auth_events.sort();
     }

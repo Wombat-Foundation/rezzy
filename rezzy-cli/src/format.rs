@@ -62,6 +62,21 @@ pub struct HamtLiveWalkOutput {
     pub checkpoints: Vec<rezzy::JsonValue>,
 }
 
+type StateLeaf = ((EventType, String), String);
+
+fn leaves_json(leaves: &[StateLeaf]) -> Vec<rezzy::JsonValue> {
+    leaves
+        .iter()
+        .map(|((etype, skey), eid)| {
+            rezzy::json!({
+                "type": etype.as_str(),
+                "state_key": skey,
+                "event_id": eid,
+            })
+        })
+        .collect()
+}
+
 fn record_hamt_subtree_nodes(
     root: &std::sync::Arc<HamtNode<(EventType, String), String>>,
     seen: &mut std::collections::HashSet<StructuralHash>,
@@ -70,17 +85,7 @@ fn record_hamt_subtree_nodes(
     let mut stack = vec![root.clone()];
     while let Some(node) = stack.pop() {
         if seen.insert(node.structural_hash) {
-            let leaves = node
-                .leaves
-                .iter()
-                .map(|((etype, skey), eid)| {
-                    rezzy::json!({
-                        "type": etype.as_str(),
-                        "state_key": skey,
-                        "event_id": eid,
-                    })
-                })
-                .collect::<Vec<_>>();
+            let leaves = leaves_json(&node.leaves);
             let children = node
                 .children
                 .iter()
@@ -256,7 +261,11 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                     )
                     .expect("build merged hamt");
                     if need_nodes {
-                        record_hamt_subtree_nodes(&base_root, &mut seen_node_hashes, &mut unique_nodes);
+                        record_hamt_subtree_nodes(
+                            &base_root,
+                            &mut seen_node_hashes,
+                            &mut unique_nodes,
+                        );
                     }
                 }
             }
@@ -285,17 +294,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                                 &encoded_bytes,
                             )
                         {
-                            let leaves = decoded
-                                .leaves
-                                .into_iter()
-                                .map(|((etype, skey), eid)| {
-                                    rezzy::json!({
-                                        "type": etype.as_str(),
-                                        "state_key": skey,
-                                        "event_id": eid,
-                                    })
-                                })
-                                .collect::<Vec<_>>();
+                            let leaves = leaves_json(&decoded.leaves);
                             let children = decoded
                                 .child_hashes
                                 .into_iter()
@@ -321,7 +320,10 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
         // Live-frontier GC: only retain active Arc<HamtNode> in roots_map while
         // unvisited child events in the DAG cite this event.
-        let remaining_citations = child_citations.get(ev.event_id.as_str()).copied().unwrap_or(0);
+        let remaining_citations = child_citations
+            .get(ev.event_id.as_str())
+            .copied()
+            .unwrap_or(0);
         if remaining_citations > 0 {
             roots_map.insert(ev.event_id.clone(), new_root.clone());
         }
