@@ -2869,11 +2869,9 @@ fn room_version_is_v12_or_later(room_version: &str) -> bool {
 /// drawn from the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`,
 /// `+`), and a non-empty domain.
 ///
-/// This is the no-warning path for IDs found in room events; IDs which fail
-/// this but satisfy [`is_acceptable_historical_mxid`] are accepted with a
-/// [`crate::warnings::Warning::HistoricalMxid`] instead of being rejected.
-/// It remains suitable for callers which create a new user ID. Exposed so
-/// downstream adapters can enforce the identical grammar without copying it.
+/// This is suitable for callers which create a new user ID. Incoming room
+/// events instead use [`is_acceptable_historical_mxid`]. Exposed so downstream
+/// adapters can enforce the identical grammar without copying it.
 #[must_use]
 pub fn is_valid_mxid(id: &str) -> bool {
     let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
@@ -2989,7 +2987,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let mut warnings = alloc::vec::Vec::new();
         self.validate_structure(room_version)?;
         let id_str = alloc::format!("{}", self.event_id);
-        self.validate_identifiers(room_version, &mut warnings)?;
+        self.validate_identifiers(room_version)?;
         if self.depth > MAX_SAFE_JSON_INTEGER {
             return Err("depth exceeds maximum allowed value");
         }
@@ -3030,11 +3028,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         Ok(())
     }
 
-    fn validate_identifiers(
-        &self,
-        room_version: &str,
-        warnings: &mut SyntacticWarnings<Id>,
-    ) -> Result<(), &'static str>
+    fn validate_identifiers(&self, room_version: &str) -> Result<(), &'static str>
     where
         Id: core::fmt::Display + Clone,
         C: EventContent,
@@ -3043,28 +3037,12 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
-        self.validate_mxid(&self.sender, "sender", warnings)?;
-        self.validate_create_identifiers(room_version, warnings)
+        self.validate_mxid(&self.sender, "sender")?;
+        self.validate_create_identifiers(room_version)
     }
 
-    fn validate_mxid(
-        &self,
-        mxid: &str,
-        field: &'static str,
-        warnings: &mut SyntacticWarnings<Id>,
-    ) -> Result<(), &'static str>
-    where
-        Id: Clone,
-    {
-        if is_valid_mxid(mxid) {
-            return Ok(());
-        }
+    fn validate_mxid(&self, mxid: &str, field: &'static str) -> Result<(), &'static str> {
         if is_acceptable_historical_mxid(mxid) {
-            warnings.push(crate::warnings::Warning::HistoricalMxid {
-                event_id: self.event_id.clone(),
-                field,
-                mxid: mxid.to_string(),
-            });
             return Ok(());
         }
         match field {
@@ -3076,13 +3054,8 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         }
     }
 
-    fn validate_create_identifiers(
-        &self,
-        room_version: &str,
-        warnings: &mut SyntacticWarnings<Id>,
-    ) -> Result<(), &'static str>
+    fn validate_create_identifiers(&self, room_version: &str) -> Result<(), &'static str>
     where
-        Id: Clone,
         C: EventContent,
     {
         if self.event_type != crate::basespec::event_types::M_ROOM_CREATE {
@@ -3100,7 +3073,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let Some(creator) = self.content.get_creator() else {
             return Err("m.room.create content must have a 'creator' property");
         };
-        self.validate_mxid(creator, "creator", warnings)
+        self.validate_mxid(creator, "creator")
     }
 
     fn validate_field_lengths(
