@@ -362,6 +362,12 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
                 // AuthError-rejected event would be.
                 match ev.validate_syntactic(&syntactic_room_version) {
                     Ok(outcome) => {
+                        if args.debug && !rezzy::basespec::rezzy_types::is_valid_mxid(&ev.sender) {
+                            eprintln!(
+                                "[DEBUG] event {} sender '{}' uses the compatibility MXID grammar",
+                                ev.event_id, ev.sender
+                            );
+                        }
                         if !args.quiet {
                             for warning in outcome.warnings {
                                 eprintln!("[WARN] {warning}");

@@ -3037,11 +3037,11 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
-        self.validate_mxid(&self.sender, "sender")?;
+        Self::validate_mxid(&self.sender, "sender")?;
         self.validate_create_identifiers(room_version)
     }
 
-    fn validate_mxid(&self, mxid: &str, field: &'static str) -> Result<(), &'static str> {
+    fn validate_mxid(mxid: &str, field: &'static str) -> Result<(), &'static str> {
         if is_acceptable_historical_mxid(mxid) {
             return Ok(());
         }
@@ -3073,7 +3073,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         let Some(creator) = self.content.get_creator() else {
             return Err("m.room.create content must have a 'creator' property");
         };
-        self.validate_mxid(creator, "creator")
+        Self::validate_mxid(creator, "creator")
     }
 
     fn validate_field_lengths(
