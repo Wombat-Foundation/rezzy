@@ -123,7 +123,7 @@ authorization rules. Three distinct rule sets exist:
 | Check                                                             | Versions | rezzy | Notes                                                         |
 | ----------------------------------------------------------------- | -------- | ----- | ------------------------------------------------------------- |
 | `event_id` must be `$`-prefixed                                   | all      | [x]   | `InvalidSyntax`                                               |
-| `sender` MXID localpart charset                                   | all      | [x]   | Added this session                                            |
+| `sender` MXID localpart charset                                   | all      | [~]   | Warn only for historical (uppercase/Unicode) IDs; hard-fail only on structural breakage |
 | `depth` bounds (`MAX_SAFE_JSON_INTEGER`)                          | all      | [x]   | 2^53−1 accepted as valid ceiling                              |
 | 255-byte hard limit: `event_id`/`sender`/`event_type`/`state_key` | V11+     | [x]   | Synapse parity (`strict_event_byte_limits_room_versions`)     |
 | 255-byte limit pre-v11                                            | V1–V10   | [~]   | Warn only (`eprintln!`, `std` feature only), never hard-fails |

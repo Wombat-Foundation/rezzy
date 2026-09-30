@@ -3303,8 +3303,8 @@ fn test_types_validate_syntactic() {
 
     ev.sender = "@:example.com".to_string();
     assert!(
-        ev.validate_syntactic("11").is_err(),
-        "empty localpart is invalid"
+        ev.validate_syntactic("11").is_ok(),
+        "an empty historical localpart must be accepted in room events"
     );
     ev.sender = "@alice.1_2=3-4/5+6:example.com".to_string();
     assert!(
@@ -3363,6 +3363,16 @@ fn test_types_validate_syntactic() {
     ev.event_id = "$valid_event_id:example.com".to_string();
     assert!(ev.validate_syntactic("11").is_ok());
 
+    // Historical Unicode localparts remain acceptable, but the v11+ sender
+    // field limit is measured in UTF-8 bytes. This value is 257 bytes:
+    // `@` + 127 two-byte code points + `:x`.
+    ev.sender = format!("@{}:x", "\u{00e9}".repeat(127));
+    assert_eq!(
+        ev.validate_syntactic("11"),
+        Err("sender exceeds maximum allowed length of 255 bytes")
+    );
+    ev.sender = "@alice:example.com".to_string();
+
     // Test 255-byte length limit on state_key (same v11+ gating as the other fields)
     ev.state_key = Some("a".repeat(256));
     assert_eq!(
@@ -3380,19 +3390,44 @@ fn test_types_validate_syntactic() {
 #[test_case::test_case("11"; "v11")]
 #[test_case::test_case("12"; "v12")]
 #[test_case::test_case("12.1"; "v12_1")]
-fn test_types_validate_syntactic_rejects_uppercase_sender(room_version: &str) {
-    let ev: LeanEvent = LeanEvent {
+fn test_types_validate_syntactic_accepts_historical_sender_localparts(room_version: &str) {
+    let mut ev: LeanEvent = LeanEvent {
         event_id: "$valid_event_id:example.com".to_string(),
         event_type: "m.room.message".to_string(),
         sender: "@Alice:example.com".to_string(),
         ..Default::default()
     };
 
+    let outcome = ev
+        .validate_syntactic(room_version)
+        .expect("historical uppercase sender must be accepted, not rejected");
     assert_eq!(
-        ev.validate_syntactic(room_version),
-        Err(
-            "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'"
-        )
+        outcome.warnings,
+        vec![rezzy::warnings::Warning::HistoricalMxid {
+            event_id: "$valid_event_id:example.com".to_string(),
+            field: "sender",
+            mxid: "@Alice:example.com".to_string(),
+        }],
+        "the strict-grammar violation must surface as a warning, not an error"
+    );
+    assert_eq!(outcome.warnings[0].code(), "W003_HISTORICAL_MXID");
+
+    ev.sender = "@\u{00e9}lodie:example.com".to_string();
+    let outcome = ev
+        .validate_syntactic(room_version)
+        .expect("historical Unicode sender must be accepted");
+    assert_eq!(outcome.warnings.len(), 1);
+
+    ev.sender = "@:example.com".to_string();
+    assert!(
+        ev.validate_syntactic(room_version).is_ok(),
+        "empty historical localpart must be accepted"
+    );
+
+    ev.sender = "@alice\0:example.com".to_string();
+    assert!(
+        ev.validate_syntactic(room_version).is_err(),
+        "NUL is never legal in an MXID localpart"
     );
 }
 
@@ -3433,8 +3468,23 @@ fn test_types_validate_syntactic_create_rules() {
     ev.content = rezzy::json!({ "creator": "@alice:example.com" });
     assert!(ev.validate_syntactic("11").is_ok());
 
-    // Rule 1.4 (v12+): `creator` is no longer required, but any
-    // `additional_creators` entries must pass the same MXID grammar as `sender`.
+    // A historical (pre-grammar) creator is accepted with a warning, matching
+    // the MUST-accept rule for historical user IDs in room events.
+    ev.content = rezzy::json!({ "creator": "@Alice:example.com" });
+    let outcome = ev
+        .validate_syntactic("11")
+        .expect("historical creator must be accepted, not rejected");
+    assert_eq!(
+        outcome.warnings,
+        vec![rezzy::warnings::Warning::HistoricalMxid {
+            event_id: "$valid_event_id:example.com".to_string(),
+            field: "creator",
+            mxid: "@Alice:example.com".to_string(),
+        }]
+    );
+
+    // Rule 1.4 (v12+): `creator` is no longer required, and
+    // `additional_creators` use the same historical MXID grammar as sender.
     ev.content = rezzy::json!({});
     assert!(
         ev.validate_syntactic("12").is_ok(),
@@ -3445,6 +3495,8 @@ fn test_types_validate_syntactic_create_rules() {
         ev.validate_syntactic("12"),
         Err("m.room.create content.additional_creators must be an array of valid MXID strings")
     );
+    ev.content = rezzy::json!({ "additional_creators": ["@Bob:example.com"] });
+    assert!(ev.validate_syntactic("12").is_ok());
     ev.content = rezzy::json!({ "additional_creators": ["@bob:example.com"] });
     assert!(ev.validate_syntactic("12").is_ok());
 }

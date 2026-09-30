@@ -24,6 +24,8 @@ use sha2::{Digest, Sha256};
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
+type SyntacticWarnings<Id> = Vec<crate::warnings::Warning<Id>>;
+
 /// Marker trait for types that can serve as event identifiers.
 ///
 /// Any type that is `Clone + Eq + Hash + Ord + Debug + Display` automatically
@@ -2664,7 +2666,7 @@ impl EventContent for Value {
             None => true,
             Some(v) => v.as_array().is_some_and(|arr| {
                 arr.iter()
-                    .all(|entry| entry.as_str().is_some_and(is_valid_mxid))
+                    .all(|entry| entry.as_str().is_some_and(is_acceptable_historical_mxid))
             }),
         }
     }
@@ -2862,17 +2864,16 @@ fn room_version_is_v12_or_later(room_version: &str) -> bool {
     RoomVersionFormat::parse(room_version).is_some_and(RoomVersionFormat::uses_v12_create_rules)
 }
 
-/// Returns `true` if `id` is a syntactically valid Matrix user ID: `@` prefix,
-/// a `:` separating localpart from domain, a non-empty localpart drawn from
-/// the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`, `+`), and a
-/// non-empty domain.
+/// Returns `true` if `id` is a strictly valid *current* Matrix user ID: `@`
+/// prefix, a `:` separating localpart from domain, a non-empty localpart
+/// drawn from the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`,
+/// `+`), and a non-empty domain.
 ///
-/// Shared by the `sender` check and, for V12+ rooms, `additional_creators`
-/// entries — both are held to the same grammar per MSC4289.
-///
-/// Exposed so downstream adapters that keep JSON in another value type (e.g. a
-/// JSON value tree) can enforce the identical grammar without copying
-/// it.
+/// This is the no-warning path for IDs found in room events; IDs which fail
+/// this but satisfy [`is_acceptable_historical_mxid`] are accepted with a
+/// [`crate::warnings::Warning::HistoricalMxid`] instead of being rejected.
+/// It remains suitable for callers which create a new user ID. Exposed so
+/// downstream adapters can enforce the identical grammar without copying it.
 #[must_use]
 pub fn is_valid_mxid(id: &str) -> bool {
     let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
@@ -2884,6 +2885,24 @@ pub fn is_valid_mxid(id: &str) -> bool {
         && localpart.bytes().all(
             |b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'=' | b'-' | b'/' | b'+'),
         )
+}
+
+/// Returns `true` if `id` can be accepted as a historical Matrix user ID in a
+/// room event.
+///
+/// The Matrix specification requires clients and servers to accept historical
+/// localparts containing any non-surrogate Unicode scalar value other than
+/// `:` and NUL. Rust strings cannot contain surrogate code points, so the
+/// localpart check only needs to exclude NUL. Unlike the current grammar, an
+/// empty localpart is accepted. The domain retains the basic non-empty
+/// structural check used by the strict grammar.
+#[must_use]
+pub fn is_acceptable_historical_mxid(id: &str) -> bool {
+    let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
+    else {
+        return false;
+    };
+    !domain.is_empty() && !localpart.contains('\0')
 }
 
 /// Extracts the domain (server name) portion of a Matrix identifier (e.g. `@user:example.com` -> `example.com`,
@@ -2968,20 +2987,31 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         K: AsRef<str>,
     {
         let mut warnings = alloc::vec::Vec::new();
-        if StateResVersion::from_room_version(room_version).is_none() {
-            return Err("unsupported room_version");
+        self.validate_structure(room_version)?;
+        let id_str = alloc::format!("{}", self.event_id);
+        self.validate_identifiers(room_version, &mut warnings)?;
+        if self.depth > MAX_SAFE_JSON_INTEGER {
+            return Err("depth exceeds maximum allowed value");
         }
+        self.validate_field_lengths(&id_str, room_version, &mut warnings)?;
+
+        Ok(crate::warnings::Outcome::with_warnings((), warnings))
+    }
+
+    fn validate_structure(&self, room_version: &str) -> Result<(), &'static str>
+    where
+        C: EventContent,
+    {
+        let Some(version) = StateResVersion::from_room_version(room_version) else {
+            return Err("unsupported room_version");
+        };
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
-        let is_msc4242 = matches!(
-            StateResVersion::from_room_version(room_version),
-            Some(StateResVersion::V2_2)
-        );
-        if !is_msc4242 && self.auth_events.len() > 10 {
+        if version != StateResVersion::V2_2 && self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
         }
-        if is_msc4242
+        if version == StateResVersion::V2_2
             && self.auth_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
         {
             return Err("prev_state_events exceeds maximum allowed length of 20");
@@ -2989,84 +3019,144 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
         }
-        // Rule 1.3: an `m.room.create` event must not declare an unrecognised
-        // `content.room_version`. Absent room_version defaults to "1" per spec,
-        // so only a *present but unrecognised* value is rejected here.
-        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE {
-            if let Some(v) = self.content.get_room_version() {
-                if StateResVersion::from_room_version(v).is_none() {
-                    return Err(
-                        "m.room.create content.room_version is not a recognised room version",
-                    );
-                }
-            }
+        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE
+            && self
+                .content
+                .get_room_version()
+                .is_some_and(|v| StateResVersion::from_room_version(v).is_none())
+        {
+            return Err("m.room.create content.room_version is not a recognised room version");
         }
-        let id_str = alloc::format!("{}", self.event_id);
-        if id_str.is_empty() || !id_str.starts_with('$') {
+        Ok(())
+    }
+
+    fn validate_identifiers(
+        &self,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: core::fmt::Display + Clone,
+        C: EventContent,
+    {
+        let event_id = alloc::format!("{}", self.event_id);
+        if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
-        if !is_valid_mxid(&self.sender) {
-            return Err(
+        self.validate_mxid(&self.sender, "sender", warnings)?;
+        self.validate_create_identifiers(room_version, warnings)
+    }
+
+    fn validate_mxid(
+        &self,
+        mxid: &str,
+        field: &'static str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+    {
+        if is_valid_mxid(mxid) {
+            return Ok(());
+        }
+        if is_acceptable_historical_mxid(mxid) {
+            warnings.push(crate::warnings::Warning::HistoricalMxid {
+                event_id: self.event_id.clone(),
+                field,
+                mxid: mxid.to_string(),
+            });
+            return Ok(());
+        }
+        match field {
+            "sender" => Err(
                 "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'",
+            ),
+            "creator" => Err("m.room.create content.creator must be a valid MXID string"),
+            _ => unreachable!("only sender and creator MXIDs are validated"),
+        }
+    }
+
+    fn validate_create_identifiers(
+        &self,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+        C: EventContent,
+    {
+        if self.event_type != crate::basespec::event_types::M_ROOM_CREATE {
+            return Ok(());
+        }
+        if StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus()) {
+            return self
+                .content
+                .additional_creators_are_valid()
+                .then_some(())
+                .ok_or(
+                "m.room.create content.additional_creators must be an array of valid MXID strings",
             );
         }
-        // Rule 1.4: pre-v12 m.room.create must declare a `creator`; v12+
-        // instead derives creators from `sender` + `additional_creators`,
-        // and validates any `additional_creators` entries against the same
-        // MXID grammar as `sender`.
-        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE {
-            let is_v12_plus =
-                StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus());
-            if is_v12_plus {
-                if !self.content.additional_creators_are_valid() {
-                    return Err(
-                        "m.room.create content.additional_creators must be an array of valid MXID strings",
-                    );
-                }
-            } else {
-                let Some(creator) = self.content.get_creator() else {
-                    return Err("m.room.create content must have a 'creator' property");
-                };
-                if !is_valid_mxid(creator) {
-                    return Err("m.room.create content.creator must be a valid MXID string");
-                }
-            }
-        }
-        if self.depth > MAX_SAFE_JSON_INTEGER {
-            return Err("depth exceeds maximum allowed value");
-        }
+        let Some(creator) = self.content.get_creator() else {
+            return Err("m.room.create content must have a 'creator' property");
+        };
+        self.validate_mxid(creator, "creator", warnings)
+    }
 
-        let strict_length_limits = room_version_is_v11_or_later(room_version);
-        macro_rules! check_length {
-            ($field:expr, $name:literal) => {
-                let len = $field.len();
-                if len > 255 {
-                    if strict_length_limits {
-                        return Err(concat!(
-                            $name,
-                            " exceeds maximum allowed length of 255 bytes"
-                        ));
-                    }
-                    warnings.push(crate::warnings::Warning::OversizedFieldPreV11 {
-                        event_id: self.event_id.clone(),
-                        field: $name,
-                        len,
-                        limit: 255,
-                    });
-                }
+    fn validate_field_lengths(
+        &self,
+        event_id: &str,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+        K: AsRef<str>,
+    {
+        let strict = room_version_is_v11_or_later(room_version);
+        for (field, name) in [
+            (event_id, "event_id"),
+            (&self.sender, "sender"),
+            (&self.event_type, "event_type"),
+        ] {
+            self.validate_field_length(field, name, strict, warnings)?;
+        }
+        if let Some(state_key) = &self.state_key {
+            self.validate_field_length(state_key.as_ref(), "state_key", strict, warnings)?;
+        }
+        Ok(())
+    }
+
+    fn validate_field_length(
+        &self,
+        value: &str,
+        field: &'static str,
+        strict: bool,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+    {
+        let len = value.len();
+        if len <= 255 {
+            return Ok(());
+        }
+        if strict {
+            return match field {
+                "event_id" => Err("event_id exceeds maximum allowed length of 255 bytes"),
+                "sender" => Err("sender exceeds maximum allowed length of 255 bytes"),
+                "event_type" => Err("event_type exceeds maximum allowed length of 255 bytes"),
+                "state_key" => Err("state_key exceeds maximum allowed length of 255 bytes"),
+                _ => unreachable!("only fixed PDU fields are length-checked"),
             };
         }
-        check_length!(id_str, "event_id");
-        check_length!(self.sender, "sender");
-        check_length!(self.event_type, "event_type");
-        // NOTE: For Synapse parity, v11+ hard-enforces this the same as the other
-        // fields above; state_key is optional (only present on state events), so
-        // this branch is skipped entirely for non-state events.
-        if let Some(ref state_key) = self.state_key {
-            check_length!(state_key.as_ref(), "state_key");
-        }
-
-        Ok(crate::warnings::Outcome::with_warnings((), warnings))
+        warnings.push(crate::warnings::Warning::OversizedFieldPreV11 {
+            event_id: self.event_id.clone(),
+            field,
+            len,
+            limit: 255,
+        });
+        Ok(())
     }
 
     // --- Typed Content Accessors (delegate to EventContent) ---
