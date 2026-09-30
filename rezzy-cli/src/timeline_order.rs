@@ -106,6 +106,23 @@ pub const DEFAULT_TIE_BREAK: [OrderKey; 3] = [
     OrderKey::EventId,
 ];
 
+/// The causal `--timeline-order synapse` tie-break:
+/// `matrix_depth, stream_ordering, event_id`.
+pub const SYNAPSE_TIE_BREAK: [OrderKey; 3] = [
+    OrderKey::MatrixDepth,
+    OrderKey::StreamOrdering,
+    OrderKey::EventId,
+];
+
+/// Sentinel for a requested stream-order component with no known value.
+///
+/// Stream order is a server-local monotonic counter, so `u64::MAX` is beyond
+/// any real value. It sorts an event after every event with a known stream
+/// order within the same higher-priority components, rather than substituting
+/// `origin_server_ts` (which would compare a counter against epoch
+/// milliseconds).
+pub const MISSING_STREAM_ORDER: u64 = u64::MAX;
+
 /// One component of a lexicographic sort key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyValue {
