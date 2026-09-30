@@ -506,7 +506,6 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
     parent_states: &[SharedStateMap],
     events_map: &HashMap<String, LeanEvent, S>,
     version: StateResVersion,
-    auth_graph: &rezzy::auth::roaring::AuthGraph,
 ) -> SharedStateMap {
     // Fast path: all parent states are identical (Arc::ptr_eq or value equality).
     // Common in linear DAGs where every parent shares the same resolved state.
@@ -520,40 +519,28 @@ pub fn resolve_parent_states<S: std::hash::BuildHasher>(
         }
     }
 
-    // Restrict the event context passed to the library to the auth-chain
-    // closure of the events actually referenced by these parent states,
-    // rather than the full room's event map. `resolve_state_maps`
-    // (specifically the V2.1+ MSC4297 subgraph step) walks/clones its
-    // entire `event_context` argument on every call; passing the full
-    // map here is fine when called once (the final-heads resolve in
-    // `partition_and_resolve_state`) but is O(room size) *per fork* when
-    // called from a full-history incremental walk (e.g. `--format
-    // deltas`), which visits every fork point in the DAG, not just the
-    // final heads. Using the precomputed `AuthGraph` bitmaps turns this
-    // into O(auth-chain size) per call instead.
-    let mut relevant = roaring::RoaringBitmap::new();
-    for state in parent_states {
-        for id in state.values() {
-            if let Some(idx) = auth_graph.index.index_of(id) {
-                relevant.insert(idx);
-                relevant |= &auth_graph.auth_bitmaps[idx as usize];
-            }
-        }
-    }
-    let filtered_context: HashMap<String, LeanEvent> = relevant
-        .into_iter()
-        .filter_map(|idx| {
-            let id = auth_graph.index.item_at(idx as usize)?;
-            events_map.get(id).map(|ev| (id.clone(), ev.clone()))
-        })
-        .collect();
-
-    // Unwrap Arc<OrdMap> → &OrdMap for the library call
+    // Resolve through the library's lazy provider API instead of
+    // pre-materializing the auth-chain closure of these parent states into
+    // an owned `HashMap` on every fork. `resolve_state_maps` clones its
+    // entire `event_context` argument (and rebuilds the V2.1+ MSC4297
+    // reachability index over it) on every call; called once for the
+    // final-heads resolve that is fine, but a full-history incremental walk
+    // (e.g. `--format deltas`) visits every fork point, making it
+    // O(room size) per fork. The lazy API walks auth chains on demand from
+    // the conflicted set, so it only touches (and clones) the events that
+    // actually participate in the conflict.
+    //
+    // Unwrap Arc<OrdMap> → &OrdMap for the library call.
     let bare_maps: Vec<ResolvedState> = parent_states
         .iter()
         .map(|arc| arc.as_ref().clone())
         .collect();
-    let resolved = rezzy::resolve_state_maps(&bare_maps, &filtered_context, version);
+    let resolved = rezzy::resolve_state_maps_lazy_with_diff(
+        &bare_maps,
+        events_map,
+        None::<Vec<String>>,
+        version,
+    );
     std::sync::Arc::new(resolved)
 }
 

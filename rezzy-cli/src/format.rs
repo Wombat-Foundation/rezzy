@@ -43,7 +43,8 @@ pub struct FormattingContext<'a> {
 }
 
 use rezzy::hamt::{
-    build_hamt, diff_hamt_nodes, persist_mutation, HamtNode, PersistedInternalNode, StructuralHash,
+    build_hamt, diff_hamt_nodes, persist_mutation, persist_mutations, HamtNode,
+    PersistedInternalNode, StructuralHash,
 };
 
 fn format_structural_hash(hash: &StructuralHash) -> String {
@@ -75,36 +76,6 @@ fn leaves_json(leaves: &[StateLeaf]) -> Vec<rezzy::JsonValue> {
             })
         })
         .collect()
-}
-
-fn record_hamt_subtree_nodes(
-    root: &std::sync::Arc<HamtNode<(EventType, String), String>>,
-    seen: &mut std::collections::HashSet<StructuralHash>,
-    nodes: &mut Vec<rezzy::JsonValue>,
-) {
-    let mut stack = vec![root.clone()];
-    while let Some(node) = stack.pop() {
-        if seen.insert(node.structural_hash) {
-            let leaves = leaves_json(&node.leaves);
-            let children = node
-                .children
-                .iter()
-                .map(|c| format_structural_hash(&c.structural_hash()))
-                .collect::<Vec<_>>();
-            nodes.push(rezzy::json!({
-                "hash": format_structural_hash(&node.structural_hash),
-                "datamap": node.datamap,
-                "nodemap": node.nodemap,
-                "leaves": leaves,
-                "children": children,
-            }));
-            for child in &node.children {
-                if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-                    stack.push(child_node.clone());
-                }
-            }
-        }
-    }
 }
 
 fn hamt_to_state_map(
@@ -190,6 +161,11 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             std::convert::Infallible,
         > { unreachable!("in-memory HAMT nodes do not have unresolvable lazy references") };
 
+    let mut fork_cache: HashMap<
+        Vec<StructuralHash>,
+        std::sync::Arc<HamtNode<(EventType, String), String>>,
+    > = HashMap::new();
+
     for &i in &order {
         let ev = &raw_events[i];
         processed = processed.saturating_add(1);
@@ -231,21 +207,21 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
             } else if parent_roots.len() == 1 {
                 base_root = parent_roots[0].clone();
             } else {
-                let all_identical = parent_roots
-                    .windows(2)
-                    .all(|w| w[0].structural_hash == w[1].structural_hash);
-                if all_identical {
+                let mut unique_parent_hashes: Vec<StructuralHash> =
+                    parent_roots.iter().map(|r| r.structural_hash).collect();
+                unique_parent_hashes.sort_unstable();
+                unique_parent_hashes.dedup();
+
+                if unique_parent_hashes.len() == 1 {
                     base_root = parent_roots[0].clone();
+                } else if let Some(cached_root) = fork_cache.get(&unique_parent_hashes) {
+                    base_root = cached_root.clone();
                 } else {
                     let parent_states: Vec<SharedStateMap> =
                         parent_roots.iter().map(hamt_to_state_map).collect();
                     let t = std::time::Instant::now();
-                    let resolved_state = resolve_parent_states(
-                        &parent_states,
-                        ctx.events_map,
-                        ctx.version,
-                        ctx.auth_graph,
-                    );
+                    let resolved_state =
+                        resolve_parent_states(&parent_states, ctx.events_map, ctx.version);
                     let elapsed = t.elapsed();
                     fork_count = fork_count.saturating_add(1);
                     fork_time = fork_time.saturating_add(elapsed);
@@ -257,18 +233,66 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                         );
                     }
 
-                    base_root = build_hamt(
-                        structural_key,
-                        resolved_state.iter().map(|(k, v)| (k.clone(), v.clone())),
-                    )
-                    .expect("build merged hamt");
-                    if need_nodes {
-                        record_hamt_subtree_nodes(
-                            &base_root,
-                            &mut seen_node_hashes,
-                            &mut unique_nodes,
-                        );
+                    // State resolution considers all parents, but for the incremental
+                    // HAMT mutation we pick parent_roots[0] as our structural base.
+                    // To guarantee correctness regardless of which parent contributed
+                    // winning keys or deletions, we compute the full delta between the
+                    // resolved state map and parent_states[0] (insertions, updates,
+                    // and deletions) and apply those mutations to parent_roots[0].
+                    let parent_0_state = &parent_states[0];
+                    let mut diff_mutations = Vec::new();
+                    for (k, v) in resolved_state.iter() {
+                        if parent_0_state.get(k) != Some(v) {
+                            diff_mutations.push((k.clone(), Some(v.clone())));
+                        }
                     }
+                    for (k, _) in parent_0_state.iter() {
+                        if !resolved_state.contains_key(k) {
+                            diff_mutations.push((k.clone(), None));
+                        }
+                    }
+
+                    if diff_mutations.is_empty() {
+                        base_root = parent_roots[0].clone();
+                    } else {
+                        let (mutated_root, _displaced, created) = persist_mutations(
+                            &parent_roots[0],
+                            structural_key,
+                            diff_mutations,
+                            &mut no_resolver,
+                        )
+                        .expect("persist diff mutations");
+
+                        base_root = mutated_root;
+
+                        if need_nodes {
+                            for (node_hash, encoded_bytes) in created {
+                                if seen_node_hashes.insert(node_hash) {
+                                    if let Ok(decoded) = PersistedInternalNode::<
+                                        (EventType, String),
+                                        String,
+                                    >::decode_v1_unverified(
+                                        &encoded_bytes
+                                    ) {
+                                        let leaves = leaves_json(&decoded.leaves);
+                                        let children = decoded
+                                            .child_hashes
+                                            .into_iter()
+                                            .map(|h| format_structural_hash(&h))
+                                            .collect::<Vec<_>>();
+                                        unique_nodes.push(rezzy::json!({
+                                            "hash": format_structural_hash(&node_hash),
+                                            "datamap": decoded.datamap,
+                                            "nodemap": decoded.nodemap,
+                                            "leaves": leaves,
+                                            "children": children,
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    fork_cache.insert(unique_parent_hashes, base_root.clone());
                 }
             }
         }
@@ -1693,5 +1717,129 @@ mod tests {
         assert_eq!(checkpoints[1]["event_id"], "$join");
         assert_eq!(checkpoints[2]["event_id"], "$msg");
         assert_eq!(checkpoints[2]["deltas"], rezzy::json!([]));
+    }
+
+    #[test]
+    fn test_hamt_live_walk_multi_parent_fork_non_first_parent_winner() {
+        let ev_create: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            content: rezzy::json!({ "creator": "@alice:example.com" }),
+            depth: 1,
+            origin_server_ts: 10,
+            ..Default::default()
+        };
+        // Branch A (parent 0 in merge): sets m.room.name to "Name A" with earlier ts=100
+        let ev_branch_a: LeanEvent = LeanEvent {
+            event_id: "$name_a".into(),
+            event_type: "m.room.name".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            depth: 2,
+            origin_server_ts: 100,
+            ..Default::default()
+        };
+        // Branch B (parent 1 in merge): sets m.room.name to "Name B" with later ts=200 (wins name)
+        let ev_branch_b: LeanEvent = LeanEvent {
+            event_id: "$name_b".into(),
+            event_type: "m.room.name".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            depth: 2,
+            origin_server_ts: 200,
+            ..Default::default()
+        };
+        // Branch C (parent 2 in merge): sets m.room.topic to "Topic C" (contributes new key)
+        let ev_branch_c: LeanEvent = LeanEvent {
+            event_id: "$topic_c".into(),
+            event_type: "m.room.topic".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            prev_events: vec!["$create".into()],
+            auth_events: vec!["$create".into()],
+            depth: 2,
+            origin_server_ts: 150,
+            ..Default::default()
+        };
+        // Merge event: combines branch A, B, and C
+        let ev_merge: LeanEvent = LeanEvent {
+            event_id: "$merge".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            sender: "@alice:example.com".into(),
+            prev_events: vec!["$name_a".into(), "$name_b".into(), "$topic_c".into()],
+            auth_events: vec!["$create".into()],
+            depth: 3,
+            origin_server_ts: 300,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert(ev_create.event_id.clone(), ev_create);
+        events_map.insert(ev_branch_a.event_id.clone(), ev_branch_a);
+        events_map.insert(ev_branch_b.event_id.clone(), ev_branch_b);
+        events_map.insert(ev_branch_c.event_id.clone(), ev_branch_c);
+        events_map.insert(ev_merge.event_id.clone(), ev_merge);
+
+        let raw_map = HashMap::new();
+        let heads = vec!["$merge".into()];
+        let final_state_map = imbl::OrdMap::new();
+        let resolved_state_list = Vec::new();
+        let auth_chain_ids = Vec::new();
+        let auth_graph = build_auth_graph(&events_map);
+
+        let hamt_args = test_args(OutputFormat::Hamt);
+        let hamt_ctx = formatting_context(
+            None,
+            std::time::Duration::ZERO,
+            5,
+            &hamt_args,
+            &events_map,
+            &raw_map,
+            &heads,
+            &final_state_map,
+            &resolved_state_list,
+            &auth_chain_ids,
+            &auth_graph,
+        );
+
+        let hamt_output = format_cli_output(&hamt_ctx);
+        let roots = hamt_output["roots"].as_array().expect("roots array");
+        let merge_root = roots
+            .iter()
+            .find(|r| r["event_id"] == "$merge")
+            .expect("merge root exists");
+
+        // The expected merged state has $create, $name_b (won over $name_a), and $topic_c (from branch C)
+        let expected_hamt = build_hamt(
+            b"",
+            [
+                (
+                    (EventType::from("m.room.create"), String::new()),
+                    String::from("$create"),
+                ),
+                (
+                    (EventType::from("m.room.name"), String::new()),
+                    String::from("$name_b"),
+                ),
+                (
+                    (EventType::from("m.room.topic"), String::new()),
+                    String::from("$topic_c"),
+                ),
+            ],
+        )
+        .expect("expected HAMT build");
+        let expected_hash = format_structural_hash(&expected_hamt.structural_hash);
+
+        assert_eq!(
+            merge_root["root_hash"].as_str(),
+            Some(expected_hash.as_str())
+        );
     }
 }
