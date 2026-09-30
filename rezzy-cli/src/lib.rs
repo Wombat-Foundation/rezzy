@@ -302,6 +302,7 @@ fn format_name(format: OutputFormat) -> &'static str {
         OutputFormat::Timeline => "timeline",
         OutputFormat::TimelineChronological => "timeline-chronological",
         OutputFormat::ResolveState => "resolve-state",
+        OutputFormat::Hamt => "hamt",
     }
 }
 

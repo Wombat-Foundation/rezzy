@@ -42,61 +42,165 @@ pub struct FormattingContext<'a> {
     pub stream_order: Option<&'a StreamOrderIndex>,
 }
 
-/// Format the output for deltas.
+use rezzy::hamt::{
+    build_hamt, diff_hamt_nodes, persist_mutation, HamtNode, PersistedInternalNode, StructuralHash,
+};
+
+fn format_structural_hash(hash: &StructuralHash) -> String {
+    let mut s = String::with_capacity(64);
+    for b in hash {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Output of a live event walk over the DAG.
+pub struct HamtLiveWalkOutput {
+    pub roots: Vec<rezzy::JsonValue>,
+    pub nodes: Vec<rezzy::JsonValue>,
+    pub checkpoints: Vec<rezzy::JsonValue>,
+}
+
+fn record_hamt_subtree_nodes(
+    root: &std::sync::Arc<HamtNode<(EventType, String), String>>,
+    seen: &mut std::collections::HashSet<StructuralHash>,
+    nodes: &mut Vec<rezzy::JsonValue>,
+) {
+    let mut stack = vec![root.clone()];
+    while let Some(node) = stack.pop() {
+        if seen.insert(node.structural_hash) {
+            let leaves = node
+                .leaves
+                .iter()
+                .map(|((etype, skey), eid)| {
+                    rezzy::json!({
+                        "type": etype.as_str(),
+                        "state_key": skey,
+                        "event_id": eid,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let children = node
+                .children
+                .iter()
+                .map(|c| format_structural_hash(&c.structural_hash()))
+                .collect::<Vec<_>>();
+            nodes.push(rezzy::json!({
+                "hash": format_structural_hash(&node.structural_hash),
+                "datamap": node.datamap,
+                "nodemap": node.nodemap,
+                "leaves": leaves,
+                "children": children,
+            }));
+            for child in &node.children {
+                if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+                    stack.push(child_node.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Run an incremental HAMT-backed live walk over DAG events.
 #[allow(clippy::too_many_lines)]
 #[must_use]
-pub fn format_deltas_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     let debug = ctx.args.debug;
     let total = ctx.event_count;
     let progress_interval = if debug { 10_000 } else { 50_000 };
     if debug {
-        eprintln!("[DEBUG] deltas: walking {total} events...");
+        eprintln!("[DEBUG] hamt walk: walking {total} events...");
     }
     let overall_start = std::time::Instant::now();
 
     let mut sorted_events: Vec<&LeanEvent> = ctx.events_map.values().collect();
     sorted_events.sort_by(|a, b| a.cmp_by_depth(b));
 
+    let structural_key: &[u8] = ctx
+        .args
+        .room
+        .as_deref()
+        .map(str::as_bytes)
+        .or_else(|| {
+            ctx.events_map
+                .values()
+                .find_map(|e| e.room_id.as_deref())
+                .map(str::as_bytes)
+        })
+        .unwrap_or(b"");
+
+    let empty_root = build_hamt::<(EventType, String), String, _>(structural_key, [])
+        .expect("empty HAMT build must succeed");
+
+    let mut roots_map: HashMap<String, std::sync::Arc<HamtNode<(EventType, String), String>>> =
+        HashMap::new();
     let mut state_after_map: HashMap<String, SharedStateMap> = HashMap::new();
     let mut state_hash_map: HashMap<String, String> = HashMap::new();
+
+    let mut seen_node_hashes: std::collections::HashSet<StructuralHash> =
+        std::collections::HashSet::new();
+    let mut unique_nodes = Vec::new();
+    let mut roots_json = Vec::new();
     let mut checkpoints = Vec::new();
 
     let mut fork_count: usize = 0;
     let mut fork_time = std::time::Duration::ZERO;
     let mut processed: usize = 0;
 
+    let mut no_resolver =
+        |_h: &StructuralHash| -> Result<
+            std::sync::Arc<HamtNode<(EventType, String), String>>,
+            std::convert::Infallible,
+        > { unreachable!("in-memory HAMT nodes do not have unresolvable lazy references") };
+
     for ev in &sorted_events {
         processed = processed.saturating_add(1);
         if debug && processed.checked_rem(progress_interval) == Some(0) {
             eprintln!(
-                "[DEBUG] deltas: {processed}/{total} events walked ({fork_count} forks resolved, {:.2?} spent in state-res) elapsed {:.2?}",
+                "[DEBUG] hamt walk: {processed}/{total} events walked ({fork_count} forks resolved, {:.2?} spent in state-res) elapsed {:.2?}",
                 fork_time,
                 overall_start.elapsed()
             );
         }
+
         let mut state_before = std::sync::Arc::new(imbl::OrdMap::new());
-        let mut parent_hash = None;
+        let mut base_root = empty_root.clone();
+        let mut parent_root_hash: Option<StructuralHash> = None;
+        let mut parent_fnv_hash: Option<String> = None;
 
         if ev.prev_events.is_empty() {
             // Empty state before
         } else if ev.prev_events.len() == 1 {
             let prev_id = &ev.prev_events[0];
+            if let Some(prev_root) = roots_map.get(prev_id) {
+                base_root = prev_root.clone();
+                parent_root_hash = Some(base_root.structural_hash);
+            }
             if let Some(prev_state) = state_after_map.get(prev_id) {
                 state_before = prev_state.clone();
-                parent_hash = state_hash_map.get(prev_id).cloned();
+                parent_fnv_hash = state_hash_map.get(prev_id).cloned();
             }
         } else {
             let mut parent_states = Vec::new();
+            let mut parent_roots = Vec::new();
             for prev_id in &ev.prev_events {
                 if let Some(prev_state) = state_after_map.get(prev_id) {
                     parent_states.push(prev_state.clone());
+                }
+                if let Some(prev_root) = roots_map.get(prev_id) {
+                    parent_roots.push(prev_root.clone());
                 }
             }
 
             if !parent_states.is_empty() {
                 if parent_states.len() == 1 {
                     state_before = parent_states[0].clone();
-                    parent_hash = ev
+                    if let Some(first_root) = parent_roots.first() {
+                        base_root = first_root.clone();
+                        parent_root_hash = Some(base_root.structural_hash);
+                    }
+                    parent_fnv_hash = ev
                         .prev_events
                         .first()
                         .and_then(|prev_id| state_hash_map.get(prev_id))
@@ -114,58 +218,117 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rezzy::JsonValue {
                     fork_time = fork_time.saturating_add(elapsed);
                     if debug && elapsed.as_millis() > 50 {
                         eprintln!(
-                            "[DEBUG] deltas: slow fork resolve at {} ({} parents) took {elapsed:.2?}",
+                            "[DEBUG] hamt walk: slow fork resolve at {} ({} parents) took {elapsed:.2?}",
                             ev.event_id,
                             parent_states.len()
                         );
                     }
-                    parent_hash = Some(compute_state_hash(state_before.as_ref()));
+                    parent_fnv_hash = Some(compute_state_hash(state_before.as_ref()));
+
+                    base_root = build_hamt(
+                        structural_key,
+                        state_before.iter().map(|(k, v)| (k.clone(), v.clone())),
+                    )
+                    .expect("build merged hamt");
+                    parent_root_hash = Some(base_root.structural_hash);
+                    record_hamt_subtree_nodes(&base_root, &mut seen_node_hashes, &mut unique_nodes);
                 }
             }
         }
 
         let mut state_after = state_before.clone();
+        let new_root;
+
         if let Some(state_key) = &ev.state_key {
+            let key = (EventType::from(ev.event_type.clone()), state_key.clone());
+            let (mutated_root, _displaced, created) = persist_mutation(
+                &base_root,
+                structural_key,
+                key.clone(),
+                Some(ev.event_id.clone()),
+                &mut no_resolver,
+            )
+            .expect("persist mutation");
+
+            new_root = mutated_root;
+
+            for (node_hash, encoded_bytes) in created {
+                if seen_node_hashes.insert(node_hash) {
+                    if let Ok(decoded) =
+                        PersistedInternalNode::<(EventType, String), String>::decode_v1_unverified(
+                            &encoded_bytes,
+                        )
+                    {
+                        let leaves = decoded
+                            .leaves
+                            .into_iter()
+                            .map(|((etype, skey), eid)| {
+                                rezzy::json!({
+                                    "type": etype.as_str(),
+                                    "state_key": skey,
+                                    "event_id": eid,
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let children = decoded
+                            .child_hashes
+                            .into_iter()
+                            .map(|h| format_structural_hash(&h))
+                            .collect::<Vec<_>>();
+                        unique_nodes.push(rezzy::json!({
+                            "hash": format_structural_hash(&node_hash),
+                            "datamap": decoded.datamap,
+                            "nodemap": decoded.nodemap,
+                            "leaves": leaves,
+                            "children": children,
+                        }));
+                    }
+                }
+            }
+
             let mut modified = state_before.as_ref().clone();
-            modified.insert(
-                (EventType::from(ev.event_type.clone()), state_key.clone()),
-                ev.event_id.clone(),
-            );
+            modified.insert(key, ev.event_id.clone());
             state_after = std::sync::Arc::new(modified);
+        } else {
+            new_root = base_root.clone();
         }
 
-        let hash_str = compute_state_hash(&state_after);
+        let fnv_hash_str = compute_state_hash(&state_after);
+        roots_map.insert(ev.event_id.clone(), new_root.clone());
         state_after_map.insert(ev.event_id.clone(), state_after.clone());
-        state_hash_map.insert(ev.event_id.clone(), hash_str.clone());
+        state_hash_map.insert(ev.event_id.clone(), fnv_hash_str.clone());
+
+        roots_json.push(rezzy::json!({
+            "event_id": &ev.event_id,
+            "root_hash": format_structural_hash(&new_root.structural_hash),
+            "parent_root": parent_root_hash.as_ref().map(format_structural_hash),
+        }));
 
         let mut deltas = Vec::new();
         if ev.prev_events.is_empty() {
-            for (key, event_id) in state_after.as_ref() {
+            let _ = new_root.visit_entries(&mut no_resolver, &mut |key, event_id| {
                 deltas.push(rezzy::json!({
                     "type": &key.0,
                     "state_key": &key.1,
                     "event_id": event_id,
                 }));
+                Ok::<(), std::convert::Infallible>(())
+            });
+        } else if let Ok((added, removed)) =
+            diff_hamt_nodes(&base_root, &new_root, &mut no_resolver)
+        {
+            for (key, event_id) in added {
+                deltas.push(rezzy::json!({
+                    "type": key.0.as_str(),
+                    "state_key": key.1,
+                    "event_id": event_id,
+                }));
             }
-        } else {
-            let parent_state = state_before.as_ref();
-            for (key, event_id) in state_after.as_ref() {
-                match parent_state.get(key) {
-                    Some(parent_event_id) if parent_event_id == event_id => {}
-                    _ => {
-                        deltas.push(rezzy::json!({
-                            "type": &key.0,
-                            "state_key": &key.1,
-                            "event_id": event_id,
-                        }));
-                    }
-                }
-            }
-            for key in parent_state.keys() {
-                if !state_after.contains_key(key) {
+            for (key, _) in removed {
+                if state_after.get(&key).is_none() {
                     deltas.push(rezzy::json!({
-                        "type": &key.0,
-                        "state_key": &key.1,
+                        "type": key.0.as_str(),
+                        "state_key": key.1,
                         "event_id": rezzy::JsonValue::Null,
                     }));
                 }
@@ -173,8 +336,8 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rezzy::JsonValue {
         }
 
         checkpoints.push(rezzy::json!({
-            "hash": hash_str,
-            "parent": parent_hash,
+            "hash": fnv_hash_str,
+            "parent": parent_fnv_hash,
             "event_id": &ev.event_id,
             "deltas": deltas,
         }));
@@ -182,13 +345,43 @@ pub fn format_deltas_output(ctx: &FormattingContext) -> rezzy::JsonValue {
 
     if debug {
         eprintln!(
-            "[DEBUG] deltas: done. {processed} events walked, {fork_count} forks resolved via state-res ({:.2?} total), overall {:.2?}",
+            "[DEBUG] hamt walk: done. {processed} events walked, {fork_count} forks resolved via state-res ({:.2?} total), overall {:.2?}",
             fork_time,
             overall_start.elapsed()
         );
     }
 
-    rezzy::json!(checkpoints)
+    HamtLiveWalkOutput {
+        roots: roots_json,
+        nodes: unique_nodes,
+        checkpoints,
+    }
+}
+
+/// Format the output for HAMT roots and unique nodes.
+#[must_use]
+pub fn format_hamt_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+    if ctx.event_count == 0 || ctx.events_map.is_empty() {
+        return rezzy::json!({
+            "roots": [],
+            "nodes": []
+        });
+    }
+    let walk = run_hamt_live_walk(ctx);
+    rezzy::json!({
+        "roots": walk.roots,
+        "nodes": walk.nodes,
+    })
+}
+
+/// Format the output for deltas.
+#[must_use]
+pub fn format_deltas_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+    if ctx.event_count == 0 || ctx.events_map.is_empty() {
+        return rezzy::json!([]);
+    }
+    let walk = run_hamt_live_walk(ctx);
+    rezzy::json!(walk.checkpoints)
 }
 
 /// Compute the roots of the components.
@@ -998,6 +1191,7 @@ pub fn format_cli_output(ctx: &FormattingContext) -> rezzy::JsonValue {
                 "auth_chain": auth_chain_events
             })
         }
+        OutputFormat::Hamt => format_hamt_output(ctx),
         OutputFormat::Default => rezzy::json!({
             "status": "success",
             "version": ctx.version,
@@ -1113,6 +1307,10 @@ mod tests {
             Some("success")
         );
         assert_eq!(render(OutputFormat::Deltas), rezzy::json!([]));
+        assert_eq!(
+            render(OutputFormat::Hamt),
+            rezzy::json!({"roots": [], "nodes": []})
+        );
         assert_eq!(
             render(OutputFormat::ResolveState)["resolved_state"],
             rezzy::json!([])
@@ -1341,5 +1539,95 @@ mod tests {
         };
         let out = sort_timeline_causal(&args, Some(&stream), &[root, x, y]);
         assert_eq!(order_of(&out), vec!["$root", "$x", "$y"]);
+    }
+
+    #[test]
+    fn test_hamt_live_walk_roots_and_nodes_output() {
+        let ev1: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            depth: 1,
+            ..Default::default()
+        };
+        let ev2: LeanEvent = LeanEvent {
+            event_id: "$join".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@alice:x".into()),
+            prev_events: vec!["$create".into()],
+            depth: 2,
+            ..Default::default()
+        };
+        let ev3: LeanEvent = LeanEvent {
+            event_id: "$msg".into(),
+            event_type: "m.room.message".into(),
+            state_key: None,
+            prev_events: vec!["$join".into()],
+            depth: 3,
+            ..Default::default()
+        };
+
+        let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
+        events_map.insert(ev1.event_id.clone(), ev1);
+        events_map.insert(ev2.event_id.clone(), ev2);
+        events_map.insert(ev3.event_id.clone(), ev3);
+
+        let raw_map = HashMap::new();
+        let heads = vec!["$msg".into()];
+        let final_state_map = imbl::OrdMap::new();
+        let resolved_state_list = Vec::new();
+        let auth_chain_ids = Vec::new();
+        let auth_graph = build_auth_graph(&events_map);
+
+        let args = test_args(OutputFormat::Hamt);
+        let ctx = formatting_context(
+            None,
+            std::time::Duration::ZERO,
+            3,
+            &args,
+            &events_map,
+            &raw_map,
+            &heads,
+            &final_state_map,
+            &resolved_state_list,
+            &auth_chain_ids,
+            &auth_graph,
+        );
+
+        let hamt_output = format_cli_output(&ctx);
+        let roots = hamt_output["roots"].as_array().expect("roots array");
+        assert_eq!(roots.len(), 3);
+        assert_eq!(roots[0]["event_id"], "$create");
+        assert_eq!(roots[0]["parent_root"], rezzy::JsonValue::Null);
+        assert_eq!(roots[1]["event_id"], "$join");
+        assert_eq!(roots[1]["parent_root"], roots[0]["root_hash"]);
+        assert_eq!(roots[2]["event_id"], "$msg");
+        // Timeline message does not change state -> root_hash matches parent
+        assert_eq!(roots[2]["root_hash"], roots[1]["root_hash"]);
+
+        let nodes = hamt_output["nodes"].as_array().expect("nodes array");
+        assert!(!nodes.is_empty());
+
+        let deltas_args = test_args(OutputFormat::Deltas);
+        let deltas_ctx = formatting_context(
+            None,
+            std::time::Duration::ZERO,
+            3,
+            &deltas_args,
+            &events_map,
+            &raw_map,
+            &heads,
+            &final_state_map,
+            &resolved_state_list,
+            &auth_chain_ids,
+            &auth_graph,
+        );
+        let deltas_output = format_cli_output(&deltas_ctx);
+        let checkpoints = deltas_output.as_array().expect("checkpoints array");
+        assert_eq!(checkpoints.len(), 3);
+        assert_eq!(checkpoints[0]["event_id"], "$create");
+        assert_eq!(checkpoints[1]["event_id"], "$join");
+        assert_eq!(checkpoints[2]["event_id"], "$msg");
+        assert_eq!(checkpoints[2]["deltas"], rezzy::json!([]));
     }
 }

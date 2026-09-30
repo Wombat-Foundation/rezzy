@@ -95,6 +95,7 @@ pub enum OutputFormat {
     Timeline,
     TimelineChronological,
     ResolveState,
+    Hamt,
 }
 
 #[cfg(feature = "cli")]
@@ -109,6 +110,7 @@ impl clap::ValueEnum for OutputFormat {
             Self::Timeline,
             Self::TimelineChronological,
             Self::ResolveState,
+            Self::Hamt,
         ]
     }
 
@@ -126,6 +128,7 @@ impl clap::ValueEnum for OutputFormat {
             Self::ResolveState => {
                 clap::builder::PossibleValue::new("resolve-state").alias("resolve_state")
             }
+            Self::Hamt => clap::builder::PossibleValue::new("hamt"),
         })
     }
 }

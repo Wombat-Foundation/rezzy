@@ -138,8 +138,26 @@ pub fn report_gaps<F, S: std::hash::BuildHasher>(
 where
     F: Fn(&String) -> bool,
 {
-    let backward = rezzy::find_backward_extremities(events_map, &exists);
-    let missing_auth = rezzy::find_missing_auth_events(events_map, &exists);
+    let mut backward = rezzy::find_backward_extremities(events_map, &exists);
+    let mut missing_auth = rezzy::find_missing_auth_events(events_map, &exists);
+    backward.sort_by(
+        |a, b| match (events_map.get(&a.event_id), events_map.get(&b.event_id)) {
+            (Some(a_event), Some(b_event)) => a_event.cmp_by_depth(b_event),
+            _ => a.event_id.cmp(&b.event_id),
+        },
+    );
+    for gap in &mut backward {
+        gap.missing_prev_events.sort();
+    }
+    missing_auth.sort_by(
+        |a, b| match (events_map.get(&a.event_id), events_map.get(&b.event_id)) {
+            (Some(a_event), Some(b_event)) => a_event.cmp_by_depth(b_event),
+            _ => a.event_id.cmp(&b.event_id),
+        },
+    );
+    for gap in &mut missing_auth {
+        gap.missing_auth_events.sort();
+    }
     (backward, missing_auth)
 }
 
