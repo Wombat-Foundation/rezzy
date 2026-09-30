@@ -599,7 +599,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         if !event.prev_events().is_empty() {
             return Err(AuthError::CreateWithPrevEvents);
         }
-        // Rule 1.2: Check sender MXID validity for m.room.create
+        // Rule 1.2: Check sender MXID validity for m.room.create.
         if !is_valid_mxid(event.sender()) {
             return Err(AuthError::InvalidSyntax(
                 "m.room.create sender must be a valid MXID".into(),
