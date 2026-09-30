@@ -35,7 +35,7 @@ use crate::timeline_order::{OrderKey, TimelineOrder};
 use format::{format_cli_output, FormattingContext};
 use rezzy::OutputFormat;
 use rezzy::{LeanEvent, StateResVersion};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
@@ -345,10 +345,6 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
     let mut syntactically_rejected: usize = 0;
     let mut parsed: usize = 0;
     let progress_interval = if args.debug { 10_000 } else { 50_000 };
-    // A historical (non-compliant) MXID recurs on every event its user
-    // authors, so collect them by (field, MXID) and summarize once instead
-    // of emitting one warning per event.
-    let mut historical_mxids: BTreeMap<(&'static str, String), usize> = BTreeMap::new();
 
     for val in raw_events {
         match LeanEvent::from_value(&val, None) {
@@ -374,18 +370,7 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
                         }
                         if !args.quiet {
                             for warning in outcome.warnings {
-                                match &warning {
-                                    rezzy::Warning::HistoricalMxid { field, mxid, .. } => {
-                                        let count = historical_mxids
-                                            .entry((*field, mxid.clone()))
-                                            .or_insert(0_usize);
-                                        *count = count.saturating_add(1);
-                                        if args.debug {
-                                            eprintln!("[WARN] {warning}");
-                                        }
-                                    }
-                                    _ => eprintln!("[WARN] {warning}"),
-                                }
+                                eprintln!("[WARN] {warning}");
                             }
                         }
                     }
@@ -510,18 +495,6 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
                     describe(&gap.event_id),
                     gap.missing_prev_events.join(", ")
                 );
-            }
-        }
-        if !historical_mxids.is_empty() {
-            let total: usize = historical_mxids.values().copied().sum();
-            eprintln!(
-                "[WARN] {} event(s) from {} historical (non-compliant) MXID(s) accepted per the \
-                 Matrix Historical User IDs rule (MSC4303 is proposed; no current room version enforces it):",
-                total,
-                historical_mxids.len()
-            );
-            for ((field, mxid), count) in &historical_mxids {
-                eprintln!("    {field} '{mxid}' ({count} event(s))");
             }
         }
     }
