@@ -10,23 +10,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::auth::AuthError;
+use crate::basespec::event_types::M_ROOM_CREATE;
 use crate::json::Value;
-
-const M_ROOM_CREATE: &str = "m.room.create";
-
-fn is_pdu(ev: &Value) -> bool {
-    ["type", "sender", "content", "origin_server_ts"]
-        .iter()
-        .all(|k| ev.get(k).is_some())
-        && ev.get("type").is_some_and(|v| v.as_str().is_some())
-        && ev.get("sender").is_some_and(|v| v.as_str().is_some())
-}
 
 /// Per-event half of the validation; `Err` is a phrase completing "event N ...".
 fn check_event(ev: &Value, room_id: &str, room_version: &str) -> Result<(), String> {
-    if !is_pdu(ev) {
-        return Err(String::from("is not a PDU"));
-    }
+    crate::basespec::rezzy_types::validate_raw_pdu_shape(ev)
+        .map_err(|_| String::from("is not a PDU"))?;
     let is_create = ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
     let in_room =
         if is_create && crate::basespec::rezzy_types::room_version_is_v12_or_later(room_version) {
@@ -88,6 +78,9 @@ pub fn validate_stripped_state(
     let mut create_seen = false;
     for (index, ev) in events.iter().enumerate() {
         let is_create = ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
+        crate::basespec::rezzy_types::validate_raw_pdu_shape(ev).map_err(|_| {
+            AuthError::InvalidSyntax(format!("stripped state event {index} is not a PDU"))
+        })?;
         if is_create && crate::basespec::rezzy_types::room_version_is_v12_or_later(room_version) {
             let hash =
                 crate::basespec::rezzy_types::reference_hash(ev, room_version).map_err(|why| {
@@ -215,6 +208,23 @@ mod tests {
                     .unwrap()
                 ),
             }
+        );
+    }
+
+    #[test]
+    fn malformed_v12_create_is_rejected_before_hash_check() {
+        let create = json!({
+            "type": "m.room.create",
+            "sender": "@a:x",
+            "content": {},
+            "state_key": ""
+        });
+
+        assert_eq!(
+            validate_stripped_state("!not-the-create-hash", "12", &[create]),
+            Err(AuthError::InvalidSyntax(
+                "stripped state event 0 is not a PDU".into()
+            ))
         );
     }
 }

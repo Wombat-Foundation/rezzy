@@ -1430,7 +1430,10 @@ pub fn ingest_events(
 ) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
     let derives_event_ids = RoomVersionFormat::parse(room_version)
         .is_some_and(RoomVersionFormat::uses_reference_hash_event_ids);
+    let shared_room_id = room_id.map(RoomId::new);
+    let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
     for pdu in pdus {
+        validate_raw_pdu_shape(pdu).map_err(|e| alloc::format!("invalid PDU: {e}"))?;
         if derives_event_ids
             && pdu
                 .get(crate::basespec::event_types::FIELD_EVENT_ID)
@@ -1440,25 +1443,38 @@ pub fn ingest_events(
                 "event_id must be omitted from federation PDUs in room versions v3 and later",
             ));
         }
+        let mut event = LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.clone())?;
+        event
+            .validate_syntactic(room_version)
+            .map_err(|e| alloc::format!("invalid PDU: {e}"))?;
         if pdu
             .get(crate::basespec::event_types::FIELD_HASHES)
             .is_some()
         {
             verify_content_hash(pdu, room_version)?;
         }
-    }
-
-    let shared_room_id = room_id.map(RoomId::new);
-    let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
-    for pdu in pdus {
-        // TODO: `?` here is reachable (malformed PDU) — candidate to soften
-        // into a `Warning` + skip rather than abort the whole batch.
-        let mut event = LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.clone())?;
         event.room_id.clone_from(&shared_room_id);
+        // TODO: `?` is reachable above for malformed PDU; callers currently
+        // reject the whole batch rather than softening this to a warning.
         events.push(event);
     }
 
     Ok(events)
+}
+
+/// Validates fields required before a raw PDU may be parsed or hashed.
+pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), &'static str> {
+    for field in ["type", "sender", "content", "origin_server_ts"] {
+        if value.get(field).is_none() {
+            return Err("missing required PDU field");
+        }
+    }
+    if value.get("type").and_then(Value::as_str).is_none()
+        || value.get("sender").and_then(Value::as_str).is_none()
+    {
+        return Err("PDU type and sender must be strings");
+    }
+    Ok(())
 }
 
 /// Result of Kahn's topological sort with diagnostic information.
