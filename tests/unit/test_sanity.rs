@@ -25,7 +25,7 @@ type DeltaCheckpoint = (
     [u8; 32],
     Option<[u8; 32]>,
     String,
-    Vec<rezzy::state::delta::StateDelta>,
+    Vec<rezzy::state::delta::StateDelta<String>>,
 );
 
 /// Builds a synthetic linear chain `$1 -> $2 -> ... -> $total_events`, where

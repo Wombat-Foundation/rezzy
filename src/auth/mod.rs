@@ -1991,10 +1991,13 @@ pub(crate) fn get_ban_power_level<Id, C: EventContent, E: EventLike<Id = Id, Con
 /// this crate's [`LeanEvent`] (see its doc comment), and a caller that
 /// never populates it must see identical behavior to before this check
 /// existed.
-fn check_create_room_id<Id: EventId, C>(
-    event: &LeanEvent<Id, C>,
+fn check_create_room_id<Id: EventId, C, K>(
+    event: &LeanEvent<Id, C, K>,
     is_v12_plus: bool,
-) -> Result<(), AuthError<Id>> {
+) -> Result<(), AuthError<Id>>
+where
+    K: StateKey,
+{
     if event.event_type != "m.room.create" {
         return Ok(());
     }
@@ -2026,12 +2029,17 @@ fn check_create_room_id<Id: EventId, C>(
 /// applies to every event, not just create events (which Rule 1.2 already
 /// forbids from declaring `room_id` at all under V12+, so this only ever
 /// matters for non-create events once `is_v12_plus`).
-fn check_room_id_matches_accepted_create<Id: EventId, C>(
-    event: &LeanEvent<Id, C>,
+fn check_room_id_matches_accepted_create<Id, C, K>(
+    event: &LeanEvent<Id, C, K>,
     is_v12_plus: bool,
-    state: &RoomState<Id, C>,
+    state: &RoomState<Id, C, K>,
     rejected_ids: &crate::HashSet<Id>,
-) -> Result<(), AuthError<Id>> {
+) -> Result<(), AuthError<Id>>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey + 'static,
+{
     if !is_v12_plus || event.event_type == "m.room.create" {
         return Ok(());
     }
@@ -2059,10 +2067,15 @@ fn check_room_id_matches_accepted_create<Id: EventId, C>(
 /// Rule 2.3 / MSC4242 Rule 4.3: an event citing an auth event that was
 /// itself rejected during PDU receipt is rejected in turn (see
 /// [`AuthError::RejectedAuthEvent`]'s docs).
-fn check_not_citing_rejected_auth_event<Id: EventId, C>(
-    event: &LeanEvent<Id, C>,
+fn check_not_citing_rejected_auth_event<Id, C, K>(
+    event: &LeanEvent<Id, C, K>,
     rejected_ids: &crate::HashSet<Id>,
-) -> Result<(), AuthError<Id>> {
+) -> Result<(), AuthError<Id>>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+{
     if let Some(auth_event_id) = event
         .auth_events
         .iter()
@@ -2083,10 +2096,15 @@ fn check_not_citing_rejected_auth_event<Id: EventId, C>(
 /// [`AuthError::ForeignRoomEvent`]'s docs for why a `None` here never
 /// triggers the check, but a `None` on the auth event's side, once
 /// triggered, is not a free pass).
-fn check_foreign_room_citation<Id: EventId, C>(
-    event: &LeanEvent<Id, C>,
-    event_map: &crate::HashMap<Id, LeanEvent<Id, C>>,
-) -> Result<(), AuthError<Id>> {
+fn check_foreign_room_citation<Id, C, K>(
+    event: &LeanEvent<Id, C, K>,
+    event_map: &crate::HashMap<Id, LeanEvent<Id, C, K>>,
+) -> Result<(), AuthError<Id>>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+{
     let Some(expected) = &event.room_id else {
         return Ok(());
     };
@@ -2114,16 +2132,21 @@ fn check_foreign_room_citation<Id: EventId, C>(
 /// Returns the list of events that passed auth checks, and the list that failed
 /// with their respective errors.
 #[must_use]
-pub fn check_auth_chain<Id: EventId, C: EventContent>(
-    sorted_events: &[LeanEvent<Id, C>],
-    initial_state: &RoomState<Id, C>,
+pub fn check_auth_chain<Id, C, K>(
+    sorted_events: &[LeanEvent<Id, C, K>],
+    initial_state: &RoomState<Id, C, K>,
     version: StateResVersion,
-) -> (Vec<Id>, Vec<(Id, AuthError<Id>)>) {
+) -> (Vec<Id>, Vec<(Id, AuthError<Id>)>)
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey + 'static + for<'a> From<&'a str>,
+{
     let mut state = initial_state.clone();
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
 
-    let mut event_map: crate::HashMap<Id, LeanEvent<Id, C>> = sorted_events
+    let mut event_map: crate::HashMap<Id, LeanEvent<Id, C, K>> = sorted_events
         .iter()
         .map(|ev| (ev.event_id.clone(), ev.clone()))
         .collect();
@@ -2171,7 +2194,8 @@ pub fn check_auth_chain<Id: EventId, C: EventContent>(
                     state.insert((event.event_type.clone(), state_key.clone()), event.clone());
                 } else if event.event_type == M_ROOM_CREATE {
                     // Fallback for m.room.create if it somehow lacks a state_key
-                    state.insert((event.event_type.clone(), String::new()), event.clone());
+                    let empty: K = K::from(&*String::new());
+                    state.insert((event.event_type.clone(), empty), event.clone());
                 }
                 accepted.push(event.event_id.clone());
             }

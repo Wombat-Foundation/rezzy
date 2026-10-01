@@ -35,6 +35,7 @@ use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
@@ -49,8 +50,8 @@ pub(crate) type EventMap<Id, C, K, S> = HashMap<Id, LeanEvent<Id, C, K>, S>;
 /// depths, the shallowest (closest) entry wins.
 #[derive(Debug, Clone)]
 pub struct LocalAuthEntry<Id, C = crate::json::Value, K = String> {
-    /// The auth event itself.
-    pub event: LeanEvent<Id, C, K>,
+    /// The auth event itself (shared via Arc for structural sharing in the cache).
+    pub event: Arc<LeanEvent<Id, C, K>>,
     /// Number of auth-chain hops from the original event to this one.
     pub auth_depth: usize,
 }
@@ -221,7 +222,7 @@ where
 
 /// Merges an event into a local auth map if it is an auth event (e.g. power levels, join rules).
 /// Ensures that newer auth events replace older ones during chain traversal.
-pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone, K: Clone + Ord>(
+pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone, K: Clone + Ord + AsRef<str>>(
     local_auth: &mut BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>>,
     aev: &LeanEvent<Id, C, K>,
     depth: usize,
@@ -230,17 +231,18 @@ pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone, K: Clone + Ord>(
         return;
     };
     let key = (EventType::from(aev.event_type.as_str()), sk.clone());
+    let arc_ev = Arc::new(aev.clone());
     match local_auth.entry(key) {
         alloc::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {
-                event: aev.clone(),
+                event: arc_ev.clone(),
                 auth_depth: depth,
             });
         }
         alloc::collections::btree_map::Entry::Occupied(mut e) => {
             if depth < e.get().auth_depth {
                 e.insert(LocalAuthEntry {
-                    event: aev.clone(),
+                    event: arc_ev,
                     auth_depth: depth,
                 });
             }
@@ -261,13 +263,12 @@ where
     C: Clone,
     S1: BuildHasher,
     S2: BuildHasher,
-    K: Clone + Ord,
+    K: Clone + Ord + AsRef<str>,
 {
     if let Some(cached) = cache.map.get(&event.event_id) {
         return cached
-            .clone()
-            .into_iter()
-            .map(|(k, entry)| (k, entry.event))
+            .iter()
+            .map(|(k, entry)| (k.clone(), (*entry.event).clone()))
             .collect();
     }
 
@@ -331,11 +332,14 @@ where
         }
     }
 
-    cache.map.insert(event.event_id.clone(), local_auth.clone());
-    local_auth
-        .into_iter()
-        .map(|(k, entry)| (k, entry.event))
-        .collect()
+    // Move local_auth into cache (structural sharing via Arc<LeanEvent>), then convert
+    // Arc<LeanEvent> to owned LeanEvent for the return value.
+    let result: BTreeMap<(EventType, K), LeanEvent<Id, C, K>> = local_auth
+        .iter()
+        .map(|(k, entry)| (k.clone(), (*entry.event).clone()))
+        .collect();
+    cache.map.insert(event.event_id.clone(), local_auth);
+    result
 }
 
 /// An O(1) cloneable, persistent state map. Note that `state_key: ""`

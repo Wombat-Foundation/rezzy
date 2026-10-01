@@ -71,15 +71,16 @@ use core::hash::BuildHasher;
 /// This operator is **commutative** and **associative**, which is what allows
 /// the fold to be parallelized without affecting the result.
 #[must_use]
-pub fn is_semilattice_winner_better<Id, C, S: BuildHasher>(
-    ev: &LeanEvent<Id, C>,
-    current_winner: &LeanEvent<Id, C>,
+pub fn is_semilattice_winner_better<Id, C, K, S: BuildHasher>(
+    ev: &LeanEvent<Id, C, K>,
+    current_winner: &LeanEvent<Id, C, K>,
     mainline_distances: &HashMap<Id, usize, S>,
     mainline_len: usize,
 ) -> bool
 where
     Id: EventId,
     C: EventContent,
+    K: crate::basespec::rezzy_types::StateKey,
 {
     let ev_pos = mainline_distances
         .get(&ev.event_id)
@@ -105,15 +106,16 @@ where
     }
 }
 
-fn update_winner_if_better<'a, Id, C>(
-    winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
-    key: (EventType, String),
-    ev: &'a LeanEvent<Id, C>,
+fn update_winner_if_better<'a, Id, C, K>(
+    winners: &mut HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>,
+    key: (EventType, K),
+    ev: &'a LeanEvent<Id, C, K>,
     mainline_distances: &HashMap<Id, usize>,
     mainline_len: usize,
 ) where
     Id: EventId,
     C: EventContent,
+    K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {
     let is_better = if let Some(current_winner) = winners.get(&key) {
         is_semilattice_winner_better(ev, current_winner, mainline_distances, mainline_len)
@@ -129,15 +131,18 @@ fn update_winner_if_better<'a, Id, C>(
 /// Immutable inputs threaded through the per-event lattice fold: the mainline
 /// ordering used to break ties, the terminal power state and auth context used
 /// for authentication, and the set of keys eligible to compete for the LUB.
-struct LatticeFoldCtx<'a, Id, C, S2, S3> {
+struct LatticeFoldCtx<'a, Id, C, K, S2, S3>
+where
+    K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
+{
     mainline_distances: &'a HashMap<Id, usize>,
     mainline_len: usize,
-    terminal_power_state: &'a SharedState<Id>,
-    auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
-    sort_set: &'a HashMap<Id, LeanEvent<Id, C>, S3>,
+    terminal_power_state: &'a SharedState<Id, K>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    sort_set: &'a HashMap<Id, LeanEvent<Id, C, K>, S3>,
     version: StateResVersion,
-    create_ev: Option<&'a LeanEvent<Id, C>>,
-    conflicted_keys: &'a crate::FastSet<(EventType, String)>,
+    create_ev: Option<&'a LeanEvent<Id, C, K>>,
+    conflicted_keys: &'a crate::FastSet<(EventType, K)>,
 }
 
 /// Auth-checks a single event and, if it passes, competes it for the LUB
@@ -145,14 +150,15 @@ struct LatticeFoldCtx<'a, Id, C, S2, S3> {
 /// [`fold_lattice_chunk`]'s sequential loop and each worker thread's loop in
 /// [`compute_lattice_coordinatized_winners`]'s std fan-out -- the two must
 /// stay in lockstep on authentication and conflicted-key admission.
-fn process_lattice_event<'a, Id, C, S2: BuildHasher, S3: BuildHasher>(
-    ev: &'a LeanEvent<Id, C>,
-    ctx: &LatticeFoldCtx<'_, Id, C, S2, S3>,
-    local_auth_cache: &mut LocalAuthCache<Id, C>,
-    winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+fn process_lattice_event<'a, Id, C, K, S2: BuildHasher, S3: BuildHasher>(
+    ev: &'a LeanEvent<Id, C, K>,
+    ctx: &LatticeFoldCtx<'_, Id, C, K, S2, S3>,
+    local_auth_cache: &mut LocalAuthCache<Id, C, K>,
+    winners: &mut HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>,
 ) where
     Id: EventId,
     C: EventContent + Clone,
+    K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {
     // VALIDATE FIRST (filters out Byzantine garbage/supremum deletion attacks)
     let local_auth = compute_local_auth(
@@ -197,16 +203,17 @@ fn process_lattice_event<'a, Id, C, S2: BuildHasher, S3: BuildHasher>(
 
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "std", allow(dead_code))]
-fn fold_lattice_chunk<'a, Id, C, S2: BuildHasher, S3: BuildHasher>(
-    chunk: &[&'a LeanEvent<Id, C>],
-    ctx: &LatticeFoldCtx<'_, Id, C, S2, S3>,
-) -> HashMap<(EventType, String), &'a LeanEvent<Id, C>>
+fn fold_lattice_chunk<'a, Id, C, K, S2: BuildHasher, S3: BuildHasher>(
+    chunk: &[&'a LeanEvent<Id, C, K>],
+    ctx: &LatticeFoldCtx<'_, Id, C, K, S2, S3>,
+) -> HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>
 where
     Id: EventId,
     C: EventContent + Clone,
+    K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {
-    let mut thread_res: HashMap<(EventType, String), &'a LeanEvent<Id, C>> = HashMap::new();
-    let mut local_auth_cache = LocalAuthCache::<Id, C>::new(ctx.version);
+    let mut thread_res: HashMap<(EventType, K), &'a LeanEvent<Id, C, K>> = HashMap::new();
+    let mut local_auth_cache = LocalAuthCache::<Id, C, K>::new(ctx.version);
 
     for &ev in chunk {
         process_lattice_event(ev, ctx, &mut local_auth_cache, &mut thread_res);
@@ -218,15 +225,17 @@ fn compute_lattice_coordinatized_winners<
     'a,
     Id,
     C,
+    K,
     S2: BuildHasher + Sync + Send,
     S3: BuildHasher + Sync + Send,
 >(
-    events: &[&'a LeanEvent<Id, C>],
-    ctx: &LatticeFoldCtx<'_, Id, C, S2, S3>,
-    key_winners: &mut HashMap<(EventType, String), &'a LeanEvent<Id, C>>,
+    events: &[&'a LeanEvent<Id, C, K>],
+    ctx: &LatticeFoldCtx<'_, Id, C, K, S2, S3>,
+    key_winners: &mut HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>,
 ) where
     Id: EventId + Sync + Send,
     C: EventContent + Clone + Sync + Send,
+    K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {
     #[cfg(feature = "std")]
     {
@@ -239,12 +248,13 @@ fn compute_lattice_coordinatized_winners<
         let cursor = std::sync::atomic::AtomicUsize::new(0);
         let len = events.len();
 
-        let winners = std::sync::Mutex::new(HashMap::new());
+        let winners =
+            std::sync::Mutex::new(HashMap::<(EventType, K), &'a LeanEvent<Id, C, K>>::new());
         std::thread::scope(|s| {
             for _ in 0..num_threads {
                 s.spawn(|| {
-                    let mut local = HashMap::new();
-                    let mut local_auth_cache = LocalAuthCache::<Id, C>::new(ctx.version);
+                    let mut local = HashMap::<(EventType, K), &'a LeanEvent<Id, C, K>>::new();
+                    let mut local_auth_cache = LocalAuthCache::<Id, C, K>::new(ctx.version);
                     loop {
                         let idx = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if idx >= len {
@@ -370,7 +380,7 @@ where
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_semilattice_fold_with_conflicted_keys<Id, C, S1, S2>(
-    inputs: crate::resolve::iterative::ConflictedKeysInputs<'_, Id, C, S1, S2>,
+    inputs: crate::resolve::iterative::ConflictedKeysInputs<'_, Id, C, String, S1, S2>,
 ) -> SharedState<Id>
 where
     Id: EventId + Sync + Send,

@@ -37,7 +37,7 @@ use crate::{
     state::delta::{ResolutionDelta, ResolvePhase},
     FastMap, HashMap,
 };
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
 
@@ -812,38 +812,49 @@ where
 /// Borrowed inputs for resolving with a caller-supplied set of genuinely
 /// conflicted keys, shared by the iterative and semilattice resolver
 /// strategies so their entry points stay comparable.
-pub struct ConflictedKeysInputs<'a, Id, C, S1, S2> {
+pub struct ConflictedKeysInputs<'a, Id, C, K, S1, S2>
+where
+    K: crate::basespec::rezzy_types::StateKey,
+{
     /// State built from unconflicted (non-competing) events.
-    pub unconflicted_state: &'a SharedState<Id>,
+    pub unconflicted_state: &'a SharedState<Id, K>,
     /// Events competing for their state keys.
-    pub conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
+    pub conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
     /// Broader auth context consulted during authentication.
-    pub auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+    pub auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
     /// State resolution version selecting the auth rules.
     pub version: StateResVersion,
     /// Keys whose events are allowed to decide their own value.
-    pub conflicted_keys: &'a crate::FastSet<(EventType, String)>,
+    pub conflicted_keys: &'a crate::FastSet<(EventType, K)>,
 }
 
-impl<Id, C, S1, S2> Copy for ConflictedKeysInputs<'_, Id, C, S1, S2> {}
+impl<Id, C, K: crate::basespec::rezzy_types::StateKey, S1, S2> Copy
+    for ConflictedKeysInputs<'_, Id, C, K, S1, S2>
+{
+}
 
-impl<Id, C, S1, S2> Clone for ConflictedKeysInputs<'_, Id, C, S1, S2> {
+impl<Id, C, K: crate::basespec::rezzy_types::StateKey, S1, S2> Clone
+    for ConflictedKeysInputs<'_, Id, C, K, S1, S2>
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, Id, C, S1, S2> ConflictedKeysInputs<'a, Id, C, S1, S2> {
+impl<'a, Id, C, K, S1, S2> ConflictedKeysInputs<'a, Id, C, K, S1, S2>
+where
+    K: crate::basespec::rezzy_types::StateKey,
+{
     /// Bundles the inputs accepted by
     /// [`resolve_iterative_sort_with_conflicted_keys`] and
     /// [`crate::resolve::semilattice::resolve_semilattice_fold_with_conflicted_keys`].
     #[must_use]
     pub fn new(
-        unconflicted_state: &'a SharedState<Id>,
-        conflicted_events: &'a HashMap<Id, LeanEvent<Id, C>, S1>,
-        auth_context: &'a HashMap<Id, LeanEvent<Id, C>, S2>,
+        unconflicted_state: &'a SharedState<Id, K>,
+        conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+        auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
         version: StateResVersion,
-        conflicted_keys: &'a crate::FastSet<(EventType, String)>,
+        conflicted_keys: &'a crate::FastSet<(EventType, K)>,
     ) -> Self {
         Self {
             unconflicted_state,
@@ -863,17 +874,18 @@ impl<'a, Id, C, S1, S2> ConflictedKeysInputs<'a, Id, C, S1, S2> {
 /// [`crate::resolve::semilattice::resolve_semilattice_fold_with_conflicted_keys`]
 /// so the two resolver strategies can be compared directly.
 #[must_use]
-pub fn resolve_iterative_sort_with_conflicted_keys<Id, C, S1, S2>(
-    inputs: ConflictedKeysInputs<'_, Id, C, S1, S2>,
-) -> SharedState<Id>
+pub fn resolve_iterative_sort_with_conflicted_keys<Id, C, K, S1, S2>(
+    inputs: ConflictedKeysInputs<'_, Id, C, K, S1, S2>,
+) -> SharedState<Id, K>
 where
     Id: EventId,
     C: EventContent + Clone,
+    K: crate::basespec::rezzy_types::StateKey + Default + 'static,
     S1: BuildHasher,
     S2: BuildHasher,
 {
     let mut pl_cache: HashMap<Id, i64> = HashMap::default();
-    let empty_key = String::new();
+    let empty_key = K::default();
     resolve_iterative_sort_with_cache(
         IterativeInputs::new(
             inputs.unconflicted_state,

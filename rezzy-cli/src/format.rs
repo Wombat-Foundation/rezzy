@@ -64,6 +64,8 @@ pub struct HamtLiveWalkOutput {
 }
 
 type StateLeaf = ((EventType, String), String);
+type StateHamt = std::sync::Arc<HamtNode<(EventType, String), String>>;
+type HamtResolver = fn(&StructuralHash) -> Result<StateHamt, std::convert::Infallible>;
 
 fn leaves_json(leaves: &[StateLeaf]) -> Vec<rezzy::JsonValue> {
     leaves
@@ -78,14 +80,9 @@ fn leaves_json(leaves: &[StateLeaf]) -> Vec<rezzy::JsonValue> {
         .collect()
 }
 
-fn hamt_to_state_map(
-    root: &std::sync::Arc<HamtNode<(EventType, String), String>>,
-) -> SharedStateMap {
+fn hamt_to_state_map(root: &StateHamt) -> SharedStateMap {
     let mut map = imbl::OrdMap::new();
-    let mut no_resolver = |_h: &StructuralHash| -> Result<
-        std::sync::Arc<HamtNode<(EventType, String), String>>,
-        std::convert::Infallible,
-    > { unreachable!() };
+    let mut no_resolver: HamtResolver = |_h| unreachable!();
     let _ = root.visit_entries(&mut no_resolver, &mut |key, event_id| {
         map.insert(key.clone(), event_id.clone());
         Ok::<(), std::convert::Infallible>(())
@@ -94,6 +91,11 @@ fn hamt_to_state_map(
 }
 
 /// Run an incremental HAMT-backed live walk over DAG events.
+///
+/// # Panics
+///
+/// Panics only if constructing the empty HAMT fails, which indicates an
+/// internal violation of the HAMT builder's invariants.
 #[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
@@ -141,14 +143,14 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
         let mut seen_prevs = std::collections::HashSet::new();
         for prev in &ev.prev_events {
             if seen_prevs.insert(prev.as_str()) {
-                *child_citations.entry(prev.as_str()).or_default() += 1;
+                let citations = child_citations.entry(prev.as_str()).or_default();
+                *citations = citations.saturating_add(1);
             }
         }
     }
 
     let need_nodes = matches!(ctx.args.format, OutputFormat::Hamt);
-    let mut roots_map: HashMap<String, std::sync::Arc<HamtNode<(EventType, String), String>>> =
-        HashMap::new();
+    let mut roots_map: HashMap<String, StateHamt> = HashMap::new();
     let mut root_hashes_map: HashMap<String, String> = HashMap::new();
     // Resolved-state view kept alongside each live frontier root, so a root
     // that participates in several merges is extracted from its HAMT once.
@@ -166,19 +168,10 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
     let mut fork_time = std::time::Duration::ZERO;
     let mut processed: usize = 0;
 
-    let mut no_resolver =
-        |_h: &StructuralHash| -> Result<
-            std::sync::Arc<HamtNode<(EventType, String), String>>,
-            std::convert::Infallible,
-        > { unreachable!("in-memory HAMT nodes do not have unresolvable lazy references") };
+    let mut no_resolver: HamtResolver =
+        |_h| unreachable!("in-memory HAMT nodes do not have unresolvable lazy references");
 
-    let mut fork_cache: HashMap<
-        Vec<StructuralHash>,
-        (
-            std::sync::Arc<HamtNode<(EventType, String), String>>,
-            SharedStateMap,
-        ),
-    > = HashMap::new();
+    let mut fork_cache: HashMap<Vec<StructuralHash>, (StateHamt, SharedStateMap)> = HashMap::new();
 
     for &i in &order {
         let ev = &raw_events[i];
@@ -854,10 +847,10 @@ pub fn needs_stream_order(args: &Args) -> bool {
 ///
 /// # Errors
 /// Returns an error only when an explicit `--metadata` sidecar cannot be read.
-pub fn load_stream_order(
+pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     args: &Args,
-    events_map: &HashMap<String, LeanEvent>,
-    raw_map: &HashMap<String, rezzy::JsonValue>,
+    events_map: &HashMap<String, LeanEvent, S1>,
+    raw_map: &HashMap<String, rezzy::JsonValue, S2>,
     room_version: Option<&str>,
 ) -> Result<Option<StreamOrderIndex>, AppError> {
     let explicit = args.metadata.clone();
@@ -920,7 +913,7 @@ pub fn load_stream_order(
             room_mismatch = room_mismatch.saturating_add(1);
             continue;
         }
-        for (event_id, _event) in events_map {
+        for event_id in events_map.keys() {
             let Some(record) = sidecar.events.get(event_id) else {
                 missing = missing.saturating_add(1);
                 continue;
@@ -1767,6 +1760,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_hamt_live_walk_multi_parent_fork_non_first_parent_winner() {
         let ev_create: LeanEvent = LeanEvent {
             event_id: "$create".into(),

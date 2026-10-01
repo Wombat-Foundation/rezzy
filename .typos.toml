@@ -4,6 +4,8 @@ ket = "ket"
 NAX = "NAX"
 fo = "fo"
 fpr = "fpr"
+tru = "tru"
+nulll = "nulll"
 
 [files]
 extend-exclude = ["tests/critique_data/**", "tests/fixtures/**"]

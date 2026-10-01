@@ -55,11 +55,15 @@ pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K
 
 /// A single state delta entry — an addition, modification, or deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
+pub struct StateDelta<Id, K = String>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+{
     /// The event type (e.g. `"m.room.member"`).
     pub event_type: String,
     /// The state key (e.g. `"@alice:example.com"` or `""`).
-    pub state_key: String,
+    pub state_key: K,
     /// The new event ID, or `None` if this key was deleted.
     pub event_id: Option<Id>,
 }
@@ -73,10 +77,14 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
 ///
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
-pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
-    parent: &crate::state::at::SharedState<Id, String>,
-    current: &crate::state::at::SharedState<Id, String>,
-) -> Vec<StateDelta<Id>> {
+pub fn compute_state_delta<Id, K>(
+    parent: &crate::state::at::SharedState<Id, K>,
+    current: &crate::state::at::SharedState<Id, K>,
+) -> Vec<StateDelta<Id, K>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+{
     let mut deltas = Vec::new();
 
     // Additions and modifications

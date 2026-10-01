@@ -36,6 +36,14 @@ pub fn output_arg(required: bool) -> Arg {
         .value_parser(clap::value_parser!(PathBuf))
 }
 
+///
+/// # Errors
+/// Returns an error if the arguments, input, JSONL contents, room version, or
+/// output file are invalid.
+///
+/// # Panics
+/// Panics if the required arguments are absent; clap guarantees their presence
+/// after successful command-line parsing.
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     let input = matches.get_one::<PathBuf>("input").expect("required");
     let output = matches.get_one::<PathBuf>("output").expect("required");
@@ -64,13 +72,13 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
         let mut event = JsonValue::parse(&line).map_err(|e| {
             AppError::new(
                 ErrorCode::MalformedJson,
-                format!("{}:{}: {e}", input.display(), line_number + 1),
+                format!("{}:{}: {e}", input.display(), line_number.saturating_add(1)),
             )
         })?;
         repaired = repaired.saturating_add(fill_missing_event_id(
             &mut event,
             &room_version,
-            &format!("{}:{}", input.display(), line_number + 1),
+            &format!("{}:{}", input.display(), line_number.saturating_add(1)),
         )?);
         let encoded = rezzy::json::write_string_value(&event)
             .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?;
@@ -86,6 +94,9 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     }))
 }
 
+///
+/// # Errors
+/// Returns an error if the event cannot be hashed or is not a JSON object.
 pub fn fill_missing_event_id(
     event: &mut JsonValue,
     room_version: &str,
@@ -111,6 +122,9 @@ pub fn fill_missing_event_id(
     Ok(1)
 }
 
+///
+/// # Errors
+/// Returns an error if the room version is unsupported.
 pub fn validate_repair_room_version(room_version: &str) -> Result<(), AppError> {
     let major = room_version
         .split('.')
@@ -133,7 +147,7 @@ pub fn validate_repair_room_version(room_version: &str) -> Result<(), AppError> 
     Ok(())
 }
 
-fn infer_room_version(path: &PathBuf) -> Result<String, AppError> {
+fn infer_room_version(path: &Path) -> Result<String, AppError> {
     let name = path
         .file_stem()
         .and_then(|name| name.to_str())
@@ -144,7 +158,7 @@ fn infer_room_version(path: &PathBuf) -> Result<String, AppError> {
             )
         })?;
     let marker = name.rmatch_indices("-v").find_map(|(offset, _)| {
-        let digits: String = name[offset + 2..]
+        let digits: String = name[offset.saturating_add(2)..]
             .chars()
             .take_while(char::is_ascii_digit)
             .collect();
@@ -175,7 +189,7 @@ pub fn read_jsonl_events(path: &Path) -> Result<Vec<JsonValue>, AppError> {
         events.push(JsonValue::parse(line).map_err(|e| {
             AppError::new(
                 ErrorCode::MalformedJson,
-                format!("{}:{}: {e}", path.display(), index + 1),
+                format!("{}:{}: {e}", path.display(), index.saturating_add(1)),
             )
         })?);
     }
