@@ -74,11 +74,11 @@ fn provision_capacity(delta: u64, headroom: u64) -> Option<u64> {
 /// for the capacity, but a client that raises its aggregate capacity via
 /// [`ReconciliationClient::with_max_aggregate_capacity`] gets a
 /// correspondingly higher default gate.
-fn derive_gate_threshold(max_rounds: usize, max_aggregate_capacity: usize) -> Option<u64> {
+fn derive_gate_threshold(max_rounds: usize, max_aggregate_capacity: usize) -> u64 {
     // Widen to u64 before multiplying: on 32-bit targets, saturating_mul in
     // usize would silently cap at usize::MAX well below the real threshold
     // for large max_rounds, weakening the configured reconciliation limit.
-    (max_rounds as u64).checked_mul(max_aggregate_capacity as u64)
+    (max_rounds as u64).saturating_mul(max_aggregate_capacity as u64)
 }
 
 /// Requester policy for one MSC0501 reconciliation exchange.
@@ -421,10 +421,10 @@ impl Default for ReconciliationClient {
         Self {
             max_sketch_capacity: MAX_LOCAL_SKETCH_DECODE_CAPACITY,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: derive_gate_threshold(
+            gate_threshold: Some(derive_gate_threshold(
                 MAX_RECONCILIATION_ROUNDS,
                 MAX_BUCKETED_SKETCH_CAPACITY,
-            ),
+            )),
             max_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
             requested_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
         }
@@ -444,10 +444,10 @@ impl ReconciliationClient {
         Ok(Self {
             max_sketch_capacity,
             max_rounds: MAX_RECONCILIATION_ROUNDS,
-            gate_threshold: derive_gate_threshold(
+            gate_threshold: Some(derive_gate_threshold(
                 MAX_RECONCILIATION_ROUNDS,
                 MAX_BUCKETED_SKETCH_CAPACITY,
-            ),
+            )),
             max_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
             requested_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
         })
@@ -460,7 +460,10 @@ impl ReconciliationClient {
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
-        self.gate_threshold = derive_gate_threshold(max_rounds, self.requested_aggregate_capacity);
+        self.gate_threshold = Some(derive_gate_threshold(
+            max_rounds,
+            self.requested_aggregate_capacity,
+        ));
         self
     }
 
@@ -479,7 +482,10 @@ impl ReconciliationClient {
     pub fn with_max_aggregate_capacity(mut self, max_aggregate_capacity: usize) -> Self {
         self.requested_aggregate_capacity = max_aggregate_capacity;
         self.max_aggregate_capacity = max_aggregate_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY);
-        self.gate_threshold = derive_gate_threshold(self.max_rounds, max_aggregate_capacity);
+        self.gate_threshold = Some(derive_gate_threshold(
+            self.max_rounds,
+            max_aggregate_capacity,
+        ));
         self
     }
 

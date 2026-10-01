@@ -316,7 +316,12 @@ impl RemainderProbeFilter {
                 return true;
             }
             if self.rem[pos] == r {
-                return false;
+                // This is an approximate membership filter: a matching
+                // fingerprint already represents this value (or a hash
+                // collision with it).  Treat that as a successful insert;
+                // reporting failure makes callers reject otherwise valid
+                // filters once the fingerprint space starts colliding.
+                return true;
             }
             pos = (pos + 1) % self.slots;
         }

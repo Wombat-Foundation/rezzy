@@ -1193,7 +1193,10 @@ fn render_timeline_events(
         };
 
         let ts_ms = ev.origin_server_ts;
-        let ts_secs = i64::try_from(ts_ms / 1000).unwrap();
+        let Ok(ts_secs) = i64::try_from(ts_ms / 1000) else {
+            // Keep malformed/unrepresentable timestamps from crashing output.
+            continue;
+        };
         let time_of_day =
             u64::try_from((ts_secs.wrapping_rem(86_400).wrapping_add(86_400)).wrapping_rem(86_400))
                 .unwrap();

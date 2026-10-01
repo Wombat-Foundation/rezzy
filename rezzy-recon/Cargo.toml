@@ -22,29 +22,5 @@ sha2.workspace = true
 [dev-dependencies]
 test-case.workspace = true
 
-[lints.rust]
-unsafe_code = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = [
-    "cfg(coverage)",
-    "cfg(coverage_nightly)",
-    "cfg(tarpaulin)",
-    "cfg(tarpaulin_include)",
-    "cfg(has_avx512_support)",
-    "cfg(has_avx512_host_support)",
-] }
-
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
-similar_names = "allow"
-multiple_crate_versions = "allow"
-arithmetic_side_effects = "warn"
-undocumented_unsafe_blocks = "warn"
-dbg_macro = "warn"
-get_unwrap = "warn"
+[lints]
+workspace = true

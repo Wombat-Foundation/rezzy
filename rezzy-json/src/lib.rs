@@ -26,7 +26,12 @@ pub const MIN_SAFE_INTEGER: i64 = -((1_i64 << 53) - 1);
 
 #[must_use]
 pub fn is_canonical_integer_str(value: &str) -> bool {
-    if value == "-0" || value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    if digits.is_empty()
+        || digits != "0" && digits.starts_with('0')
+        || value == "-0"
+        || value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+    {
         return false;
     }
     value.parse::<i64>().is_ok_and(|number| {
@@ -57,20 +62,23 @@ impl PartialEq<&str> for Value {
 pub struct Number(String);
 
 impl Number {
-    fn parse(source: &str) -> Option<Self> {
+    fn parse(source: &str) -> Self {
         if source == "-0" {
-            return Some(Self("-0.0".to_string()));
+            return Self("-0.0".to_string());
         }
         let is_float = source.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'));
         if !is_float && (source.parse::<i64>().is_ok() || source.parse::<u64>().is_ok()) {
-            return Some(Self(source.to_string()));
+            return Self(source.to_string());
         }
-        let value = source.parse::<f64>().ok()?;
-        if !value.is_finite() {
-            return None;
+        // Keep the existing canonical rendering for representable values,
+        // but retain literals that cannot safely pass through binary float.
+        if let Ok(value) = source.parse::<f64>() {
+            if value.is_finite() {
+                let mut buffer = ryu::Buffer::new();
+                return Self(normalize_exponent(buffer.format_finite(value)));
+            }
         }
-        let mut buffer = ryu::Buffer::new();
-        Some(Self(normalize_exponent(buffer.format_finite(value))))
+        Self(source.to_string())
     }
 
     #[must_use]
@@ -1799,7 +1807,7 @@ impl Parser<'_> {
         if !valid_number(s) {
             return Err(Error::InvalidNumber);
         }
-        Ok(Value::Number(Number::parse(s).ok_or(Error::InvalidNumber)?))
+        Ok(Value::Number(Number::parse(s)))
     }
     fn array(&mut self) -> Result<Value, Error> {
         self.pos += 1;
