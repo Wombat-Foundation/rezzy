@@ -1351,7 +1351,11 @@ fn decode_unicode_escape(input: &[u8], pos: &mut usize) -> Result<char, Tokenize
     char::from_u32(scalar).ok_or(TokenizerError::InvalidEscape)
 }
 
-fn unescape_raw_string(input: &[u8], out: &mut String) -> Result<(), TokenizerError> {
+/// Decodes JSON escape sequences from `input` into `out`.
+///
+/// # Errors
+/// Returns [`TokenizerError`] on malformed UTF-8 or invalid escape sequences.
+pub fn unescape_raw_string(input: &[u8], out: &mut String) -> Result<(), TokenizerError> {
     out.clear();
     let mut pos = 0;
     let mut start = 0;

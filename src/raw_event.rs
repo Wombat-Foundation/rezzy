@@ -46,12 +46,19 @@ pub const ADJACENCY_MASK: FieldMask<'static> = FieldMask {
     ],
 };
 
-///// Reusable caller-supplied scratch buffers to eliminate per-event heap allocations.
+/// Reusable caller-supplied scratch buffers to eliminate per-event heap allocations.
 #[derive(Clone, Debug, Default)]
 pub struct MatrixEventScratch<'a> {
     pub prev_events: Vec<&'a str>,
     pub auth_events: Vec<&'a str>,
     pub key_buffer: String,
+    pub event_id_buf: String,
+    pub room_id_buf: String,
+    pub event_type_buf: String,
+    pub state_key_buf: String,
+    pub room_version_buf: String,
+    pub rel_type_buf: String,
+    pub rel_event_id_buf: String,
 }
 
 impl MatrixEventScratch<'_> {
@@ -68,6 +75,13 @@ impl MatrixEventScratch<'_> {
             prev_events: Vec::with_capacity(prev_cap),
             auth_events: Vec::with_capacity(auth_cap),
             key_buffer: String::with_capacity(key_cap),
+            event_id_buf: String::with_capacity(key_cap),
+            room_id_buf: String::with_capacity(key_cap),
+            event_type_buf: String::with_capacity(key_cap),
+            state_key_buf: String::with_capacity(key_cap),
+            room_version_buf: String::with_capacity(key_cap),
+            rel_type_buf: String::with_capacity(key_cap),
+            rel_event_id_buf: String::with_capacity(key_cap),
         }
     }
 
@@ -76,21 +90,32 @@ impl MatrixEventScratch<'_> {
         self.prev_events.clear();
         self.auth_events.clear();
         self.key_buffer.clear();
+        self.event_id_buf.clear();
+        self.room_id_buf.clear();
+        self.event_type_buf.clear();
+        self.state_key_buf.clear();
+        self.room_version_buf.clear();
+        self.rel_type_buf.clear();
+        self.rel_event_id_buf.clear();
     }
 }
 
 /// A zero-allocation borrowed view of structural Matrix event fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatrixEventView<'buf, 'a> {
-    pub event_id: Option<&'a str>,
-    pub room_id: Option<&'a str>,
-    pub event_type: Option<&'a str>,
-    pub state_key: Option<&'a str>,
+    pub event_id: Option<&'buf str>,
+    pub room_id: Option<&'buf str>,
+    pub event_type: Option<&'buf str>,
+    pub state_key: Option<&'buf str>,
     pub prev_events: &'buf [&'a str],
     pub auth_events: &'buf [&'a str],
-    pub room_version: Option<&'a str>,
-    pub relates_to: Option<(&'a str, &'a str)>,
+    pub room_version: Option<&'buf str>,
+    pub relates_to: Option<(&'buf str, &'buf str)>,
+    pub(crate) _marker: core::marker::PhantomData<&'a ()>,
 }
+
+type RelationView<'a> = Option<(&'a str, &'a str)>;
+type ContentRelationResult<'a> = (Option<&'a str>, RelationView<'a>);
 
 impl MatrixEventView<'_, '_> {
     /// Converts this borrowed view into owned [`MatrixEventFields`].
@@ -135,6 +160,10 @@ pub struct MatrixEventFields {
 }
 
 /// Borrowed structural fields extracted from a raw Matrix event.
+///
+/// Note: Scalar string fields borrow directly from the input buffer without allocation.
+/// `prev_events` and `auth_events` allocate vectors of borrowed `&str` references per event.
+/// For strictly zero-allocation extraction into reusable caller buffers, use [`extract_matrix_event_into`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatrixEventFieldsRef<'a> {
     pub event_id: Option<&'a str>,
@@ -330,20 +359,21 @@ fn fill_id_array<'a>(raw: &'a [u8], out: &mut Vec<&'a str>) -> Result<(), Tokeni
         };
         match token {
             Token::String(s) => {
-                if !s.contains(&b'\\') {
-                    if let Ok(id_str) = core::str::from_utf8(s) {
-                        out.push(id_str);
-                    }
+                if s.contains(&b'\\') {
+                    return Err(TokenizerError::InvalidString);
                 }
+                let id_str = core::str::from_utf8(s).map_err(|_| TokenizerError::InvalidString)?;
+                out.push(id_str);
             }
             Token::ArrayStart => {
-                if let Some(Token::String(s)) = tokenizer.next_token()? {
-                    if !s.contains(&b'\\') {
-                        if let Ok(id_str) = core::str::from_utf8(s) {
-                            out.push(id_str);
-                        }
-                    }
+                let Some(Token::String(s)) = tokenizer.next_token()? else {
+                    return Err(TokenizerError::InvalidString);
+                };
+                if s.contains(&b'\\') {
+                    return Err(TokenizerError::InvalidString);
                 }
+                let id_str = core::str::from_utf8(s).map_err(|_| TokenizerError::InvalidString)?;
+                out.push(id_str);
                 if tokenizer.next_token()? != Some(Token::Comma) {
                     return Err(TokenizerError::InvalidToken);
                 }
@@ -360,14 +390,88 @@ fn fill_id_array<'a>(raw: &'a [u8], out: &mut Vec<&'a str>) -> Result<(), Tokeni
     Ok(())
 }
 
-fn parse_unquoted_str(raw: &[u8]) -> Option<&str> {
+fn parse_scalar_str<'buf, 'a>(
+    raw: &'a [u8],
+    buf: &'buf mut String,
+) -> Result<Option<&'buf str>, TokenizerError>
+where
+    'a: 'buf,
+{
     if raw.len() >= 2 && raw.first() == Some(&b'"') && raw.last() == Some(&b'"') {
         let inner = &raw[1..raw.len().saturating_sub(1)];
         if !inner.contains(&b'\\') {
-            return core::str::from_utf8(inner).ok();
+            return Ok(core::str::from_utf8(inner).ok());
+        }
+        buf.clear();
+        rezzy_json::unescape_raw_string(inner, buf)?;
+        return Ok(Some(buf.as_str()));
+    }
+    Ok(None)
+}
+
+fn extract_content_and_relations<'buf, 'a>(
+    raw_content: &'a [u8],
+    key_buffer: &mut String,
+    room_version_buf: &'buf mut String,
+    rel_type_buf: &'buf mut String,
+    rel_event_id_buf: &'buf mut String,
+) -> Result<ContentRelationResult<'buf>, TokenizerError>
+where
+    'a: 'buf,
+{
+    let mut content_tok = Tokenizer::new(raw_content);
+    let mut room_version_raw = None;
+    let mut relates_to_raw = None;
+
+    content_tok.for_each_object_member(key_buffer, |key, value_type, raw_val| {
+        match key {
+            "room_version" if value_type == ValueType::String => {
+                room_version_raw = Some(raw_val);
+            }
+            "m.relates_to" if value_type == ValueType::Object => {
+                relates_to_raw = Some(raw_val);
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    let room_version = match room_version_raw {
+        Some(r_ver) => parse_scalar_str(r_ver, room_version_buf)?,
+        None => None,
+    };
+
+    let mut relates_to = None;
+    if let Some(raw_rel) = relates_to_raw {
+        let mut rel_tok = Tokenizer::new(raw_rel);
+        let mut rel_type_raw = None;
+        let mut rel_event_id_raw = None;
+        rel_tok.for_each_object_member(key_buffer, |key, value_type, raw_val| {
+            match key {
+                "rel_type" if value_type == ValueType::String => {
+                    rel_type_raw = Some(raw_val);
+                }
+                "event_id" if value_type == ValueType::String => {
+                    rel_event_id_raw = Some(raw_val);
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
+        let rel_type = match rel_type_raw {
+            Some(r) => parse_scalar_str(r, rel_type_buf)?,
+            None => None,
+        };
+        let rel_event_id = match rel_event_id_raw {
+            Some(r) => parse_scalar_str(r, rel_event_id_buf)?,
+            None => None,
+        };
+        if let (Some(r), Some(id)) = (rel_type, rel_event_id) {
+            relates_to = Some((r, id));
         }
     }
-    None
+
+    Ok((room_version, relates_to))
 }
 
 /// Extracts Matrix event fields into a zero-allocation [`MatrixEventView`] using caller-supplied buffer storage.
@@ -379,14 +483,17 @@ fn parse_unquoted_str(raw: &[u8]) -> Option<&str> {
 pub fn extract_matrix_event_view<'buf, 'a>(
     raw: &'a [u8],
     scratch: &'buf mut MatrixEventScratch<'a>,
-) -> Result<MatrixEventView<'buf, 'a>, TokenizerError> {
+) -> Result<MatrixEventView<'buf, 'a>, TokenizerError>
+where
+    'a: 'buf,
+{
     scratch.clear();
     let mut tokenizer = Tokenizer::new(raw);
 
-    let mut event_id = None;
-    let mut room_id = None;
-    let mut event_type = None;
-    let mut state_key = None;
+    let mut event_id_raw = None;
+    let mut room_id_raw = None;
+    let mut event_type_raw = None;
+    let mut state_key_raw = None;
     let mut prev_raw = None;
     let mut auth_raw = None;
     let mut content_raw = None;
@@ -394,16 +501,16 @@ pub fn extract_matrix_event_view<'buf, 'a>(
     tokenizer.for_each_object_member(&mut scratch.key_buffer, |key, value_type, raw_val| {
         match key {
             "event_id" if value_type == ValueType::String => {
-                event_id = parse_unquoted_str(raw_val);
+                event_id_raw = Some(raw_val);
             }
             "room_id" if value_type == ValueType::String => {
-                room_id = parse_unquoted_str(raw_val);
+                room_id_raw = Some(raw_val);
             }
             "type" if value_type == ValueType::String => {
-                event_type = parse_unquoted_str(raw_val);
+                event_type_raw = Some(raw_val);
             }
             "state_key" if value_type == ValueType::String => {
-                state_key = parse_unquoted_str(raw_val);
+                state_key_raw = Some(raw_val);
             }
             "prev_events" if value_type == ValueType::Array => {
                 prev_raw = Some(raw_val);
@@ -419,6 +526,23 @@ pub fn extract_matrix_event_view<'buf, 'a>(
         Ok(())
     })?;
 
+    let event_id = match event_id_raw {
+        Some(r) => parse_scalar_str(r, &mut scratch.event_id_buf)?,
+        None => None,
+    };
+    let room_id = match room_id_raw {
+        Some(r) => parse_scalar_str(r, &mut scratch.room_id_buf)?,
+        None => None,
+    };
+    let event_type = match event_type_raw {
+        Some(r) => parse_scalar_str(r, &mut scratch.event_type_buf)?,
+        None => None,
+    };
+    let state_key = match state_key_raw {
+        Some(r) => parse_scalar_str(r, &mut scratch.state_key_buf)?,
+        None => None,
+    };
+
     if let Some(raw_prev) = prev_raw {
         fill_id_array(raw_prev, &mut scratch.prev_events)?;
     }
@@ -426,53 +550,16 @@ pub fn extract_matrix_event_view<'buf, 'a>(
         fill_id_array(raw_auth, &mut scratch.auth_events)?;
     }
 
-    let mut room_version = None;
-    let mut relates_to = None;
-
-    if let Some(raw_content) = content_raw {
-        let mut content_tok = Tokenizer::new(raw_content);
-        let mut relates_to_raw = None;
-
-        content_tok.for_each_object_member(
+    let (room_version, relates_to) = match content_raw {
+        Some(raw_c) => extract_content_and_relations(
+            raw_c,
             &mut scratch.key_buffer,
-            |key, value_type, raw_val| {
-                match key {
-                    "room_version" if value_type == ValueType::String => {
-                        room_version = parse_unquoted_str(raw_val);
-                    }
-                    "m.relates_to" if value_type == ValueType::Object => {
-                        relates_to_raw = Some(raw_val);
-                    }
-                    _ => {}
-                }
-                Ok(())
-            },
-        )?;
-
-        if let Some(raw_rel) = relates_to_raw {
-            let mut rel_tok = Tokenizer::new(raw_rel);
-            let mut rel_type = None;
-            let mut rel_event_id = None;
-            rel_tok.for_each_object_member(
-                &mut scratch.key_buffer,
-                |key, value_type, raw_val| {
-                    match key {
-                        "rel_type" if value_type == ValueType::String => {
-                            rel_type = parse_unquoted_str(raw_val);
-                        }
-                        "event_id" if value_type == ValueType::String => {
-                            rel_event_id = parse_unquoted_str(raw_val);
-                        }
-                        _ => {}
-                    }
-                    Ok(())
-                },
-            )?;
-            if let (Some(r), Some(id)) = (rel_type, rel_event_id) {
-                relates_to = Some((r, id));
-            }
-        }
-    }
+            &mut scratch.room_version_buf,
+            &mut scratch.rel_type_buf,
+            &mut scratch.rel_event_id_buf,
+        )?,
+        None => (None, None),
+    };
 
     Ok(MatrixEventView {
         event_id,
@@ -483,6 +570,7 @@ pub fn extract_matrix_event_view<'buf, 'a>(
         auth_events: &scratch.auth_events,
         room_version,
         relates_to,
+        _marker: core::marker::PhantomData,
     })
 }
 
@@ -493,32 +581,149 @@ pub fn extract_matrix_event_view<'buf, 'a>(
 pub fn extract_matrix_event_into<'buf, 'a>(
     raw: &'a [u8],
     scratch: &'buf mut MatrixEventScratch<'a>,
-) -> Result<MatrixEventView<'buf, 'a>, TokenizerError> {
+) -> Result<MatrixEventView<'buf, 'a>, TokenizerError>
+where
+    'a: 'buf,
+{
     extract_matrix_event_view(raw, scratch)
 }
 
+fn parse_unquoted_str_borrowed(raw: Option<&[u8]>) -> Option<&str> {
+    let raw = raw?;
+    if raw.len() >= 2 && raw.first() == Some(&b'"') && raw.last() == Some(&b'"') {
+        let inner = &raw[1..raw.len().saturating_sub(1)];
+        if !inner.contains(&b'\\') {
+            return core::str::from_utf8(inner).ok();
+        }
+    }
+    None
+}
+
 /// Extracts adjacency fields while retaining references into `raw`.
+///
+/// Note: Scalar string fields borrow directly from `raw` without allocation.
+/// `prev_events` and `auth_events` allocate vectors of borrowed `&str` references per event.
+/// For strictly zero-allocation extraction into reusable caller buffers, use [`extract_matrix_event_into`].
 ///
 /// # Errors
 /// Returns [`TokenizerError`] if the span is not valid JSON.
 pub fn extract_matrix_event_fields_ref(
     raw: &[u8],
 ) -> Result<MatrixEventFieldsRef<'_>, TokenizerError> {
-    let mut scratch = MatrixEventScratch::new();
-    let view = extract_matrix_event_view(raw, &mut scratch)?;
+    let mut key_buf = String::new();
+    let mut tokenizer = Tokenizer::new(raw);
+
+    let mut event_id_raw = None;
+    let mut room_id_raw = None;
+    let mut event_type_raw = None;
+    let mut state_key_raw = None;
+    let mut prev_raw = None;
+    let mut auth_raw = None;
+    let mut content_raw = None;
+
+    tokenizer.for_each_object_member(&mut key_buf, |key, value_type, raw_val| {
+        match key {
+            "event_id" if value_type == ValueType::String => {
+                event_id_raw = Some(raw_val);
+            }
+            "room_id" if value_type == ValueType::String => {
+                room_id_raw = Some(raw_val);
+            }
+            "type" if value_type == ValueType::String => {
+                event_type_raw = Some(raw_val);
+            }
+            "state_key" if value_type == ValueType::String => {
+                state_key_raw = Some(raw_val);
+            }
+            "prev_events" if value_type == ValueType::Array => {
+                prev_raw = Some(raw_val);
+            }
+            "auth_events" if value_type == ValueType::Array => {
+                auth_raw = Some(raw_val);
+            }
+            "content" if value_type == ValueType::Object => {
+                content_raw = Some(raw_val);
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    let event_id = parse_unquoted_str_borrowed(event_id_raw);
+    let room_id = parse_unquoted_str_borrowed(room_id_raw);
+    let event_type = parse_unquoted_str_borrowed(event_type_raw);
+    let state_key = parse_unquoted_str_borrowed(state_key_raw);
+
+    let mut prev_events = Vec::new();
+    let mut auth_events = Vec::new();
+
+    if let Some(raw_prev) = prev_raw {
+        fill_id_array(raw_prev, &mut prev_events)?;
+    }
+    if let Some(raw_auth) = auth_raw {
+        fill_id_array(raw_auth, &mut auth_events)?;
+    }
+
+    let mut room_version = None;
+    let mut relates_to = None;
+
+    if let Some(raw_content) = content_raw {
+        let mut content_tok = Tokenizer::new(raw_content);
+        let mut room_version_raw = None;
+        let mut relates_to_raw = None;
+
+        content_tok.for_each_object_member(&mut key_buf, |key, value_type, raw_val| {
+            match key {
+                "room_version" if value_type == ValueType::String => {
+                    room_version_raw = Some(raw_val);
+                }
+                "m.relates_to" if value_type == ValueType::Object => {
+                    relates_to_raw = Some(raw_val);
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
+
+        room_version = parse_unquoted_str_borrowed(room_version_raw);
+
+        if let Some(raw_rel) = relates_to_raw {
+            let mut rel_tok = Tokenizer::new(raw_rel);
+            let mut rel_type_raw = None;
+            let mut rel_event_id_raw = None;
+            rel_tok.for_each_object_member(&mut key_buf, |key, value_type, raw_val| {
+                match key {
+                    "rel_type" if value_type == ValueType::String => {
+                        rel_type_raw = Some(raw_val);
+                    }
+                    "event_id" if value_type == ValueType::String => {
+                        rel_event_id_raw = Some(raw_val);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+            let rel_type = parse_unquoted_str_borrowed(rel_type_raw);
+            let rel_event_id = parse_unquoted_str_borrowed(rel_event_id_raw);
+            if let (Some(r), Some(id)) = (rel_type, rel_event_id) {
+                relates_to = Some((r, id));
+            }
+        }
+    }
+
     Ok(MatrixEventFieldsRef {
-        event_id: view.event_id,
-        room_id: view.room_id,
-        event_type: view.event_type,
-        state_key: view.state_key,
-        prev_events: view.prev_events.to_vec(),
-        auth_events: view.auth_events.to_vec(),
-        room_version: view.room_version,
-        relates_to: view.relates_to,
+        event_id,
+        room_id,
+        event_type,
+        state_key,
+        prev_events,
+        auth_events,
+        room_version,
+        relates_to,
     })
 }
 
-/// Extracts adjacency fields from one raw event span.
+/// Extracts adjacency fields from one raw event span into an owned structure.
 ///
 /// # Errors
 /// Returns [`TokenizerError`] if the span is not valid JSON or cannot be selectively parsed.
@@ -627,6 +832,24 @@ mod tests {
         assert_eq!(view.auth_events, &["$a"]);
         assert_eq!(view.room_version, Some("10"));
         assert_eq!(view.relates_to, Some(("m.thread", "$root")));
+    }
+
+    #[test]
+    fn escaped_selected_value_is_decoded_without_being_dropped() {
+        let raw = br#"{"event_id":"\u0024event:example.com"}"#;
+        let mut scratch = MatrixEventScratch::with_capacity(2, 2, 32);
+        let view = extract_matrix_event_into(raw, &mut scratch).unwrap();
+        assert_eq!(view.event_id, Some("$event:example.com"));
+    }
+
+    #[test]
+    fn escaped_reference_id_is_rejected_instead_of_dropped() {
+        let raw = br#"{"prev_events":["\u0024parent"]}"#;
+        let mut scratch = MatrixEventScratch::with_capacity(2, 2, 32);
+        assert_eq!(
+            extract_matrix_event_into(raw, &mut scratch),
+            Err(TokenizerError::InvalidString)
+        );
     }
 
     #[test]
