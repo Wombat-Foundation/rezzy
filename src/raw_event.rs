@@ -628,4 +628,35 @@ mod tests {
         assert_eq!(view.room_version, Some("10"));
         assert_eq!(view.relates_to, Some(("m.thread", "$root")));
     }
+
+    #[test]
+    fn nested_and_mixed_format_auth_and_prev_events() {
+        let raw = br#"{
+            "event_id": "$nested",
+            "room_id": "!room:example.com",
+            "type": "m.room.member",
+            "state_key": "@alice:example.com",
+            "prev_events": [["$p1", {"hash": "sha256"}], ["$p2", {"extra": [1, 2, 3]}]],
+            "auth_events": [["$a1", {}], "$a2", ["$a3", {"deep": {"nested": true}}]],
+            "content": {
+                "membership": "join",
+                "room_version": "1",
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$target"
+                }
+            }
+        }"#;
+
+        let mut scratch = MatrixEventScratch::with_capacity(16, 16, 64);
+        let view = extract_matrix_event_view(raw, &mut scratch).unwrap();
+        assert_eq!(view.event_id, Some("$nested"));
+        assert_eq!(view.room_id, Some("!room:example.com"));
+        assert_eq!(view.event_type, Some("m.room.member"));
+        assert_eq!(view.state_key, Some("@alice:example.com"));
+        assert_eq!(view.prev_events, &["$p1", "$p2"]);
+        assert_eq!(view.auth_events, &["$a1", "$a2", "$a3"]);
+        assert_eq!(view.room_version, Some("1"));
+        assert_eq!(view.relates_to, Some(("m.replace", "$target")));
+    }
 }
