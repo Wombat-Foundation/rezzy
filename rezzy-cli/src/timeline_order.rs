@@ -84,7 +84,7 @@ impl clap::ValueEnum for OrderKey {
 impl OrderKey {
     /// Whether this key requires stream-order metadata from a sidecar.
     #[must_use]
-    pub fn needs_stream_order(self) -> bool {
+    pub const fn needs_stream_order(self) -> bool {
         matches!(self, Self::StreamOrdering | Self::PduCount)
     }
 
@@ -93,7 +93,7 @@ impl OrderKey {
     ///
     /// An ordering is server-agnostic only when every key is portable.
     #[must_use]
-    pub fn is_portable(self) -> bool {
+    pub const fn is_portable(self) -> bool {
         !self.needs_stream_order()
     }
 }

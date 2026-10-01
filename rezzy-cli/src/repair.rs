@@ -271,7 +271,7 @@ pub enum ReferenceKind {
 impl ReferenceKind {
     /// The Matrix field this kind reads.
     #[must_use]
-    pub fn field(self) -> &'static str {
+    pub const fn field(self) -> &'static str {
         match self {
             Self::PrevEvents => "prev_events",
             Self::AuthEvents => "auth_events",

@@ -74,7 +74,7 @@ fn provision_capacity(delta: u64, headroom: u64) -> Option<u64> {
 /// for the capacity, but a client that raises its aggregate capacity via
 /// [`ReconciliationClient::with_max_aggregate_capacity`] gets a
 /// correspondingly higher default gate.
-fn derive_gate_threshold(max_rounds: usize, max_aggregate_capacity: usize) -> u64 {
+const fn derive_gate_threshold(max_rounds: usize, max_aggregate_capacity: usize) -> u64 {
     // Widen to u64 before multiplying: on 32-bit targets, saturating_mul in
     // usize would silently cap at usize::MAX well below the real threshold
     // for large max_rounds, weakening the configured reconciliation limit.
@@ -154,7 +154,7 @@ pub struct BucketExchange {
 impl BucketExchange {
     /// Creates a new pending-queue planner with the default round and wire caps.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         accumulated_roots: alloc::vec::Vec<u64>,
         max_rounds: usize,
         max_buckets_per_round: usize,
@@ -180,7 +180,7 @@ impl BucketExchange {
 
     /// Returns the number of request rounds emitted from the pending frontier.
     #[must_use]
-    pub fn rounds_emitted(&self) -> usize {
+    pub const fn rounds_emitted(&self) -> usize {
         self.rounds_emitted
     }
 
@@ -437,7 +437,7 @@ impl ReconciliationClient {
     /// # Errors
     /// Returns [`AlgebraicError::InvalidSketchCapacity`] for a zero limit or a
     /// limit above the implementation's local decode policy.
-    pub fn new(max_sketch_capacity: usize) -> Result<Self, AlgebraicError> {
+    pub const fn new(max_sketch_capacity: usize) -> Result<Self, AlgebraicError> {
         if max_sketch_capacity == 0 || max_sketch_capacity > MAX_LOCAL_SKETCH_DECODE_CAPACITY {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
@@ -458,7 +458,7 @@ impl ReconciliationClient {
     /// This overwrites a threshold configured earlier with
     /// [`Self::with_gate_threshold`], so builder call order is significant.
     #[must_use]
-    pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
+    pub const fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
         self.gate_threshold = Some(derive_gate_threshold(
             max_rounds,
@@ -492,7 +492,7 @@ impl ReconciliationClient {
     /// Sets an explicit gate threshold on the maximum estimated delta.
     /// Pass `None` to disable delta gating entirely for large syncs.
     #[must_use]
-    pub fn with_gate_threshold(mut self, threshold: Option<u64>) -> Self {
+    pub const fn with_gate_threshold(mut self, threshold: Option<u64>) -> Self {
         self.gate_threshold = threshold;
         self
     }
@@ -500,20 +500,20 @@ impl ReconciliationClient {
     /// Disables the delta gate threshold entirely, allowing set reconciliation to proceed
     /// for arbitrarily large set differences.
     #[must_use]
-    pub fn allow_unlimited_delta(mut self) -> Self {
+    pub const fn allow_unlimited_delta(mut self) -> Self {
         self.gate_threshold = None;
         self
     }
 
     /// Returns the maximum allowed rounds.
     #[must_use]
-    pub fn max_rounds(self) -> usize {
+    pub const fn max_rounds(self) -> usize {
         self.max_rounds
     }
 
     /// Returns the gate threshold, if active.
     #[must_use]
-    pub fn gate_threshold(self) -> Option<u64> {
+    pub const fn gate_threshold(self) -> Option<u64> {
         self.gate_threshold
     }
 

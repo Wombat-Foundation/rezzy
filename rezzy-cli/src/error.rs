@@ -118,7 +118,7 @@ impl AppError {
 
     /// The error code.
     #[must_use]
-    pub fn code(&self) -> ErrorCode {
+    pub const fn code(&self) -> ErrorCode {
         self.code
     }
 }

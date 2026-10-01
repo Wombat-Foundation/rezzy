@@ -221,7 +221,7 @@ pub fn get_evaluator() -> EvaluatorBackend {
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-fn cached_evaluator(cached: u8, fallback: EvaluatorBackend) -> EvaluatorBackend {
+const fn cached_evaluator(cached: u8, fallback: EvaluatorBackend) -> EvaluatorBackend {
     match cached {
         1 => EvaluatorBackend::Scalar,
         2 => EvaluatorBackend::Sse,
@@ -232,7 +232,7 @@ fn cached_evaluator(cached: u8, fallback: EvaluatorBackend) -> EvaluatorBackend 
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
-fn encode_backend(backend: EvaluatorBackend) -> u8 {
+const fn encode_backend(backend: EvaluatorBackend) -> u8 {
     match backend {
         EvaluatorBackend::Scalar => 1,
         EvaluatorBackend::Sse => 2,
@@ -307,7 +307,7 @@ fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBack
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64", not(has_avx512_support)))]
-fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
+const fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_pclmul {
         EvaluatorBackend::Sse
     } else {

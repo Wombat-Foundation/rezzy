@@ -2,7 +2,7 @@
 
 use rezzy::{json, JsonValue};
 
-pub fn event(id: &str, depth: u64) -> JsonValue {
+pub(super) fn event(id: &str, depth: u64) -> JsonValue {
     json!({
         "event_id": id,
         "type": "m.room.member",

@@ -292,7 +292,7 @@ fn validate_timeline_args(args: &Args) -> Result<(), error::AppError> {
     Ok(())
 }
 
-fn format_name(format: OutputFormat) -> &'static str {
+const fn format_name(format: OutputFormat) -> &'static str {
     match format {
         OutputFormat::Events => "events",
         OutputFormat::Default => "default",
@@ -421,7 +421,7 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
                 if args.debug {
                     eprintln!("[DEBUG] Failed to parse event: {val:?}. Error: {e}");
                 }
-                let msg = e.clone();
+                let msg = e;
                 let code = if msg.contains("event_type") {
                     error::ErrorCode::EmptyEventType
                 } else {

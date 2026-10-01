@@ -48,7 +48,7 @@ pub enum Value {
     Bool(bool),
     Number(Number),
     String(String),
-    Array(Vec<Value>),
+    Array(Vec<Self>),
     Object(Object),
 }
 
@@ -159,7 +159,7 @@ impl Value {
         }
     }
     #[must_use]
-    pub fn as_object(&self) -> Option<&Object> {
+    pub const fn as_object(&self) -> Option<&Object> {
         match self {
             Self::Object(obj) => Some(obj),
             _ => None,
@@ -172,7 +172,7 @@ impl Value {
         }
     }
     #[must_use]
-    pub fn as_array(&self) -> Option<&Vec<Self>> {
+    pub const fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
             _ => None,
@@ -186,7 +186,7 @@ impl Value {
         }
     }
     #[must_use]
-    pub fn as_bool(&self) -> Option<bool> {
+    pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
             _ => None,
@@ -214,15 +214,15 @@ impl Value {
         }
     }
     #[must_use]
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
     #[must_use]
-    pub fn is_array(&self) -> bool {
+    pub const fn is_array(&self) -> bool {
         matches!(self, Self::Array(_))
     }
     #[must_use]
-    pub fn is_object(&self) -> bool {
+    pub const fn is_object(&self) -> bool {
         matches!(self, Self::Object(_))
     }
     #[must_use]
@@ -264,8 +264,8 @@ impl Value {
 }
 
 impl Index<&str> for Value {
-    type Output = Value;
-    fn index(&self, key: &str) -> &Value {
+    type Output = Self;
+    fn index(&self, key: &str) -> &Self {
         self.get(key).unwrap_or(&NULL)
     }
 }
@@ -273,12 +273,12 @@ impl Index<&str> for Value {
 static NULL: Value = Value::Null;
 
 impl IndexMut<&str> for Value {
-    fn index_mut(&mut self, key: &str) -> &mut Value {
+    fn index_mut(&mut self, key: &str) -> &mut Self {
         if !self.is_object() {
-            *self = Value::Object(Object::new());
+            *self = Self::Object(Object::new());
         }
         match self {
-            Value::Object(obj) => obj.entry(key.to_string()).or_insert(Value::Null),
+            Self::Object(obj) => obj.entry(key.to_string()).or_insert(Self::Null),
             _ => unreachable!(),
         }
     }
@@ -289,8 +289,8 @@ impl From<String> for Value {
         Self::String(v)
     }
 }
-impl From<&Value> for Value {
-    fn from(v: &Value) -> Self {
+impl From<&Self> for Value {
+    fn from(v: &Self) -> Self {
         v.clone()
     }
 }
@@ -339,17 +339,17 @@ impl From<usize> for Value {
         Self::from(v as u64)
     }
 }
-impl<T: Into<Value>> From<Vec<T>> for Value {
+impl<T: Into<Self>> From<Vec<T>> for Value {
     fn from(v: Vec<T>) -> Self {
         Self::Array(v.into_iter().map(Into::into).collect())
     }
 }
-impl<T: Clone + Into<Value>> From<&Vec<T>> for Value {
+impl<T: Clone + Into<Self>> From<&Vec<T>> for Value {
     fn from(v: &Vec<T>) -> Self {
         Self::Array(v.iter().cloned().map(Into::into).collect())
     }
 }
-impl<T: Clone + Into<Value>> From<&[T]> for Value {
+impl<T: Clone + Into<Self>> From<&[T]> for Value {
     fn from(v: &[T]) -> Self {
         Self::Array(v.iter().cloned().map(Into::into).collect())
     }
@@ -359,7 +359,7 @@ impl From<Object> for Value {
         Self::Object(v)
     }
 }
-impl<T: Into<Value>> From<Option<T>> for Value {
+impl<T: Into<Self>> From<Option<T>> for Value {
     fn from(v: Option<T>) -> Self {
         v.map_or(Self::Null, Into::into)
     }
@@ -432,11 +432,11 @@ pub fn to_value(value: impl Into<Value>) -> Value {
     value.into()
 }
 #[must_use]
-pub fn empty_array() -> Vec<Value> {
+pub const fn empty_array() -> Vec<Value> {
     Vec::new()
 }
 #[must_use]
-pub fn empty_object() -> Object {
+pub const fn empty_object() -> Object {
     Object::new()
 }
 #[must_use]
@@ -857,7 +857,7 @@ impl<'a> Tokenizer<'a> {
     pub const MAX_DEPTH: usize = 128;
 
     #[must_use]
-    pub fn new(input: &'a [u8]) -> Self {
+    pub const fn new(input: &'a [u8]) -> Self {
         Self {
             input,
             pos: 0,
@@ -868,7 +868,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     #[must_use]
-    pub fn position(&self) -> usize {
+    pub const fn position(&self) -> usize {
         self.pos
     }
 
@@ -1434,8 +1434,8 @@ pub enum ValueRef<'a> {
     Bool(bool),
     Number(&'a str),
     String(&'a str),
-    Array(Vec<ValueRef<'a>>),
-    Object(Vec<(&'a str, ValueRef<'a>)>),
+    Array(Vec<Self>),
+    Object(Vec<(&'a str, Self)>),
 }
 
 impl<'a> ValueRef<'a> {
@@ -1576,42 +1576,42 @@ impl<'a> ValueRef<'a> {
 
 impl<'a> ValueRef<'a> {
     #[must_use]
-    pub fn get(&self, key: &str) -> Option<&ValueRef<'a>> {
+    pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Object(obj) => obj.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_array(&self) -> Option<&Vec<ValueRef<'a>>> {
+    pub const fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_number(&self) -> Option<&'a str> {
+    pub const fn as_number(&self) -> Option<&'a str> {
         match self {
             Self::Number(n) => Some(n),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_str(&self) -> Option<&'a str> {
+    pub const fn as_str(&self) -> Option<&'a str> {
         match self {
             Self::String(s) => Some(s),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_bool(&self) -> Option<bool> {
+    pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
             _ => None,
         }
     }
     #[must_use]
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 }
@@ -2237,7 +2237,7 @@ mod tests {
         let mut t = Tokenizer::new(nested.as_bytes());
         let mut hit_depth_limit = false;
         for _ in 0..150 {
-            if let Err(TokenizerError::DepthLimitExceeded) = t.next_token() {
+            if t.next_token() == Err(TokenizerError::DepthLimitExceeded) {
                 hit_depth_limit = true;
                 break;
             }

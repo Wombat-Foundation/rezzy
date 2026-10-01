@@ -1259,7 +1259,7 @@ pub fn format_timeline_chronological_output(ctx: &FormattingContext) -> rezzy::J
     })
 }
 
-fn format_name(order: TimelineOrder) -> &'static str {
+const fn format_name(order: TimelineOrder) -> &'static str {
     match order {
         TimelineOrder::Causal => "causal",
         TimelineOrder::Synapse => "synapse",
@@ -1566,14 +1566,14 @@ mod tests {
 
         // Unauthorized: mallory (PL 0 < redact 50, not the target's sender)
         // must NOT strip Bob's message.
-        let out = render(vec![pl.clone(), msg.clone(), mallory_redact.clone()]);
+        let out = render(vec![pl.clone(), msg.clone(), mallory_redact]);
         assert!(
             out.contains("secret"),
             "unauthorized redaction must not strip the target; got: {out:?}"
         );
 
         // Authorized: Bob redacts his own message -> content is stripped.
-        let out = render(vec![pl.clone(), msg.clone(), self_redact.clone()]);
+        let out = render(vec![pl, msg, self_redact]);
         assert!(
             !out.contains("secret"),
             "authorized self-redaction must strip the target content; got: {out:?}"

@@ -63,7 +63,7 @@ pub struct BucketRequest {
 impl BucketRequest {
     /// Standard bucket request (overflow = false).
     #[must_use]
-    pub fn new(depth: u8, prefix: u64, capacity: usize) -> Self {
+    pub const fn new(depth: u8, prefix: u64, capacity: usize) -> Self {
         Self {
             depth,
             prefix,
@@ -74,7 +74,7 @@ impl BucketRequest {
 
     /// Overflow bucket request (overflow = true).
     #[must_use]
-    pub fn with_overflow(depth: u8, prefix: u64, capacity: usize) -> Self {
+    pub const fn with_overflow(depth: u8, prefix: u64, capacity: usize) -> Self {
         Self {
             depth,
             prefix,
