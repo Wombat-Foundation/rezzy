@@ -1412,30 +1412,30 @@ impl<'a> ValueRef<'a> {
     }
 }
 
-impl ValueRef<'_> {
+impl<'a> ValueRef<'a> {
     #[must_use]
-    pub fn get(&self, key: &str) -> Option<&Self> {
+    pub fn get(&self, key: &str) -> Option<&ValueRef<'a>> {
         match self {
             Self::Object(obj) => obj.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_array(&self) -> Option<&Vec<Self>> {
+    pub fn as_array(&self) -> Option<&Vec<ValueRef<'a>>> {
         match self {
             Self::Array(items) => Some(items),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_number(&self) -> Option<&str> {
+    pub fn as_number(&self) -> Option<&'a str> {
         match self {
             Self::Number(n) => Some(n),
             _ => None,
         }
     }
     #[must_use]
-    pub fn as_str(&self) -> Option<&str> {
+    pub fn as_str(&self) -> Option<&'a str> {
         match self {
             Self::String(s) => Some(s),
             _ => None,
@@ -2014,17 +2014,17 @@ mod tests {
         let result = ValueRef::parse_masked(input, &mask).unwrap();
 
         assert_eq!(
-            result.get("room_id").and_then(|v| v.as_str()),
+            result.get("room_id").and_then(super::ValueRef::as_str),
             Some("!abc:domain")
         );
         assert_eq!(
-            result.get("event_id").and_then(|v| v.as_str()),
+            result.get("event_id").and_then(super::ValueRef::as_str),
             Some("$xyz:domain")
         );
 
         let content = result.get("content").unwrap();
         assert_eq!(
-            content.get("msgtype").and_then(|v| v.as_str()),
+            content.get("msgtype").and_then(super::ValueRef::as_str),
             Some("m.text")
         );
         assert!(content.get("body").is_none());
@@ -2057,8 +2057,14 @@ mod tests {
 
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0].get("id").and_then(|v| v.as_number()), Some("1"));
-        assert_eq!(arr[1].get("id").and_then(|v| v.as_number()), Some("2"));
+        assert_eq!(
+            arr[0].get("id").and_then(super::ValueRef::as_number),
+            Some("1")
+        );
+        assert_eq!(
+            arr[1].get("id").and_then(super::ValueRef::as_number),
+            Some("2")
+        );
         assert!(arr[0].get("data").is_none());
     }
 
