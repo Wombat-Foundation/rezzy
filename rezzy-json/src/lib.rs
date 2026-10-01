@@ -604,7 +604,7 @@ where
                 out.push('}');
             }
             Some(b'[') => {
-                tokenizer.pos += 1;
+                tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
                 tokenizer.ws();
                 out.push('[');
                 let mut first = true;
@@ -618,7 +618,7 @@ where
                     emit(&tokenizer.input[start..tokenizer.pos], out, exclude)?;
                     tokenizer.ws();
                     if tokenizer.input.get(tokenizer.pos) == Some(&b',') {
-                        tokenizer.pos += 1;
+                        tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
                         tokenizer.ws();
                     } else {
                         break;
@@ -799,6 +799,9 @@ impl<'a> Tokenizer<'a> {
     /// Returns validated member spans for the object at the current position.
     /// Duplicate keys are retained in source order for last-wins resolution by
     /// canonical callers.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError`] if the current value is not a valid object.
     pub fn object_members(&mut self) -> Result<Vec<MemberSpan<'a>>, TokenizerError> {
         self.ws();
         if self.input.get(self.pos) != Some(&b'{') {
