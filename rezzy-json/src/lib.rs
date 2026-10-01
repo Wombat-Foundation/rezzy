@@ -544,6 +544,572 @@ fn write_quoted(out: &mut String, value: &str) -> fmt::Result {
     Ok(())
 }
 
+/// Streaming JSON tokenizer for zero-allocation parsing and subtree skipping.
+///
+/// This tokenizer operates on raw byte slices (`&'a [u8]`) and produces tokens
+/// without any heap allocation. It supports skipping entire JSON values (objects,
+/// arrays, strings, numbers) efficiently, making it ideal for selective parsing
+/// and high-throughput ingestion pipelines.
+#[derive(Clone, Copy, Debug)]
+pub struct Tokenizer<'a> {
+    input: &'a [u8],
+    pos: usize,
+    depth: usize,
+    /// Stack tracking whether the next string in an object is a key (true) or value (false).
+    expecting_key: [bool; 128],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Token<'a> {
+    Null,
+    Bool(bool),
+    Number(&'a [u8]),
+    String(&'a [u8]),
+    ArrayStart,
+    ArrayEnd,
+    ObjectStart,
+    ObjectEnd,
+    Key(&'a [u8]),
+    Colon,
+    Comma,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenizerError {
+    UnexpectedEnd,
+    InvalidToken,
+    InvalidNumber,
+    InvalidString,
+    InvalidEscape,
+    DepthLimitExceeded,
+}
+
+impl fmt::Display for TokenizerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tokenizer error: {self:?}")
+    }
+}
+
+impl<'a> Tokenizer<'a> {
+    pub const MAX_DEPTH: usize = 128;
+
+    #[must_use]
+    pub fn new(input: &'a [u8]) -> Self {
+        Self { input, pos: 0, depth: 0, expecting_key: [false; 128] }
+    }
+
+    #[must_use]
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    #[must_use]
+    pub fn remaining(&self) -> &'a [u8] {
+        &self.input[self.pos..]
+    }
+
+    fn ws(&mut self) {
+        while self
+            .input
+            .get(self.pos)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            self.pos += 1;
+        }
+    }
+
+    /// Returns the next token, or `None` if at end of input.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError`] on invalid JSON.
+    pub fn next_token(&mut self) -> Result<Option<Token<'a>>, TokenizerError> {
+        self.ws();
+        if self.pos >= self.input.len() {
+            return Ok(None);
+        }
+        match self
+            .input
+            .get(self.pos)
+            .copied()
+            .ok_or(TokenizerError::UnexpectedEnd)?
+        {
+            b'n' => {
+                self.word(b"null")?;
+                Ok(Some(Token::Null))
+            }
+            b't' => {
+                self.word(b"true")?;
+                Ok(Some(Token::Bool(true)))
+            }
+            b'f' => {
+                self.word(b"false")?;
+                Ok(Some(Token::Bool(false)))
+            }
+            b'"' => {
+                let s = self.string()?;
+                if self.depth > 0 && self.expecting_key[self.depth - 1] {
+                    self.expecting_key[self.depth - 1] = false;
+                    Ok(Some(Token::Key(s)))
+                } else {
+                    Ok(Some(Token::String(s)))
+                }
+            }
+            b'[' => {
+                if self.depth >= Self::MAX_DEPTH {
+                    return Err(TokenizerError::DepthLimitExceeded);
+                }
+                self.expecting_key[self.depth] = false;
+                self.depth += 1;
+                self.pos += 1;
+                Ok(Some(Token::ArrayStart))
+            }
+            b']' => {
+                if self.depth == 0 {
+                    return Err(TokenizerError::InvalidToken);
+                }
+                self.depth -= 1;
+                self.pos += 1;
+                Ok(Some(Token::ArrayEnd))
+            }
+            b'{' => {
+                if self.depth >= Self::MAX_DEPTH {
+                    return Err(TokenizerError::DepthLimitExceeded);
+                }
+                self.expecting_key[self.depth] = true;
+                self.depth += 1;
+                self.pos += 1;
+                Ok(Some(Token::ObjectStart))
+            }
+            b'}' => {
+                if self.depth == 0 {
+                    return Err(TokenizerError::InvalidToken);
+                }
+                self.depth -= 1;
+                self.pos += 1;
+                Ok(Some(Token::ObjectEnd))
+            }
+            b':' => {
+                self.pos += 1;
+                Ok(Some(Token::Colon))
+            }
+            b',' => {
+                self.pos += 1;
+                if self.depth > 0 && self.expecting_key[self.depth - 1] == false {
+                    self.expecting_key[self.depth - 1] = true;
+                }
+                Ok(Some(Token::Comma))
+            }
+            b'-' | b'0'..=b'9' => self.number().map(|n| Some(Token::Number(n))),
+            _ => Err(TokenizerError::InvalidToken),
+        }
+    }
+
+    /// Skips the entire JSON value at the current position without allocation.
+    ///
+    /// This advances `pos` past the complete value (object, array, string, number,
+    /// null, true, false) and returns the byte slice of the skipped value.
+    /// Use this for high-speed subtree skipping in selective parsing.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError`] on invalid JSON.
+    pub fn skip_value(&mut self) -> Result<&'a [u8], TokenizerError> {
+        self.ws();
+        let start = self.pos;
+        match self
+            .input
+            .get(self.pos)
+            .copied()
+            .ok_or(TokenizerError::UnexpectedEnd)?
+        {
+            b'n' => {
+                self.word(b"null")?;
+            }
+            b't' => {
+                self.word(b"true")?;
+            }
+            b'f' => {
+                self.word(b"false")?;
+            }
+            b'"' => {
+                self.string_raw()?;
+            }
+            b'[' => self.skip_array()?,
+            b'{' => self.skip_object()?,
+            b'-' | b'0'..=b'9' => self.skip_number()?,
+            _ => return Err(TokenizerError::InvalidToken),
+        }
+        Ok(&self.input[start..self.pos])
+    }
+
+    /// Skips a JSON object and returns its raw byte slice.
+    fn skip_object(&mut self) -> Result<(), TokenizerError> {
+        if self.depth >= Self::MAX_DEPTH {
+            return Err(TokenizerError::DepthLimitExceeded);
+        }
+        self.expecting_key[self.depth] = true;
+        self.depth += 1;
+        self.pos += 1; // skip '{'
+        self.ws();
+        if self.input.get(self.pos) == Some(&b'}') {
+            self.depth -= 1;
+            self.pos += 1;
+            return Ok(());
+        }
+        loop {
+            self.ws();
+            if self.input.get(self.pos) != Some(&b'"') {
+                return Err(TokenizerError::InvalidToken);
+            }
+            self.string_raw()?;
+            self.ws();
+            if self.input.get(self.pos) != Some(&b':') {
+                return Err(TokenizerError::InvalidToken);
+            }
+            self.pos += 1;
+            self.skip_value()?;
+            self.ws();
+            match self.input.get(self.pos) {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.depth -= 1;
+                    self.pos += 1;
+                    break;
+                }
+                _ => return Err(TokenizerError::InvalidToken),
+            }
+        }
+        Ok(())
+    }
+
+    /// Skips a JSON array and returns its raw byte slice.
+    fn skip_array(&mut self) -> Result<(), TokenizerError> {
+        if self.depth >= Self::MAX_DEPTH {
+            return Err(TokenizerError::DepthLimitExceeded);
+        }
+        self.expecting_key[self.depth] = false;
+        self.depth += 1;
+        self.pos += 1; // skip '['
+        self.ws();
+        if self.input.get(self.pos) == Some(&b']') {
+            self.depth -= 1;
+            self.pos += 1;
+            return Ok(());
+        }
+        loop {
+            self.skip_value()?;
+            self.ws();
+            match self.input.get(self.pos) {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.depth -= 1;
+                    self.pos += 1;
+                    break;
+                }
+                _ => return Err(TokenizerError::InvalidToken),
+            }
+        }
+        Ok(())
+    }
+
+    /// Parses a string without unescaping, returning the raw content slice.
+    fn string_raw(&mut self) -> Result<&'a [u8], TokenizerError> {
+        self.pos += 1; // skip opening quote
+        let start = self.pos;
+        loop {
+            let b = *self
+                .input
+                .get(self.pos)
+                .ok_or(TokenizerError::UnexpectedEnd)?;
+            match b {
+                b'"' => {
+                    let slice = &self.input[start..self.pos];
+                    self.pos += 1;
+                    return Ok(slice);
+                }
+                b'\\' => {
+                    self.pos += 1;
+                    let _ = self
+                        .input
+                        .get(self.pos)
+                        .ok_or(TokenizerError::UnexpectedEnd)?;
+                    self.pos += 1;
+                }
+                0..=0x1f => return Err(TokenizerError::InvalidString),
+                _ => self.pos += 1,
+            }
+        }
+    }
+
+    /// Parses a string, unescaping it, returning the unescaped bytes.
+    fn string(&mut self) -> Result<&'a [u8], TokenizerError> {
+        self.pos += 1;
+        let start = self.pos;
+        loop {
+            let b = *self
+                .input
+                .get(self.pos)
+                .ok_or(TokenizerError::UnexpectedEnd)?;
+            match b {
+                b'"' => {
+                    let slice = &self.input[start..self.pos];
+                    self.pos += 1;
+                    return Ok(slice);
+                }
+                b'\\' => {
+                    let _ = self
+                        .input
+                        .get(self.pos)
+                        .ok_or(TokenizerError::UnexpectedEnd)?;
+                    self.pos += 1;
+                }
+                0..=0x1f => return Err(TokenizerError::InvalidString),
+                _ => self.pos += 1,
+            }
+        }
+    }
+
+    fn skip_number(&mut self) -> Result<(), TokenizerError> {
+        while self
+            .input
+            .get(self.pos)
+            .is_some_and(|b| matches!(b, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9'))
+        {
+            self.pos += 1;
+        }
+        Ok(())
+    }
+
+    fn number(&mut self) -> Result<&'a [u8], TokenizerError> {
+        let start = self.pos;
+        self.skip_number()?;
+        Ok(&self.input[start..self.pos])
+    }
+
+    fn word(&mut self, expected: &[u8]) -> Result<(), TokenizerError> {
+        if self.input.get(self.pos..self.pos + expected.len()) == Some(expected) {
+            self.pos += expected.len();
+            Ok(())
+        } else {
+            Err(TokenizerError::InvalidToken)
+        }
+    }
+}
+
+/// A field mask for selective parsing - specifies which JSON paths to extract.
+#[derive(Clone, Debug, Default)]
+pub struct FieldMask<'a> {
+    pub paths: &'a [&'a str],
+}
+
+impl<'a> FieldMask<'a> {
+    #[must_use]
+    pub fn allows_prefix(&self, prefix: &str) -> bool {
+        if self.paths.is_empty() {
+            return true;
+        }
+        self.paths.iter().any(|p| {
+            *p == prefix
+                || p.starts_with(&alloc::format!("{prefix}."))
+                || prefix.starts_with(&alloc::format!("{p}."))
+        })
+    }
+}
+
+/// Zero-copy borrowed JSON value for selective parsing.
+///
+/// Unlike `Value` which owns all data, `ValueRef` borrows from the original
+/// input slice. Unselected fields are skipped entirely without allocation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ValueRef<'a> {
+    Null,
+    Bool(bool),
+    Number(&'a str),
+    String(&'a str),
+    Array(Vec<ValueRef<'a>>),
+    Object(Vec<(&'a str, ValueRef<'a>)>),
+}
+
+impl<'a> ValueRef<'a> {
+    /// Parses only keys matching the mask, skipping over unselected subtrees
+    /// without allocations.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError`] if the input is not valid JSON or the mask
+    /// paths are invalid.
+    pub fn parse_masked(input: &'a [u8], mask: &FieldMask<'_>) -> Result<Self, TokenizerError> {
+        let mut tokenizer = Tokenizer::new(input);
+        let value = Self::parse_masked_value(&mut tokenizer, mask, "")?;
+        tokenizer.ws();
+        if tokenizer.position() != tokenizer.input.len() {
+            return Err(TokenizerError::InvalidToken);
+        }
+        Ok(value)
+    }
+
+    fn parse_masked_value(
+        tokenizer: &mut Tokenizer<'a>,
+        mask: &FieldMask<'_>,
+        current_prefix: &str,
+    ) -> Result<Self, TokenizerError> {
+        tokenizer.ws();
+        match tokenizer
+            .input
+            .get(tokenizer.pos)
+            .copied()
+            .ok_or(TokenizerError::UnexpectedEnd)?
+        {
+            b'n' => {
+                tokenizer.word(b"null")?;
+                Ok(Self::Null)
+            }
+            b't' => {
+                tokenizer.word(b"true")?;
+                Ok(Self::Bool(true))
+            }
+            b'f' => {
+                tokenizer.word(b"false")?;
+                Ok(Self::Bool(false))
+            }
+            b'"' => {
+                let s = tokenizer.string()?;
+                let s = core::str::from_utf8(s).map_err(|_| TokenizerError::InvalidString)?;
+                Ok(Self::String(s))
+            }
+            b'[' => Self::parse_masked_array(tokenizer, mask, current_prefix),
+            b'{' => Self::parse_masked_object(tokenizer, mask, current_prefix),
+            b'-' | b'0'..=b'9' => {
+                let n = tokenizer.number()?;
+                let n = core::str::from_utf8(n).map_err(|_| TokenizerError::InvalidNumber)?;
+                Ok(Self::Number(n))
+            }
+            _ => Err(TokenizerError::InvalidToken),
+        }
+    }
+
+    fn parse_masked_array(
+        tokenizer: &mut Tokenizer<'a>,
+        mask: &FieldMask<'_>,
+        current_prefix: &str,
+    ) -> Result<Self, TokenizerError> {
+        tokenizer.pos += 1;
+        tokenizer.ws();
+        let mut items = Vec::new();
+        if tokenizer.input.get(tokenizer.pos) == Some(&b']') {
+            tokenizer.pos += 1;
+            return Ok(Self::Array(items));
+        }
+        loop {
+            items.push(Self::parse_masked_value(tokenizer, mask, current_prefix)?);
+            tokenizer.ws();
+            match tokenizer.input.get(tokenizer.pos) {
+                Some(b',') => tokenizer.pos += 1,
+                Some(b']') => {
+                    tokenizer.pos += 1;
+                    break;
+                }
+                _ => return Err(TokenizerError::InvalidToken),
+            }
+        }
+        Ok(Self::Array(items))
+    }
+
+    fn parse_masked_object(
+        tokenizer: &mut Tokenizer<'a>,
+        mask: &FieldMask<'_>,
+        current_prefix: &str,
+    ) -> Result<Self, TokenizerError> {
+        tokenizer.pos += 1;
+        tokenizer.ws();
+        let mut fields = Vec::new();
+        if tokenizer.input.get(tokenizer.pos) == Some(&b'}') {
+            tokenizer.pos += 1;
+            return Ok(Self::Object(fields));
+        }
+        loop {
+            tokenizer.ws();
+            if tokenizer.input.get(tokenizer.pos) != Some(&b'"') {
+                return Err(TokenizerError::InvalidToken);
+            }
+            let key_bytes = tokenizer.string_raw()?;
+            let key = core::str::from_utf8(key_bytes).map_err(|_| TokenizerError::InvalidString)?;
+
+            let field_path = if current_prefix.is_empty() {
+                String::from(key)
+            } else {
+                alloc::format!("{current_prefix}.{key}")
+            };
+
+            let should_extract = mask.allows_prefix(&field_path);
+
+            tokenizer.ws();
+            if tokenizer.input.get(tokenizer.pos) != Some(&b':') {
+                return Err(TokenizerError::InvalidToken);
+            }
+            tokenizer.pos += 1;
+
+            if should_extract {
+                let value = Self::parse_masked_value(tokenizer, mask, &field_path)?;
+                fields.push((key, value));
+            } else {
+                tokenizer.skip_value()?;
+            }
+
+            tokenizer.ws();
+            match tokenizer.input.get(tokenizer.pos) {
+                Some(b',') => tokenizer.pos += 1,
+                Some(b'}') => {
+                    tokenizer.pos += 1;
+                    break;
+                }
+                _ => return Err(TokenizerError::InvalidToken),
+            }
+        }
+        Ok(Self::Object(fields))
+    }
+}
+
+impl<'a> ValueRef<'a> {
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            Self::Object(obj) => obj.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+    #[must_use]
+    pub fn as_array(&self) -> Option<&Vec<Self>> {
+        match self {
+            Self::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+    #[must_use]
+    pub fn as_number(&self) -> Option<&str> {
+        match self {
+            Self::Number(n) => Some(n),
+            _ => None,
+        }
+    }
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s),
+            _ => None,
+        }
+    }
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(v) => Some(*v),
+            _ => None,
+        }
+    }
+    #[must_use]
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     UnexpectedEnd,
@@ -967,5 +1533,137 @@ mod tests {
                 "accepted invalid JSON: {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn tokenizer_basic_tokens() {
+        use super::{Token, Tokenizer};
+        let input = br#"{"a":1,"b":[true,null],"c":"hello"}"#;
+        let mut t = Tokenizer::new(input);
+        assert_eq!(t.next_token(), Ok(Some(Token::ObjectStart)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Key(b"a"))));
+        assert_eq!(t.next_token(), Ok(Some(Token::Colon)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Number(b"1"))));
+        assert_eq!(t.next_token(), Ok(Some(Token::Comma)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Key(b"b"))));
+        assert_eq!(t.next_token(), Ok(Some(Token::Colon)));
+        assert_eq!(t.next_token(), Ok(Some(Token::ArrayStart)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Bool(true))));
+        assert_eq!(t.next_token(), Ok(Some(Token::Comma)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Null)));
+        assert_eq!(t.next_token(), Ok(Some(Token::ArrayEnd)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Comma)));
+        assert_eq!(t.next_token(), Ok(Some(Token::Key(b"c"))));
+        assert_eq!(t.next_token(), Ok(Some(Token::Colon)));
+        assert_eq!(t.next_token(), Ok(Some(Token::String(b"hello"))));
+        assert_eq!(t.next_token(), Ok(Some(Token::ObjectEnd)));
+        assert_eq!(t.next_token(), Ok(None));
+    }
+
+    #[test]
+    fn tokenizer_skip_value_object() {
+        use super::Tokenizer;
+        let input = br#"{"skip":"this entire object","keep":42}"#;
+        let mut t = Tokenizer::new(input);
+        t.next_token().unwrap(); // ObjectStart
+        t.next_token().unwrap(); // Key "skip"
+        t.next_token().unwrap(); // Colon
+        let skipped = t.skip_value().unwrap();
+        assert_eq!(skipped, br#""this entire object""#);
+        t.next_token().unwrap(); // Comma
+        t.next_token().unwrap(); // Key "keep"
+        t.next_token().unwrap(); // Colon
+        let kept = t.skip_value().unwrap();
+        assert_eq!(kept, b"42");
+    }
+
+    #[test]
+    fn tokenizer_skip_value_array() {
+        use super::Tokenizer;
+        let input = br#"[1,2,{"nested":true},3]"#;
+        let mut t = Tokenizer::new(input);
+        t.next_token().unwrap(); // ArrayStart
+        t.skip_value().unwrap(); // skip 1
+        t.next_token().unwrap(); // Comma
+        t.skip_value().unwrap(); // skip 2
+        t.next_token().unwrap(); // Comma
+        let skipped = t.skip_value().unwrap(); // skip entire object
+        assert_eq!(skipped, br#"{"nested":true}"#);
+        t.next_token().unwrap(); // Comma
+        let kept = t.skip_value().unwrap(); // keep 3
+        assert_eq!(kept, b"3");
+    }
+
+    #[test]
+    fn parse_masked_extracts_selected_fields() {
+        use super::{FieldMask, ValueRef};
+        let input = br#"{"room_id":"!abc:domain","event_id":"$xyz:domain","content":{"msgtype":"m.text","body":"hello","huge_field":[1,2,3,4,5]},"unsigned":{"age":1000}}"#;
+        let mask = FieldMask {
+            paths: &["room_id", "event_id", "content.msgtype"],
+        };
+        let result = ValueRef::parse_masked(input, &mask).unwrap();
+
+        assert_eq!(
+            result.get("room_id").and_then(|v| v.as_str()),
+            Some("!abc:domain")
+        );
+        assert_eq!(
+            result.get("event_id").and_then(|v| v.as_str()),
+            Some("$xyz:domain")
+        );
+
+        let content = result.get("content").unwrap();
+        assert_eq!(
+            content.get("msgtype").and_then(|v| v.as_str()),
+            Some("m.text")
+        );
+        assert!(content.get("body").is_none());
+        assert!(content.get("huge_field").is_none());
+
+        assert!(result.get("unsigned").is_none());
+    }
+
+    #[test]
+    fn parse_masked_nested_prefix() {
+        use super::{FieldMask, ValueRef};
+        let input = br#"{"a":{"b":{"c":1,"d":2},"e":3},"f":4}"#;
+        let mask = FieldMask { paths: &["a.b"] };
+        let result = ValueRef::parse_masked(input, &mask).unwrap();
+
+        let a = result.get("a").unwrap();
+        let b = a.get("b").unwrap();
+        assert!(b.get("c").is_some());
+        assert!(b.get("d").is_some());
+        assert!(a.get("e").is_none());
+        assert!(result.get("f").is_none());
+    }
+
+    #[test]
+    fn parse_masked_array() {
+        use super::{FieldMask, ValueRef};
+        let input = br#"[{"id":1,"data":"large"},{"id":2,"data":"also large"}]"#;
+        let mask = FieldMask { paths: &["id"] };
+        let result = ValueRef::parse_masked(input, &mask).unwrap();
+
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].get("id").and_then(|v| v.as_number()), Some("1"));
+        assert_eq!(arr[1].get("id").and_then(|v| v.as_number()), Some("2"));
+        assert!(arr[0].get("data").is_none());
+    }
+
+    #[test]
+    fn tokenizer_depth_limit() {
+        use super::{Tokenizer, TokenizerError};
+        let nested = "[".repeat(200) + &"]".repeat(200);
+        let mut t = Tokenizer::new(nested.as_bytes());
+        let mut hit_depth_limit = false;
+        for _ in 0..150 {
+            if let Err(TokenizerError::DepthLimitExceeded) = t.next_token() {
+                hit_depth_limit = true;
+                break;
+            }
+        }
+        assert!(hit_depth_limit);
     }
 }
