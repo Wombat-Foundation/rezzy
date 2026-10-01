@@ -62,8 +62,6 @@ pub enum AuthError<Id = String> {
     /// This can occur during state resolution when walking DAG forks where
     /// the create event has not yet been accumulated into the local state.
     MissingCreate,
-    /// A v12+ `m.room.create` event hashes to a different room ID.
-    CreateEventRoomIdMismatch { expected: String, actual: String },
     /// The event failed basic syntactic validation (e.g. invalid event type, too many `prev_events`).
     InvalidSyntax(String),
     /// Rule 2.2: `auth_events` omits a `(type, state_key)` pair required by
@@ -130,9 +128,6 @@ impl<Id: fmt::Display> fmt::Display for AuthError<Id> {
             }
             AuthError::MissingCreate => {
                 write!(f, "m.room.create is missing from state")
-            }
-            AuthError::CreateEventRoomIdMismatch { expected, actual } => {
-                write!(f, "m.room.create reference hash does not match room ID: expected {expected}, derived {actual}")
             }
             AuthError::InvalidSyntax(reason) => {
                 write!(f, "invalid syntax: {reason}")

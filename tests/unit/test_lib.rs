@@ -3939,8 +3939,8 @@ fn test_ingest_events_rejects_explicit_event_id_in_v3_and_later() {
 fn test_coverage_ingest_events_parse_error_aborts_batch() {
     use rezzy::ingest_events;
 
-    // No "type" field -> `from_value` sees an empty event_type and returns
-    // Err, surfacing through ingest_events' `map_err(|e| e.to_string())?`.
+    // No "type" field -> the raw-PDU shape validator identifies the missing
+    // field before parsing or hashing.
     let malformed = rezzy::json!({
         "sender": "@bob:example.com",
         "origin_server_ts": 10,
@@ -3949,7 +3949,7 @@ fn test_coverage_ingest_events_parse_error_aborts_batch() {
     });
     let err = ingest_events(&[malformed], "11", None).unwrap_err();
     assert!(
-        err.contains("event_type"),
+        err.contains("missing required PDU field: type"),
         "unexpected ingest parse error: {err}"
     );
 }

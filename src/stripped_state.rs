@@ -88,10 +88,9 @@ pub fn validate_stripped_state(
                 })?;
             let actual = format!("!{hash}");
             if actual != room_id {
-                return Err(AuthError::CreateEventRoomIdMismatch {
-                    expected: String::from(room_id),
-                    actual,
-                });
+                return Err(AuthError::InvalidSyntax(format!(
+                    "stripped state event {index} is for a different room"
+                )));
             }
         }
         check_event(ev, room_id, room_version).map_err(|why| {
@@ -174,40 +173,9 @@ mod tests {
         assert_eq!(validate_stripped_state(&good, "12", &evs), Ok(()));
         assert_eq!(
             validate_stripped_state("!forged", "12", &evs),
-            Err(AuthError::CreateEventRoomIdMismatch {
-                expected: "!forged".into(),
-                actual: good,
-            })
-        );
-    }
-
-    #[test]
-    fn v12_create_room_id_mismatch_has_specific_error() {
-        let mut create = pdu("m.room.create", "");
-        create.as_object_mut().unwrap().remove("room_id");
-
-        let error = validate_stripped_state("!not-the-create-hash", "12", &[create])
-            .expect_err("a create event with the wrong reference hash must fail");
-
-        assert_eq!(
-            error,
-            AuthError::CreateEventRoomIdMismatch {
-                expected: "!not-the-create-hash".into(),
-                actual: format!(
-                    "!{}",
-                    crate::basespec::rezzy_types::reference_hash(
-                        &json!({
-                            "type": "m.room.create",
-                            "sender": "@a:x",
-                            "content": {},
-                            "origin_server_ts": 1,
-                            "state_key": ""
-                        }),
-                        "12"
-                    )
-                    .unwrap()
-                ),
-            }
+            Err(AuthError::InvalidSyntax(
+                "stripped state event 0 is for a different room".into()
+            ))
         );
     }
 

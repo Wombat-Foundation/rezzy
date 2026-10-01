@@ -1463,16 +1463,18 @@ pub fn ingest_events(
 }
 
 /// Validates fields required before a raw PDU may be parsed or hashed.
-pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), &'static str> {
+pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), alloc::string::String> {
     for field in ["type", "sender", "content", "origin_server_ts"] {
         if value.get(field).is_none() {
-            return Err("missing required PDU field");
+            return Err(alloc::format!("missing required PDU field: {field}"));
         }
     }
     if value.get("type").and_then(Value::as_str).is_none()
         || value.get("sender").and_then(Value::as_str).is_none()
     {
-        return Err("PDU type and sender must be strings");
+        return Err(alloc::string::String::from(
+            "PDU type and sender must be strings",
+        ));
     }
     Ok(())
 }
