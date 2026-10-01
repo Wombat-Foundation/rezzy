@@ -199,7 +199,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                     starts.extend(crate::repair::read_event_ids(path)?);
                 }
             }
-            get_remote_dag(DagRequest {
+            get_remote_dag(&DagRequest {
                 origin: m.get_one::<String>("origin").expect("default"),
                 destination: m.get_one::<String>("destination").expect("required"),
                 room_id: m.get_one::<String>("room").expect("required"),
@@ -221,7 +221,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 .expect("required")
                 .cloned()
                 .collect::<Vec<_>>();
-            gap_fill(GapFillRequest {
+            gap_fill(&GapFillRequest {
                 inputs: &inputs,
                 origin: m.get_one::<String>("origin").expect("default"),
                 destination: m.get_one::<String>("destination").expect("required"),
@@ -634,7 +634,10 @@ pub struct DagRequest<'a> {
     pub emit_missing: Option<&'a Path>,
 }
 
-pub fn get_remote_dag(dag_request: DagRequest<'_>) -> Result<JsonValue, AppError> {
+///
+/// # Errors
+/// Returns an error if fetching, parsing, or writing the crawl fails.
+pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
     let DagRequest {
         origin,
         destination,
@@ -647,7 +650,7 @@ pub fn get_remote_dag(dag_request: DagRequest<'_>) -> Result<JsonValue, AppError
         keyring_account,
         no_fallback,
         emit_missing,
-    } = dag_request;
+    } = *dag_request;
     if starts.is_empty() {
         return Err(AppError::new(
             ErrorCode::MissingInputFlag,
@@ -887,7 +890,7 @@ struct GapFillRequest<'a> {
 /// Fetch missing timeline and authentication references for a bounded number
 /// of rounds. This intentionally writes fetched batches separately; callers
 /// can inspect or aggregate them without mutating the original input.
-fn gap_fill(request: GapFillRequest<'_>) -> Result<JsonValue, AppError> {
+fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
     let GapFillRequest {
         inputs,
         origin,
@@ -899,7 +902,7 @@ fn gap_fill(request: GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         key_path,
         keyring_account,
         no_fallback,
-    } = request;
+    } = *request;
     fs::create_dir_all(output_dir)?;
     let mut events = Vec::new();
     for input in inputs {
@@ -927,7 +930,7 @@ fn gap_fill(request: GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         if !report.missing_prev.is_empty() {
             let path = round_dir.join("backfill.jsonl");
             let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
-            let summary = get_remote_dag(DagRequest {
+            let summary = get_remote_dag(&DagRequest {
                 origin,
                 destination,
                 room_id,
