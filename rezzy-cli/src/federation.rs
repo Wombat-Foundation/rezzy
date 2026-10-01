@@ -37,6 +37,7 @@ fn federation_agent() -> &'static ureq::Agent {
 }
 
 #[must_use]
+/// Builds the federation subcommand-line interface.
 pub fn command() -> Command {
     Command::new("federation")
         .about("Make signed Matrix server-server requests")
@@ -236,6 +237,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     }
 }
 
+/// Credentials used to authenticate federation requests.
 #[derive(Debug, Clone)]
 pub struct SigningKeySpec {
     /// The key identifier used for signing.
@@ -374,7 +376,7 @@ fn canonical_request(
         let _ = value.insert("content".to_owned(), body.clone());
     }
     rezzy::json::write_string_value(&value)
-        .map(|s| s.into_bytes())
+        .map(std::string::String::into_bytes)
         .map_err(|e| AppError::new(ErrorCode::NetworkError, e.to_string()))
 }
 
@@ -493,6 +495,9 @@ fn base_url(destination: &str) -> String {
 }
 
 /// Send one signed federation request. Keyring values are cached per process.
+///
+/// # Errors
+/// Returns an error if credentials cannot be loaded or the signed request fails.
 pub fn request(
     origin: &str,
     destination: &str,
@@ -595,6 +600,9 @@ fn is_unreachable(err: &AppError) -> bool {
 ///
 /// When `emit_missing` is set the unresolved frontier is written there as one
 /// event ID per line, so a later crawl can resume with `--from-file`.
+///
+/// # Errors
+/// Returns an error if inputs cannot be read, requests fail, or outputs cannot be written.
 pub fn get_remote_dag(
     origin: &str,
     destination: &str,
@@ -886,7 +894,8 @@ fn gap_fill(
                 None,
             )?;
             if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
-                failed_requests = failed_requests.saturating_add(usize::try_from(n).unwrap_or(usize::MAX));
+                failed_requests =
+                    failed_requests.saturating_add(usize::try_from(n).unwrap_or(usize::MAX));
                 if let Some(detail) = summary.get("failures").and_then(JsonValue::as_str) {
                     eprintln!("[warn] round {round}: {n} backfill request(s) failed: {detail}");
                 }

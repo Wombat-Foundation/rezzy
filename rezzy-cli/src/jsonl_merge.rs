@@ -229,21 +229,24 @@ fn comparison_key(
     value: &rezzy::JsonValue,
     room_version: Option<&str>,
 ) -> Result<String, AppError> {
-    if let Some(room_version) = room_version {
-        rezzy::try_canonical_redacted_json(value, room_version).map_err(|error| {
-            AppError::new(
-                ErrorCode::MalformedJson,
-                format!("cannot canonicalize event: {error}"),
-            )
-        })
-    } else {
-        rezzy::json::write_string_value(value).map_err(|error| {
-            AppError::new(
-                ErrorCode::MalformedJson,
-                format!("cannot serialize event: {error}"),
-            )
-        })
-    }
+    room_version.map_or_else(
+        || {
+            rezzy::json::write_string_value(value).map_err(|error| {
+                AppError::new(
+                    ErrorCode::MalformedJson,
+                    format!("cannot serialize event: {error}"),
+                )
+            })
+        },
+        |room_version| {
+            rezzy::try_canonical_redacted_json(value, room_version).map_err(|error| {
+                AppError::new(
+                    ErrorCode::MalformedJson,
+                    format!("cannot canonicalize event: {error}"),
+                )
+            })
+        },
+    )
 }
 
 fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(

@@ -877,19 +877,20 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     room_version: Option<&str>,
 ) -> Result<Option<StreamOrderIndex>, AppError> {
     let explicit = args.metadata.clone();
-    let paths: Vec<PathBuf> = match &explicit {
-        Some(path) => vec![path.clone()],
-        None => args
-            .input
-            .iter()
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
-            })
-            .map(|path| provenance::sidecar_path(path))
-            .filter(|path| path.is_file())
-            .collect(),
-    };
+    let paths: Vec<PathBuf> = explicit.as_ref().map_or_else(
+        || {
+            args.input
+                .iter()
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                })
+                .map(|path| provenance::sidecar_path(path))
+                .filter(|path| path.is_file())
+                .collect()
+        },
+        |path| vec![path.clone()],
+    );
     if paths.is_empty() {
         warn_once(
             args.quiet,

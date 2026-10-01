@@ -82,7 +82,7 @@ fn run_gaps(input: &Path, output: Option<&Path>, json: bool) -> Result<(), AppEr
         return Ok(());
     }
     let missing = report.missing();
-    write_event_ids(output.unwrap_or(Path::new("-")), &missing)?;
+    write_event_ids(output.unwrap_or_else(|| Path::new("-")), &missing)?;
     if let Some(path) = output {
         eprintln!(
             "{} missing event ID(s) written to {}",

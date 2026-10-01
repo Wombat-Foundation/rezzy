@@ -494,12 +494,10 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
         // No external event store is available; every referenced-but-absent event is a gap.
         let (backward, missing_auth) = utils::report_gaps(&events_map, |_| false);
         let describe = |id: &str| -> String {
-            match events_map.get(id) {
-                Some(ev) => {
-                    format!("{} {} ts={}", ev.event_type, ev.sender, ev.origin_server_ts)
-                }
-                None => String::from("<?>"),
-            }
+            events_map.get(id).map_or_else(
+                || String::from("<?>"),
+                |ev| format!("{} {} ts={}", ev.event_type, ev.sender, ev.origin_server_ts),
+            )
         };
         if !missing_auth.is_empty() {
             eprintln!(
