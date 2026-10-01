@@ -204,11 +204,10 @@ pub trait ForwardGraph<Id: EventId> {
     /// Returns an error if the event ID format is invalid or hashing fails.
     fn event_hash(&self, id: &Id) -> Result<ElementHash, AlgebraicError> {
         let format = self.event_format(id);
-        if let Some(s) = self.event_id_str(id) {
-            ElementHash::from_matrix_event_id(s, format)
-        } else {
-            ElementHash::from_matrix_event_id(&id.to_string(), format)
-        }
+        self.event_id_str(id).map_or_else(
+            || ElementHash::from_matrix_event_id(&id.to_string(), format),
+            |s| ElementHash::from_matrix_event_id(s, format),
+        )
     }
 }
 

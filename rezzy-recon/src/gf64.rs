@@ -48,12 +48,13 @@ fn accelerated_mul() -> unsafe fn(u64, u64) -> u64 {
 
     static IMPLEMENTATION: OnceLock<unsafe fn(u64, u64) -> u64> = OnceLock::new();
     *IMPLEMENTATION.get_or_init(|| {
-        let mut func: unsafe fn(u64, u64) -> u64 = mul_portable;
-        if std::is_x86_feature_detected!("pclmulqdq") {
+        let func: unsafe fn(u64, u64) -> u64 = if std::is_x86_feature_detected!("pclmulqdq") {
             // SAFETY: the function is only selected when the CPU advertises
             // the required instruction set.
-            func = mul_pclmul;
-        }
+            mul_pclmul
+        } else {
+            mul_portable
+        };
         func
     })
 }
