@@ -110,6 +110,13 @@ test-log = "0.2.20"
 zeroize = "=1.8.1"
 
 [workspace.lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+unused_must_use = "deny"
+rust_2024_incompatible_pat = "warn"
+missing_docs = "warn"
+elided_lifetimes_in_paths = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
 unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(coverage)",
@@ -120,8 +127,12 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(has_avx512_support)",
     "cfg(has_avx512_host_support)",
 ] }
+[workspace.lints.rustdoc]
+all = "warn"
 
 [workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
@@ -136,6 +147,17 @@ arithmetic_side_effects = "warn"
 undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 get_unwrap = "warn"
+semicolon_if_nothing_returned = "warn"
+match_bool = "warn"
+needless_pass_by_value = "warn"
+
+# Known project-wide exceptions.
+redundant_pub_crate = "allow"
+too_long_first_doc_paragraph = "allow"
+unused_peekable = "allow"
+tuple_array_conversions = "allow"
+transmute_undefined_repr = "allow"
+cognitive_complexity = "allow"
 
 [[bin]]
 name = "regen-oracles"
