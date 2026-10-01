@@ -74,8 +74,9 @@ pub use basespec::rezzy_types::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
 pub use resolve::*;
 pub use rezzy_json::{
-    Error as JsonError, FieldMask, Number as JsonNumber, Object as JsonObject, Token, Tokenizer,
-    TokenizerError, Value as JsonValue, ValueRef,
+    write_raw_canonical_filtered, write_string_value_filtered, Error as JsonError, FieldMask,
+    MemberSpan, Number as JsonNumber, Object as JsonObject, Token, Tokenizer, TokenizerError,
+    Value as JsonValue, ValueRef, ValueType as JsonValueType,
 };
 pub use state::*;
 pub use warnings::{Outcome, Warning};

@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use alloc::{
+    borrow::Cow,
     collections::BTreeMap,
     string::{String, ToString},
     vec::Vec,
@@ -475,6 +476,171 @@ pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
     Ok(out)
 }
 
+/// Writes canonical JSON while omitting object fields selected by `exclude`.
+///
+/// The predicate is applied to each object key during the recursive walk. This
+/// is intentionally generic; callers can provide Matrix-specific exclusions
+/// such as `signatures`, `unsigned`, or `hashes` without coupling this crate to
+/// Matrix event semantics.
+///
+/// # Errors
+/// Returns [`fmt::Error`] if writing to the output string fails.
+pub fn write_string_value_filtered<F>(value: &Value, mut exclude: F) -> Result<String, fmt::Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    use fmt::Write as _;
+
+    fn write_value<F>(out: &mut String, value: &Value, exclude: &mut F) -> fmt::Result
+    where
+        F: FnMut(&str) -> bool,
+    {
+        match value {
+            Value::Object(object) => {
+                out.push('{');
+                let mut first = true;
+                for (key, item) in object {
+                    if exclude(key) {
+                        continue;
+                    }
+                    if !first {
+                        out.push(',');
+                    }
+                    first = false;
+                    write_string(out, key)?;
+                    out.push(':');
+                    write_value(out, item, exclude)?;
+                }
+                out.push('}');
+            }
+            Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index != 0 {
+                        out.push(',');
+                    }
+                    write_value(out, item, exclude)?;
+                }
+                out.push(']');
+            }
+            _ => out.push_str(&write_string_value(value)?),
+        }
+        Ok(())
+    }
+
+    fn write_string(out: &mut String, value: &str) -> fmt::Result {
+        out.push('"');
+        for ch in value.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if c <= '\u{1f}' => write!(out, "\\u{:04x}", c as u32)?,
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        Ok(())
+    }
+
+    let mut out = String::new();
+    write_value(&mut out, value, &mut exclude)?;
+    Ok(out)
+}
+
+/// Canonicalizes JSON from validated raw spans, sorting decoded keys and
+/// applying last-wins duplicate semantics while omitting selected fields.
+///
+/// # Errors
+/// Returns [`Error`] when `input` is malformed JSON.
+pub fn write_raw_canonical_filtered<F>(input: &[u8], mut exclude: F) -> Result<String, Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    fn emit<F>(raw: &[u8], out: &mut String, exclude: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut tokenizer = Tokenizer::new(raw);
+        tokenizer.ws();
+        match tokenizer.input.get(tokenizer.pos).copied() {
+            Some(b'{') => {
+                let mut members = tokenizer
+                    .object_members()
+                    .map_err(|_| Error::InvalidToken)?;
+                tokenizer.ws();
+                if tokenizer.pos != raw.len() {
+                    return Err(Error::TrailingCharacters);
+                }
+                members.sort_by(|a, b| a.key.as_ref().cmp(b.key.as_ref()));
+                let mut unique = Vec::new();
+                for member in members {
+                    if unique.last().is_some_and(|last: &MemberSpan<'_>| {
+                        last.key.as_ref() == member.key.as_ref()
+                    }) {
+                        let _ = unique.pop();
+                    }
+                    unique.push(member);
+                }
+                out.push('{');
+                let mut first = true;
+                for member in unique {
+                    if exclude(member.key.as_ref()) {
+                        continue;
+                    }
+                    if !first {
+                        out.push(',');
+                    }
+                    first = false;
+                    let key = Value::String(member.key.into_owned());
+                    out.push_str(&write_string_value(&key).map_err(|_| Error::InvalidString)?);
+                    out.push(':');
+                    emit(member.raw_value, out, exclude)?;
+                }
+                out.push('}');
+            }
+            Some(b'[') => {
+                tokenizer.pos += 1;
+                tokenizer.ws();
+                out.push('[');
+                let mut first = true;
+                while tokenizer.input.get(tokenizer.pos) != Some(&b']') {
+                    let start = tokenizer.pos;
+                    tokenizer.skip_value().map_err(|_| Error::InvalidToken)?;
+                    if !first {
+                        out.push(',');
+                    }
+                    first = false;
+                    emit(&tokenizer.input[start..tokenizer.pos], out, exclude)?;
+                    tokenizer.ws();
+                    if tokenizer.input.get(tokenizer.pos) == Some(&b',') {
+                        tokenizer.pos += 1;
+                        tokenizer.ws();
+                    } else {
+                        break;
+                    }
+                }
+                if tokenizer.input.get(tokenizer.pos) != Some(&b']') {
+                    return Err(Error::InvalidToken);
+                }
+                out.push(']');
+            }
+            Some(_) => out.push_str(
+                &write_string_value(&Value::parse_bytes(raw)?).map_err(|_| Error::InvalidString)?,
+            ),
+            None => return Err(Error::UnexpectedEnd),
+        }
+        Ok(())
+    }
+    let mut output = String::new();
+    emit(input, &mut output, &mut exclude)?;
+    Ok(output)
+}
+
 /// Writes `value` as indented, human-readable JSON.
 ///
 /// # Errors
@@ -584,6 +750,23 @@ pub enum TokenizerError {
     DepthLimitExceeded,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueType {
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberSpan<'a> {
+    pub key: Cow<'a, str>,
+    pub raw_value: &'a [u8],
+    pub value_type: ValueType,
+}
+
 impl fmt::Display for TokenizerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "tokenizer error: {self:?}")
@@ -595,7 +778,12 @@ impl<'a> Tokenizer<'a> {
 
     #[must_use]
     pub fn new(input: &'a [u8]) -> Self {
-        Self { input, pos: 0, depth: 0, expecting_key: [false; 128] }
+        Self {
+            input,
+            pos: 0,
+            depth: 0,
+            expecting_key: [false; 128],
+        }
     }
 
     #[must_use]
@@ -606,6 +794,82 @@ impl<'a> Tokenizer<'a> {
     #[must_use]
     pub fn remaining(&self) -> &'a [u8] {
         &self.input[self.pos..]
+    }
+
+    /// Returns validated member spans for the object at the current position.
+    /// Duplicate keys are retained in source order for last-wins resolution by
+    /// canonical callers.
+    pub fn object_members(&mut self) -> Result<Vec<MemberSpan<'a>>, TokenizerError> {
+        self.ws();
+        if self.input.get(self.pos) != Some(&b'{') {
+            return Err(TokenizerError::InvalidToken);
+        }
+        self.pos = self
+            .pos
+            .checked_add(1)
+            .ok_or(TokenizerError::UnexpectedEnd)?;
+        self.ws();
+        let mut members = Vec::new();
+        if self.input.get(self.pos) == Some(&b'}') {
+            self.pos = self
+                .pos
+                .checked_add(1)
+                .ok_or(TokenizerError::UnexpectedEnd)?;
+            return Ok(members);
+        }
+        loop {
+            self.ws();
+            let key_start = self.pos;
+            self.string_raw()?;
+            let key_end = self.pos;
+            let key = match Value::parse_bytes(&self.input[key_start..key_end]) {
+                Ok(Value::String(value)) => Cow::Owned(value),
+                _ => return Err(TokenizerError::InvalidString),
+            };
+            self.ws();
+            if self.input.get(self.pos) != Some(&b':') {
+                return Err(TokenizerError::InvalidToken);
+            }
+            self.pos = self
+                .pos
+                .checked_add(1)
+                .ok_or(TokenizerError::UnexpectedEnd)?;
+            self.ws();
+            let value_start = self.pos;
+            let value_type = match self.input.get(self.pos).copied() {
+                Some(b'n') => ValueType::Null,
+                Some(b't' | b'f') => ValueType::Bool,
+                Some(b'-' | b'0'..=b'9') => ValueType::Number,
+                Some(b'"') => ValueType::String,
+                Some(b'[') => ValueType::Array,
+                Some(b'{') => ValueType::Object,
+                _ => return Err(TokenizerError::InvalidToken),
+            };
+            self.skip_value()?;
+            members.push(MemberSpan {
+                key,
+                raw_value: &self.input[value_start..self.pos],
+                value_type,
+            });
+            self.ws();
+            match self.input.get(self.pos) {
+                Some(b',') => {
+                    self.pos = self
+                        .pos
+                        .checked_add(1)
+                        .ok_or(TokenizerError::UnexpectedEnd)?;
+                }
+                Some(b'}') => {
+                    self.pos = self
+                        .pos
+                        .checked_add(1)
+                        .ok_or(TokenizerError::UnexpectedEnd)?;
+                    break;
+                }
+                _ => return Err(TokenizerError::InvalidToken),
+            }
+        }
+        Ok(members)
     }
 
     fn ws(&mut self) {
@@ -694,7 +958,7 @@ impl<'a> Tokenizer<'a> {
             }
             b',' => {
                 self.pos += 1;
-                if self.depth > 0 && self.expecting_key[self.depth - 1] == false {
+                if self.depth > 0 && !self.expecting_key[self.depth - 1] {
                     self.expecting_key[self.depth - 1] = true;
                 }
                 Ok(Some(Token::Comma))
@@ -901,7 +1165,7 @@ pub struct FieldMask<'a> {
     pub paths: &'a [&'a str],
 }
 
-impl<'a> FieldMask<'a> {
+impl FieldMask<'_> {
     #[must_use]
     pub fn allows_prefix(&self, prefix: &str) -> bool {
         if self.paths.is_empty() {
@@ -1068,7 +1332,7 @@ impl<'a> ValueRef<'a> {
     }
 }
 
-impl<'a> ValueRef<'a> {
+impl ValueRef<'_> {
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
@@ -1124,6 +1388,19 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid JSON: {self:?}")
+    }
+}
+
+impl From<TokenizerError> for Error {
+    fn from(err: TokenizerError) -> Self {
+        match err {
+            TokenizerError::UnexpectedEnd => Self::UnexpectedEnd,
+            TokenizerError::InvalidToken => Self::InvalidToken,
+            TokenizerError::InvalidNumber => Self::InvalidNumber,
+            TokenizerError::InvalidString => Self::InvalidString,
+            TokenizerError::InvalidEscape => Self::InvalidEscape,
+            TokenizerError::DepthLimitExceeded => Self::DepthLimitExceeded,
+        }
     }
 }
 
@@ -1393,7 +1670,10 @@ fn valid_number(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_string_pretty, write_string_value, Value};
+    use super::{
+        write_raw_canonical_filtered, write_string_pretty, write_string_value,
+        write_string_value_filtered, Value,
+    };
 
     #[test]
     fn parses_nested_values_and_sorts_object_keys() {
@@ -1434,6 +1714,30 @@ mod tests {
         assert_eq!(
             write_string_pretty(&value).unwrap(),
             "{\n  \"a\": [\n    1,\n    {\n      \"b\": \"x\\n\"\n    }\n  ],\n  \"z\": true\n}"
+        );
+    }
+
+    #[test]
+    fn filtered_writer_matches_canonical_output_after_exclusion() {
+        let value =
+            Value::parse(r#"{"z":1,"unsigned":{"age":3},"a":{"signatures":{},"x":"y"}}"#).unwrap();
+        assert_eq!(
+            write_string_value_filtered(&value, |key| matches!(key, "unsigned" | "signatures"))
+                .unwrap(),
+            r#"{"a":{"x":"y"},"z":1}"#
+        );
+        assert_eq!(
+            write_string_value_filtered(&value, |_| false).unwrap(),
+            write_string_value(&value).unwrap()
+        );
+    }
+
+    #[test]
+    fn raw_canonical_writer_sorts_deduplicates_and_normalizes() {
+        let input = br#"{"z":1E1,"a":1,"a":-0,"skip":{"x":1},"\u0062":[{"z":2,"a":3}]}"#;
+        assert_eq!(
+            write_raw_canonical_filtered(input, |key| key == "skip").unwrap(),
+            r#"{"a":-0.0,"b":[{"a":3,"z":2}],"z":10.0}"#
         );
     }
 
