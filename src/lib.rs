@@ -68,7 +68,6 @@ pub mod resolve;
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
 pub mod signing;
 pub mod state;
-pub mod stripped_state;
 pub mod warnings;
 
 pub use basespec::event_types::EventType;
