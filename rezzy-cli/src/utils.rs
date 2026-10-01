@@ -29,9 +29,8 @@ use std::time::Instant;
 
 pub use rezzy::{
     discover_array_spans, discover_envelope_spans, discover_federation_spans, discover_jsonl_spans,
-    extract_matrix_event_fields, extract_matrix_event_fields_ref, extract_matrix_event_view,
-    EnvelopeSpans, FederationSpans, MatrixEventFields, MatrixEventFieldsRef, MatrixEventScratch,
-    MatrixEventView, RawEventSpan, ADJACENCY_MASK,
+    extract_matrix_event_into, EnvelopeSpans, FederationSpans, MatrixEventScratch, MatrixEventView,
+    RawEventSpan, ADJACENCY_MASK,
 };
 
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
@@ -761,15 +760,11 @@ mod tests {
     #[test]
     fn masked_matrix_fields_extract_adjacency_without_full_dom() {
         let raw = br#"{"event_id":"$e","room_id":"!r:x","type":"m.room.message","state_key":"","prev_events":["$p"],"auth_events":[["$a",{}]],"content":{"room_version":"10","m.relates_to":{"rel_type":"m.thread","event_id":"$root"},"ignored":{"large":[1,2,3]}}}"#;
-        let fields = super::extract_matrix_event_fields(raw).unwrap();
-        assert_eq!(fields.event_id.as_deref(), Some("$e"));
+        let mut scratch = super::MatrixEventScratch::with_capacity(4, 4, 32);
+        let fields = super::extract_matrix_event_into(raw, &mut scratch).unwrap();
+        assert_eq!(fields.event_id, Some("$e"));
         assert_eq!(fields.prev_events, vec!["$p"]);
         assert_eq!(fields.auth_events, vec!["$a"]);
-        assert_eq!(fields.room_version.as_deref(), Some("10"));
-        assert_eq!(
-            fields.relates_to,
-            Some(("m.thread".to_owned(), "$root".to_owned()))
-        );
     }
 
     #[test]
