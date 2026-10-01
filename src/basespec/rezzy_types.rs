@@ -2940,7 +2940,7 @@ fn is_msc4242_room_version(room_version: &str) -> bool {
 /// Delegates to [`RoomVersionFormat::uses_v12_create_rules`] for the
 /// authoritative capability check, falling back to `false` for unparsable
 /// version strings.
-fn room_version_is_v12_or_later(room_version: &str) -> bool {
+pub(crate) fn room_version_is_v12_or_later(room_version: &str) -> bool {
     RoomVersionFormat::parse(room_version).is_some_and(RoomVersionFormat::uses_v12_create_rules)
 }
 
