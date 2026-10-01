@@ -79,6 +79,9 @@ pub const ADJACENCY_MASK: FieldMask<'static> = FieldMask {
 ///   An oversized `prev_events` or `auth_events` array grows its corresponding
 ///   `Vec`; callers requiring a strict zero-allocation pass must provision
 ///   capacities for the largest expected arrays.
+/// - Reference IDs in `prev_events` and `auth_events` must use unescaped JSON
+///   strings. Escaped reference IDs are rejected regardless of available
+///   capacity; they are not part of the zero-allocation extraction contract.
 /// - Each `*_buf` `String` is cleared and written in-place as long as the decoded
 ///   value fits within the existing allocated capacity.
 ///
@@ -171,7 +174,8 @@ impl MatrixEventScratch<'_> {
 /// `*_buf` field of the [`MatrixEventScratch`] (`'buf`) when decoding was required.
 ///
 /// `prev_events` and `auth_events` borrow from the scratch's `Vec` storage.
-/// Escaped IDs in reference arrays are rejected explicitly.
+/// Escaped IDs in reference arrays are rejected explicitly, regardless of
+/// scratch capacity.
 ///
 /// The view is valid for the shorter of `'buf` and `'a`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
