@@ -6,6 +6,8 @@
 //! still untrusted (no auth chain, no proof they are current).
 
 use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::auth::AuthError;
 use crate::json::Value;
@@ -18,6 +20,46 @@ fn is_pdu(ev: &Value) -> bool {
         .all(|k| ev.get(k).is_some())
         && ev.get("type").is_some_and(|v| v.as_str().is_some())
         && ev.get("sender").is_some_and(|v| v.as_str().is_some())
+}
+
+/// Per-event half of the validation; `Err` is a phrase completing "event N ...".
+fn check_event(ev: &Value, room_id: &str, room_version: &str) -> Result<(), String> {
+    if !is_pdu(ev) {
+        return Err(String::from("is not a PDU"));
+    }
+    let is_create = ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
+    let in_room =
+        if is_create && crate::basespec::rezzy_types::room_version_is_v12_or_later(room_version) {
+            // The room ID is derived from the create event itself.
+            let hash = crate::basespec::rezzy_types::reference_hash(ev, room_version)?;
+            room_id.strip_prefix('!') == Some(hash.as_str())
+        } else {
+            ev.get("room_id").and_then(Value::as_str) == Some(room_id)
+        };
+    if in_room {
+        Ok(())
+    } else {
+        Err(String::from("is for a different room"))
+    }
+}
+
+/// Knock variant: drops every event that fails the per-event checks and
+/// keeps the rest (MSC4311 says servers SHOULD do this for `knock_room_state`;
+/// the knock itself has already happened, so there is nothing to reject).
+/// A missing create event is not an error here. Returns the number dropped.
+/// Unsupported room versions drop everything.
+pub fn retain_valid_stripped_state(
+    room_id: &str,
+    room_version: &str,
+    events: &mut Vec<Value>,
+) -> usize {
+    let before = events.len();
+    if crate::StateResVersion::from_room_version(room_version).is_none() {
+        events.clear();
+    } else {
+        events.retain(|ev| check_event(ev, room_id, room_version).is_ok());
+    }
+    before.saturating_sub(events.len())
 }
 
 /// Validates `events` (the federation `invite_room_state`) against `room_id`.
@@ -42,30 +84,12 @@ pub fn validate_stripped_state(
             "unsupported room version {room_version}"
         )));
     }
-    let v12 = crate::basespec::rezzy_types::room_version_is_v12_or_later(room_version);
-
     let mut create_seen = false;
     for (index, ev) in events.iter().enumerate() {
-        if !is_pdu(ev) {
-            return Err(AuthError::InvalidSyntax(format!(
-                "stripped state event {index} is not a PDU"
-            )));
-        }
-        let is_create = ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
-        let in_room = if is_create && v12 {
-            // The room ID is derived from the create event itself.
-            let hash = crate::basespec::rezzy_types::reference_hash(ev, room_version)
-                .map_err(AuthError::InvalidSyntax)?;
-            room_id.strip_prefix('!') == Some(hash.as_str())
-        } else {
-            ev.get("room_id").and_then(Value::as_str) == Some(room_id)
-        };
-        if !in_room {
-            return Err(AuthError::InvalidSyntax(format!(
-                "stripped state event {index} is for a different room"
-            )));
-        }
-        create_seen |= is_create;
+        check_event(ev, room_id, room_version).map_err(|why| {
+            AuthError::InvalidSyntax(format!("stripped state event {index} {why}"))
+        })?;
+        create_seen |= ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
     }
     if !create_seen {
         return Err(AuthError::MissingCreate);
@@ -87,6 +111,20 @@ mod tests {
     fn v10_accepts_matching_room() {
         let evs = [pdu("m.room.create", "!r:x"), pdu("m.room.name", "!r:x")];
         assert_eq!(validate_stripped_state("!r:x", "10", &evs), Ok(()));
+    }
+
+    #[test]
+    fn knock_filter_drops_bad_events_only() {
+        let mut evs = alloc::vec![
+            pdu("m.room.create", "!r:x"),
+            pdu("m.room.name", "!other:x"),
+            json!({"type": "m.room.topic", "content": {}}),
+        ];
+        assert_eq!(retain_valid_stripped_state("!r:x", "10", &mut evs), 2);
+        assert_eq!(evs.len(), 1);
+        let mut none: Vec<Value> = alloc::vec![pdu("m.room.name", "!r:x")];
+        assert_eq!(retain_valid_stripped_state("!r:x", "10", &mut none), 0);
+        assert_eq!(retain_valid_stripped_state("!r:x", "nope", &mut none), 1);
     }
 
     #[test]
