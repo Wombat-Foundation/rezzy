@@ -117,6 +117,9 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y pkg-config libdbus-1-dev
+
       - name: Lint
         run: CARGO_FEATURE_ARGS="--locked --all-features" make lint
 
@@ -145,6 +148,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pkg-config libdbus-1-dev
           pip install pre-commit
           npm install -g prettier@3.6.2 markdownlint-cli@0.43.0
           cargo install cargo-sort
