@@ -115,7 +115,7 @@ fn hamt_to_state_map(root: &StateHamt) -> SharedStateMap {
 /// internal violation of the HAMT builder's invariants.
 #[allow(clippy::too_many_lines)]
 #[must_use]
-pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
+pub fn run_hamt_live_walk(ctx: &FormattingContext<'_>) -> HamtLiveWalkOutput {
     let debug = ctx.args.debug;
     let total = ctx.event_count;
     let progress_interval = if debug { 10_000 } else { 50_000 };
@@ -495,7 +495,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
 /// Format the output for HAMT roots and unique nodes.
 #[must_use]
-pub fn format_hamt_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn format_hamt_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     if ctx.event_count == 0 || ctx.events_map.is_empty() {
         return rezzy::json!({
             "roots": [],
@@ -511,7 +511,7 @@ pub fn format_hamt_output(ctx: &FormattingContext) -> rezzy::JsonValue {
 
 /// Format the output for deltas.
 #[must_use]
-pub fn format_deltas_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn format_deltas_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     if ctx.event_count == 0 || ctx.events_map.is_empty() {
         return rezzy::json!([]);
     }
@@ -586,7 +586,7 @@ pub fn compute_component_roots(
 }
 
 /// Format the summary output.
-pub fn format_summary_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn format_summary_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     let mut state_entries: Vec<rezzy::JsonValue> = Vec::new();
     let mut members: HashMap<String, Vec<rezzy::JsonValue>> = HashMap::new();
 
@@ -696,7 +696,7 @@ pub fn format_summary_output(ctx: &FormattingContext) -> rezzy::JsonValue {
     })
 }
 
-fn format_resolve_state_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+fn format_resolve_state_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     let resolved_state: Vec<rezzy::JsonValue> = resolved_state_entries(ctx.final_state_map)
         .into_iter()
         .map(|entry| {
@@ -983,7 +983,7 @@ fn warn_once(quiet: bool, message: &str) {
 
 /// Format the timeline output.
 /// Render the timeline to a string, applying only authorized redactions.
-fn render_timeline(ctx: &FormattingContext) -> String {
+fn render_timeline(ctx: &FormattingContext<'_>) -> String {
     let events = prepare_timeline_events(ctx);
     let order = match ctx.args.timeline_order {
         TimelineOrder::Causal => sort_timeline_causal(ctx.args, ctx.stream_order, &events),
@@ -993,7 +993,7 @@ fn render_timeline(ctx: &FormattingContext) -> String {
 }
 
 /// Render the timestamp-primary human view (`-f timeline-chronological`).
-fn render_timeline_chronological(ctx: &FormattingContext) -> String {
+fn render_timeline_chronological(ctx: &FormattingContext<'_>) -> String {
     let mut events = prepare_timeline_events(ctx);
     sort_timeline_chronological(&mut events);
     let order: Vec<usize> = (0..events.len()).collect();
@@ -1001,7 +1001,7 @@ fn render_timeline_chronological(ctx: &FormattingContext) -> String {
 }
 
 /// Collect events and apply only authorized redactions.
-fn prepare_timeline_events(ctx: &FormattingContext) -> Vec<LeanEvent> {
+fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
     // Owned copy of the events so the authorized redaction pass can mutate the
     // in-set targets in place. The resolved room state below is what the
     // redaction pass needs to authorize each redaction.
@@ -1168,7 +1168,7 @@ fn reorder_by_kahn(
 }
 
 fn render_timeline_events(
-    ctx: &FormattingContext,
+    ctx: &FormattingContext<'_>,
     events: &[LeanEvent],
     order: &[usize],
 ) -> String {
@@ -1256,7 +1256,7 @@ fn render_timeline_events(
 
 /// Format the timeline output, printing the rendered timeline to stderr.
 #[must_use]
-pub fn format_timeline_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn format_timeline_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     eprint!("{}", render_timeline(ctx));
     rezzy::json!({
         "status": "success",
@@ -1268,7 +1268,7 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> rezzy::JsonValue {
 
 #[must_use]
 /// Brief public API.
-pub fn format_timeline_chronological_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn format_timeline_chronological_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     eprint!("{}", render_timeline_chronological(ctx));
     rezzy::json!({
         "status": "success",
@@ -1286,7 +1286,7 @@ const fn format_name(order: TimelineOrder) -> &'static str {
 
 /// Format the main CLI output.
 #[must_use]
-pub fn format_cli_output(ctx: &FormattingContext) -> rezzy::JsonValue {
+pub fn format_cli_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     match ctx.args.format {
         OutputFormat::Deltas => format_deltas_output(ctx),
         OutputFormat::Summary => format_summary_output(ctx),
