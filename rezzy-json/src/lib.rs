@@ -881,7 +881,7 @@ impl<'a> Tokenizer<'a> {
             .get(self.pos)
             .is_some_and(u8::is_ascii_whitespace)
         {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
     }
 
@@ -914,8 +914,8 @@ impl<'a> Tokenizer<'a> {
             }
             b'"' => {
                 let s = self.string()?;
-                if self.depth > 0 && self.expecting_key[self.depth - 1] {
-                    self.expecting_key[self.depth - 1] = false;
+                if self.depth > 0 && self.expecting_key[self.depth.saturating_sub(1)] {
+                    self.expecting_key[self.depth.saturating_sub(1)] = false;
                     Ok(Some(Token::Key(s)))
                 } else {
                     Ok(Some(Token::String(s)))
@@ -926,16 +926,16 @@ impl<'a> Tokenizer<'a> {
                     return Err(TokenizerError::DepthLimitExceeded);
                 }
                 self.expecting_key[self.depth] = false;
-                self.depth += 1;
-                self.pos += 1;
+                self.depth = self.depth.saturating_add(1);
+                self.pos = self.pos.saturating_add(1);
                 Ok(Some(Token::ArrayStart))
             }
             b']' => {
                 if self.depth == 0 {
                     return Err(TokenizerError::InvalidToken);
                 }
-                self.depth -= 1;
-                self.pos += 1;
+                self.depth = self.depth.saturating_sub(1);
+                self.pos = self.pos.saturating_add(1);
                 Ok(Some(Token::ArrayEnd))
             }
             b'{' => {
@@ -943,30 +943,30 @@ impl<'a> Tokenizer<'a> {
                     return Err(TokenizerError::DepthLimitExceeded);
                 }
                 self.expecting_key[self.depth] = true;
-                self.depth += 1;
-                self.pos += 1;
+                self.depth = self.depth.saturating_add(1);
+                self.pos = self.pos.saturating_add(1);
                 Ok(Some(Token::ObjectStart))
             }
             b'}' => {
                 if self.depth == 0 {
                     return Err(TokenizerError::InvalidToken);
                 }
-                self.depth -= 1;
-                self.pos += 1;
+                self.depth = self.depth.saturating_sub(1);
+                self.pos = self.pos.saturating_add(1);
                 Ok(Some(Token::ObjectEnd))
             }
             b':' => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 Ok(Some(Token::Colon))
             }
             b',' => {
-                self.pos += 1;
-                if self.depth > 0 && !self.expecting_key[self.depth - 1] {
-                    self.expecting_key[self.depth - 1] = true;
+                self.pos = self.pos.saturating_add(1);
+                if self.depth > 0 && !self.expecting_key[self.depth.saturating_sub(1)] {
+                    self.expecting_key[self.depth.saturating_sub(1)] = true;
                 }
                 Ok(Some(Token::Comma))
             }
-            b'-' | b'0'..=b'9' => self.number().map(|n| Some(Token::Number(n))),
+            b'-' | b'0'..=b'9' => Ok(Some(Token::Number(self.number()))),
             _ => Err(TokenizerError::InvalidToken),
         }
     }
@@ -1002,7 +1002,7 @@ impl<'a> Tokenizer<'a> {
             }
             b'[' => self.skip_array()?,
             b'{' => self.skip_object()?,
-            b'-' | b'0'..=b'9' => self.skip_number()?,
+            b'-' | b'0'..=b'9' => self.skip_number(),
             _ => return Err(TokenizerError::InvalidToken),
         }
         Ok(&self.input[start..self.pos])
@@ -1014,12 +1014,12 @@ impl<'a> Tokenizer<'a> {
             return Err(TokenizerError::DepthLimitExceeded);
         }
         self.expecting_key[self.depth] = true;
-        self.depth += 1;
-        self.pos += 1; // skip '{'
+        self.depth = self.depth.saturating_add(1);
+        self.pos = self.pos.saturating_add(1); // skip '{'
         self.ws();
         if self.input.get(self.pos) == Some(&b'}') {
-            self.depth -= 1;
-            self.pos += 1;
+            self.depth = self.depth.saturating_sub(1);
+            self.pos = self.pos.saturating_add(1);
             return Ok(());
         }
         loop {
@@ -1032,14 +1032,14 @@ impl<'a> Tokenizer<'a> {
             if self.input.get(self.pos) != Some(&b':') {
                 return Err(TokenizerError::InvalidToken);
             }
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             self.skip_value()?;
             self.ws();
             match self.input.get(self.pos) {
-                Some(b',') => self.pos += 1,
+                Some(b',') => self.pos = self.pos.saturating_add(1),
                 Some(b'}') => {
-                    self.depth -= 1;
-                    self.pos += 1;
+                    self.depth = self.depth.saturating_sub(1);
+                    self.pos = self.pos.saturating_add(1);
                     break;
                 }
                 _ => return Err(TokenizerError::InvalidToken),
@@ -1054,22 +1054,22 @@ impl<'a> Tokenizer<'a> {
             return Err(TokenizerError::DepthLimitExceeded);
         }
         self.expecting_key[self.depth] = false;
-        self.depth += 1;
-        self.pos += 1; // skip '['
+        self.depth = self.depth.saturating_add(1);
+        self.pos = self.pos.saturating_add(1); // skip '['
         self.ws();
         if self.input.get(self.pos) == Some(&b']') {
-            self.depth -= 1;
-            self.pos += 1;
+            self.depth = self.depth.saturating_sub(1);
+            self.pos = self.pos.saturating_add(1);
             return Ok(());
         }
         loop {
             self.skip_value()?;
             self.ws();
             match self.input.get(self.pos) {
-                Some(b',') => self.pos += 1,
+                Some(b',') => self.pos = self.pos.saturating_add(1),
                 Some(b']') => {
-                    self.depth -= 1;
-                    self.pos += 1;
+                    self.depth = self.depth.saturating_sub(1);
+                    self.pos = self.pos.saturating_add(1);
                     break;
                 }
                 _ => return Err(TokenizerError::InvalidToken),
@@ -1080,7 +1080,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Parses a string without unescaping, returning the raw content slice.
     fn string_raw(&mut self) -> Result<&'a [u8], TokenizerError> {
-        self.pos += 1; // skip opening quote
+        self.pos = self.pos.saturating_add(1); // skip opening quote
         let start = self.pos;
         loop {
             let b = *self
@@ -1090,26 +1090,26 @@ impl<'a> Tokenizer<'a> {
             match b {
                 b'"' => {
                     let slice = &self.input[start..self.pos];
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     return Ok(slice);
                 }
                 b'\\' => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     let _ = self
                         .input
                         .get(self.pos)
                         .ok_or(TokenizerError::UnexpectedEnd)?;
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                 }
                 0..=0x1f => return Err(TokenizerError::InvalidString),
-                _ => self.pos += 1,
+                _ => self.pos = self.pos.saturating_add(1),
             }
         }
     }
 
     /// Parses a string, unescaping it, returning the unescaped bytes.
     fn string(&mut self) -> Result<&'a [u8], TokenizerError> {
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1);
         let start = self.pos;
         loop {
             let b = *self
@@ -1119,7 +1119,7 @@ impl<'a> Tokenizer<'a> {
             match b {
                 b'"' => {
                     let slice = &self.input[start..self.pos];
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     return Ok(slice);
                 }
                 b'\\' => {
@@ -1127,34 +1127,36 @@ impl<'a> Tokenizer<'a> {
                         .input
                         .get(self.pos)
                         .ok_or(TokenizerError::UnexpectedEnd)?;
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                 }
                 0..=0x1f => return Err(TokenizerError::InvalidString),
-                _ => self.pos += 1,
+                _ => self.pos = self.pos.saturating_add(1),
             }
         }
     }
 
-    fn skip_number(&mut self) -> Result<(), TokenizerError> {
+    fn skip_number(&mut self) {
         while self
             .input
             .get(self.pos)
             .is_some_and(|b| matches!(b, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9'))
         {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
-        Ok(())
     }
 
-    fn number(&mut self) -> Result<&'a [u8], TokenizerError> {
+    fn number(&mut self) -> &'a [u8] {
         let start = self.pos;
-        self.skip_number()?;
-        Ok(&self.input[start..self.pos])
+        self.skip_number();
+        &self.input[start..self.pos]
     }
 
     fn word(&mut self, expected: &[u8]) -> Result<(), TokenizerError> {
-        if self.input.get(self.pos..self.pos + expected.len()) == Some(expected) {
-            self.pos += expected.len();
+        let Some(end) = self.pos.checked_add(expected.len()) else {
+            return Err(TokenizerError::UnexpectedEnd);
+        };
+        if self.input.get(self.pos..end) == Some(expected) {
+            self.pos = end;
             Ok(())
         } else {
             Err(TokenizerError::InvalidToken)
@@ -1245,7 +1247,7 @@ impl<'a> ValueRef<'a> {
             b'[' => Self::parse_masked_array(tokenizer, mask, current_prefix),
             b'{' => Self::parse_masked_object(tokenizer, mask, current_prefix),
             b'-' | b'0'..=b'9' => {
-                let n = tokenizer.number()?;
+                let n = tokenizer.number();
                 let n = core::str::from_utf8(n).map_err(|_| TokenizerError::InvalidNumber)?;
                 Ok(Self::Number(n))
             }
@@ -1258,20 +1260,20 @@ impl<'a> ValueRef<'a> {
         mask: &FieldMask<'_>,
         current_prefix: &str,
     ) -> Result<Self, TokenizerError> {
-        tokenizer.pos += 1;
+        tokenizer.pos = tokenizer.pos.saturating_add(1);
         tokenizer.ws();
         let mut items = Vec::new();
         if tokenizer.input.get(tokenizer.pos) == Some(&b']') {
-            tokenizer.pos += 1;
+            tokenizer.pos = tokenizer.pos.saturating_add(1);
             return Ok(Self::Array(items));
         }
         loop {
             items.push(Self::parse_masked_value(tokenizer, mask, current_prefix)?);
             tokenizer.ws();
             match tokenizer.input.get(tokenizer.pos) {
-                Some(b',') => tokenizer.pos += 1,
+                Some(b',') => tokenizer.pos = tokenizer.pos.saturating_add(1),
                 Some(b']') => {
-                    tokenizer.pos += 1;
+                    tokenizer.pos = tokenizer.pos.saturating_add(1);
                     break;
                 }
                 _ => return Err(TokenizerError::InvalidToken),
@@ -1285,11 +1287,11 @@ impl<'a> ValueRef<'a> {
         mask: &FieldMask<'_>,
         current_prefix: &str,
     ) -> Result<Self, TokenizerError> {
-        tokenizer.pos += 1;
+        tokenizer.pos = tokenizer.pos.saturating_add(1);
         tokenizer.ws();
         let mut fields = Vec::new();
         if tokenizer.input.get(tokenizer.pos) == Some(&b'}') {
-            tokenizer.pos += 1;
+            tokenizer.pos = tokenizer.pos.saturating_add(1);
             return Ok(Self::Object(fields));
         }
         loop {
@@ -1312,7 +1314,7 @@ impl<'a> ValueRef<'a> {
             if tokenizer.input.get(tokenizer.pos) != Some(&b':') {
                 return Err(TokenizerError::InvalidToken);
             }
-            tokenizer.pos += 1;
+            tokenizer.pos = tokenizer.pos.saturating_add(1);
 
             if should_extract {
                 let value = Self::parse_masked_value(tokenizer, mask, &field_path)?;
@@ -1323,9 +1325,9 @@ impl<'a> ValueRef<'a> {
 
             tokenizer.ws();
             match tokenizer.input.get(tokenizer.pos) {
-                Some(b',') => tokenizer.pos += 1,
+                Some(b',') => tokenizer.pos = tokenizer.pos.saturating_add(1),
                 Some(b'}') => {
-                    tokenizer.pos += 1;
+                    tokenizer.pos = tokenizer.pos.saturating_add(1);
                     break;
                 }
                 _ => return Err(TokenizerError::InvalidToken),
