@@ -24,6 +24,7 @@ pub trait Gf64Evaluator {
 }
 
 #[derive(Clone, Copy)]
+/// Brief public API.
 pub struct ScalarEvaluator;
 
 impl Gf64Evaluator for ScalarEvaluator {
@@ -165,6 +166,7 @@ unsafe fn gf64_mul_x4_avx512(a: __m512i, b: __m512i) -> __m512i {
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
+/// Brief public API.
 pub struct SseEvaluator;
 
 #[cfg(target_arch = "x86_64")]
@@ -178,9 +180,12 @@ impl Gf64Evaluator for SseEvaluator {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub enum EvaluatorBackend {
+    /// Brief public API.
     Scalar,
     #[cfg(target_arch = "x86_64")]
+    /// Brief public API.
     Sse,
     #[cfg(all(target_arch = "x86_64", has_avx512_support))]
     Avx512,
@@ -216,6 +221,7 @@ fn get_evaluator_with_cache(cache: &core::sync::atomic::AtomicU8) -> EvaluatorBa
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[must_use]
+/// Brief public API.
 pub fn get_evaluator() -> EvaluatorBackend {
     get_evaluator_with_cache(&BACKEND)
 }

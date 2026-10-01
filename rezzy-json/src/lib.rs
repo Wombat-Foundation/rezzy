@@ -19,12 +19,16 @@ use core::{
     ops::{Index, IndexMut},
 };
 
+/// Brief public API.
 pub type Object = BTreeMap<String, Value>;
 
+/// Brief public API.
 pub const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+/// Brief public API.
 pub const MIN_SAFE_INTEGER: i64 = -((1_i64 << 53) - 1);
 
 #[must_use]
+/// Brief public API.
 pub fn is_canonical_integer_str(value: &str) -> bool {
     let digits = value.strip_prefix('-').unwrap_or(value);
     if digits.is_empty()
@@ -42,13 +46,20 @@ pub fn is_canonical_integer_str(value: &str) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
+/// Brief public API.
 pub enum Value {
     #[default]
+    /// Brief public API.
     Null,
+    /// Brief public API.
     Bool(bool),
+    /// Brief public API.
     Number(Number),
+    /// Brief public API.
     String(String),
+    /// Brief public API.
     Array(Vec<Self>),
+    /// Brief public API.
     Object(Object),
 }
 
@@ -59,6 +70,7 @@ impl PartialEq<&str> for Value {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub struct Number(String);
 
 impl Number {
@@ -82,6 +94,7 @@ impl Number {
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
@@ -91,26 +104,31 @@ impl Number {
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn as_i64(&self) -> Option<i64> {
         self.0.parse().ok()
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn as_u64(&self) -> Option<u64> {
         self.0.parse().ok()
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn as_f64(&self) -> Option<f64> {
         self.0.parse().ok()
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn is_canonical_integer(&self) -> bool {
         is_canonical_integer_str(self.as_str())
     }
@@ -146,12 +164,14 @@ impl fmt::Display for Number {
 
 impl Value {
     #[must_use]
+    /// Brief public API.
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Object(obj) => obj.get(key),
             _ => None,
         }
     }
+    /// Brief public API.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Self> {
         match self {
             Self::Object(obj) => obj.get_mut(key),
@@ -159,12 +179,14 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_object(&self) -> Option<&Object> {
         match self {
             Self::Object(obj) => Some(obj),
             _ => None,
         }
     }
+    /// Brief public API.
     pub fn as_object_mut(&mut self) -> Option<&mut Object> {
         match self {
             Self::Object(obj) => Some(obj),
@@ -172,6 +194,7 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
@@ -179,6 +202,7 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s),
@@ -186,6 +210,7 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
@@ -193,6 +218,7 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Number(n) => n.as_i64(),
@@ -200,6 +226,7 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Number(n) => n.as_u64(),
@@ -207,6 +234,7 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Self::Number(n) => n.as_f64(),
@@ -214,25 +242,31 @@ impl Value {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
     #[must_use]
+    /// Brief public API.
     pub const fn is_array(&self) -> bool {
         matches!(self, Self::Array(_))
     }
     #[must_use]
+    /// Brief public API.
     pub const fn is_object(&self) -> bool {
         matches!(self, Self::Object(_))
     }
     #[must_use]
+    /// Brief public API.
     pub fn is_i64(&self) -> bool {
         self.as_i64().is_some()
     }
     #[must_use]
+    /// Brief public API.
     pub fn is_u64(&self) -> bool {
         self.as_u64().is_some()
     }
+    /// Brief public API.
     pub fn insert(&mut self, key: String, value: Self) -> Option<Self> {
         self.as_object_mut()?.insert(key, value)
     }
@@ -375,6 +409,7 @@ impl From<f64> for Value {
 }
 
 #[macro_export]
+/// Brief public API.
 macro_rules! json {
     (null) => { $crate::Value::Null };
     ([ $($values:tt)* ]) => {{
@@ -428,18 +463,22 @@ macro_rules! json {
     ($value:expr) => { $crate::to_value($value) };
 }
 
+/// Brief public API.
 pub fn to_value(value: impl Into<Value>) -> Value {
     value.into()
 }
 #[must_use]
+/// Brief public API.
 pub const fn empty_array() -> Vec<Value> {
     Vec::new()
 }
 #[must_use]
+/// Brief public API.
 pub const fn empty_object() -> Object {
     Object::new()
 }
 #[must_use]
+/// Brief public API.
 pub fn key(value: &str) -> String {
     value.to_string()
 }
@@ -806,44 +845,74 @@ pub struct Tokenizer<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub enum Token<'a> {
+    /// Brief public API.
     Null,
+    /// Brief public API.
     Bool(bool),
+    /// Brief public API.
     Number(&'a [u8]),
+    /// Brief public API.
     String(&'a [u8]),
+    /// Brief public API.
     ArrayStart,
+    /// Brief public API.
     ArrayEnd,
+    /// Brief public API.
     ObjectStart,
+    /// Brief public API.
     ObjectEnd,
+    /// Brief public API.
     Key(&'a [u8]),
+    /// Brief public API.
     Colon,
+    /// Brief public API.
     Comma,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub enum TokenizerError {
+    /// Brief public API.
     UnexpectedEnd,
+    /// Brief public API.
     InvalidToken,
+    /// Brief public API.
     InvalidNumber,
+    /// Brief public API.
     InvalidString,
+    /// Brief public API.
     InvalidEscape,
+    /// Brief public API.
     DepthLimitExceeded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub enum ValueType {
+    /// Brief public API.
     Null,
+    /// Brief public API.
     Bool,
+    /// Brief public API.
     Number,
+    /// Brief public API.
     String,
+    /// Brief public API.
     Array,
+    /// Brief public API.
     Object,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub struct MemberSpan<'a> {
+    /// Brief public API.
     pub key: Cow<'a, str>,
+    /// Brief public API.
     pub raw_value: &'a [u8],
+    /// Brief public API.
     pub value_type: ValueType,
 }
 
@@ -854,9 +923,11 @@ impl fmt::Display for TokenizerError {
 }
 
 impl<'a> Tokenizer<'a> {
+    /// Brief public API.
     pub const MAX_DEPTH: usize = 128;
 
     #[must_use]
+    /// Brief public API.
     pub const fn new(input: &'a [u8]) -> Self {
         Self {
             input,
@@ -868,11 +939,13 @@ impl<'a> Tokenizer<'a> {
     }
 
     #[must_use]
+    /// Brief public API.
     pub const fn position(&self) -> usize {
         self.pos
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn remaining(&self) -> &'a [u8] {
         &self.input[self.pos..]
     }
@@ -1391,11 +1464,13 @@ pub fn unescape_raw_string(input: &[u8], out: &mut String) -> Result<(), Tokeniz
 /// A field mask for selective parsing - specifies which JSON paths to extract.
 #[derive(Clone, Debug, Default)]
 pub struct FieldMask<'a> {
+    /// Brief public API.
     pub paths: &'a [&'a str],
 }
 
 impl FieldMask<'_> {
     #[must_use]
+    /// Brief public API.
     pub fn allows_prefix(&self, prefix: &str) -> bool {
         if self.paths.is_empty() {
             return true;
@@ -1411,6 +1486,7 @@ impl FieldMask<'_> {
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn matches_segments(&self, segments: &[&str]) -> bool {
         if self.paths.is_empty() || segments.is_empty() {
             return true;
@@ -1430,11 +1506,17 @@ impl FieldMask<'_> {
 /// input slice. Unselected fields are skipped entirely without allocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ValueRef<'a> {
+    /// Brief public API.
     Null,
+    /// Brief public API.
     Bool(bool),
+    /// Brief public API.
     Number(&'a str),
+    /// Brief public API.
     String(&'a str),
+    /// Brief public API.
     Array(Vec<Self>),
+    /// Brief public API.
     Object(Vec<(&'a str, Self)>),
 }
 
@@ -1576,6 +1658,7 @@ impl<'a> ValueRef<'a> {
 
 impl<'a> ValueRef<'a> {
     #[must_use]
+    /// Brief public API.
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Object(obj) => obj.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
@@ -1583,6 +1666,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
@@ -1590,6 +1674,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_number(&self) -> Option<&'a str> {
         match self {
             Self::Number(n) => Some(n),
@@ -1597,6 +1682,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_str(&self) -> Option<&'a str> {
         match self {
             Self::String(s) => Some(s),
@@ -1604,6 +1690,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
@@ -1611,19 +1698,28 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Brief public API.
 pub enum Error {
+    /// Brief public API.
     UnexpectedEnd,
+    /// Brief public API.
     InvalidToken,
+    /// Brief public API.
     InvalidNumber,
+    /// Brief public API.
     InvalidString,
+    /// Brief public API.
     InvalidEscape,
+    /// Brief public API.
     TrailingCharacters,
+    /// Brief public API.
     DepthLimitExceeded,
 }
 
@@ -1646,6 +1742,7 @@ impl From<TokenizerError> for Error {
     }
 }
 
+/// Brief public API.
 pub const MAX_DEPTH: usize = 128;
 
 // Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each

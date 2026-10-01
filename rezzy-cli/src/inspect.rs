@@ -6,6 +6,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::path::{Path, PathBuf};
 
 #[must_use]
+/// Brief public API.
 pub fn command() -> Command {
     Command::new("inspect")
         .about("Inspect local Matrix JSONL exports")

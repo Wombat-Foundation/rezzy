@@ -52,8 +52,11 @@ const OVER_CAPACITY_DELTA_FLOOR: u64 = (STRATUM_CAPACITY as u64) + 1;
 /// One localized sketch request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BucketRequest {
+    /// Brief public API.
     pub depth: u8,
+    /// Brief public API.
     pub prefix: u64,
+    /// Brief public API.
     pub capacity: usize,
     /// Explicit overflow marker. Must be set to `true` only after the overflow
     /// request validation path passes. Never infer from `capacity` alone.
@@ -87,14 +90,18 @@ impl BucketRequest {
 /// Roots recovered from one independently decoded bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketDecodeSuccess {
+    /// Brief public API.
     pub depth: u8,
+    /// Brief public API.
     pub prefix: u64,
+    /// Brief public API.
     pub roots: Vec<u64>,
 }
 
 /// Partial result of decoding a concatenated bucket sketch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketDecodeBatch {
+    /// Brief public API.
     pub successful_buckets: Vec<BucketDecodeSuccess>,
     /// Each entry is `(depth, prefix)` — the full bucket identifier, not prefix alone.
     pub failed_buckets: Vec<(u8, u64)>,

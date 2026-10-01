@@ -35,6 +35,7 @@ struct Options {
 }
 
 #[must_use]
+/// Brief public API.
 pub fn command() -> Command {
     Command::new("aggregate")
         .about("Aggregate canonical Matrix event JSONL files without changing inputs")

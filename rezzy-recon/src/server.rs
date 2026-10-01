@@ -286,6 +286,7 @@ pub fn build_bucket_sketches(
 // Sketch Builder and Budget Planner Logic
 // =========================================================================
 
+/// Brief public API.
 pub struct SketchPolicy {
     /// Maximum total elements to process across all returned sketches.
     pub max_aggregate_work: usize,
@@ -293,8 +294,11 @@ pub struct SketchPolicy {
     pub hard_fallback_threshold: usize,
 }
 
+/// Brief public API.
 pub enum SketchResult {
+    /// Brief public API.
     Success(Vec<(SyndromeSketch, BucketRequest)>),
+    /// Brief public API.
     FallbackToRangeSync,
 }
 
@@ -306,6 +310,7 @@ pub struct SketchBuilder<'a> {
 
 impl<'a> SketchBuilder<'a> {
     #[must_use]
+    /// Brief public API.
     pub const fn new(index: &'a H64Index<'a>, policy: SketchPolicy) -> Self {
         Self { index, policy }
     }

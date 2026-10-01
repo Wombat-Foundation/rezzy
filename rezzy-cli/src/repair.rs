@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[must_use]
+/// Brief public API.
 pub fn command() -> Command {
     Command::new("repair-ids")
         .about("Fill missing Matrix event IDs in a JSONL export")
@@ -264,7 +265,9 @@ pub fn write_event_ids(path: &Path, ids: &[String]) -> Result<(), AppError> {
 /// Which reference list an event ID came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceKind {
+    /// Brief public API.
     PrevEvents,
+    /// Brief public API.
     AuthEvents,
 }
 
@@ -284,7 +287,9 @@ impl ReferenceKind {
 pub struct MissingReference {
     /// The referencing event (empty when it has no usable `event_id`).
     pub event_id: String,
+    /// Brief public API.
     pub kind: ReferenceKind,
+    /// Brief public API.
     pub missing: Vec<String>,
 }
 

@@ -43,16 +43,27 @@ const EVENT_HASH_ENCODED_LEN: usize = 43;
 /// An invalid event identifier, wire digest, or sketch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlgebraicError {
+    /// Brief public API.
     InvalidEventId,
+    /// Brief public API.
     InvalidBase64,
+    /// Brief public API.
     InvalidDigestLength,
+    /// Brief public API.
     InvalidSketchCapacity,
+    /// Brief public API.
     InvalidSketchLength,
+    /// Brief public API.
     DecodeFailure,
+    /// Brief public API.
     BudgetExhausted,
+    /// Brief public API.
     ZeroShortIdentifier,
+    /// Brief public API.
     InvalidBucketIndex,
+    /// Brief public API.
     CountOverflow,
+    /// Brief public API.
     CountUnderflow,
 }
 
@@ -216,6 +227,7 @@ pub struct RoomAccumulator {
 
 impl RoomAccumulator {
     #[must_use]
+    /// Brief public API.
     pub const fn new() -> Self {
         Self {
             digest: 0,
@@ -223,10 +235,12 @@ impl RoomAccumulator {
         }
     }
     #[must_use]
+    /// Brief public API.
     pub const fn digest(self) -> u128 {
         self.digest
     }
     #[must_use]
+    /// Brief public API.
     pub const fn known_event_count(self) -> u64 {
         self.count
     }
@@ -258,6 +272,7 @@ impl RoomAccumulator {
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn encode_digest(self) -> String {
         URL_SAFE_NO_PAD.encode(self.digest.to_be_bytes())
     }
@@ -284,6 +299,7 @@ impl RoomAccumulator {
     }
 
     #[must_use]
+    /// Brief public API.
     pub const fn residual(self, other: Self) -> u128 {
         self.digest ^ other.digest
     }
@@ -371,10 +387,12 @@ impl SyndromeSketch {
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn capacity(&self) -> usize {
         self.coordinates.len()
     }
     #[must_use]
+    /// Brief public API.
     pub fn coordinates(&self) -> &[u64] {
         &self.coordinates
     }
@@ -516,6 +534,7 @@ impl SyndromeSketch {
     }
 
     #[must_use]
+    /// Brief public API.
     pub fn encode(&self) -> String {
         let byte_len = self.coordinates.len().checked_mul(8).unwrap_or(0);
         let mut bytes = Vec::with_capacity(byte_len);

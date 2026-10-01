@@ -13,19 +13,25 @@
 // limitations under the License.
 
 #![cfg_attr(all(coverage_nightly, test), feature(coverage_attribute))]
+//! Command-line utilities for working with Rezzy state data.
 
 #[macro_use]
 pub mod error;
 pub mod aggregate;
 #[cfg(feature = "tls")]
 pub mod federation;
+/// Brief public API.
 pub mod format;
 pub mod inspect;
+/// Brief public API.
 pub mod jsonl_merge;
+/// Brief public API.
 pub mod network;
 pub mod provenance;
 pub mod repair;
+/// Brief public API.
 pub mod timeline_order;
+/// Brief public API.
 pub mod utils;
 
 /// HTTP client identity sent by Rezzy's outbound requests.
@@ -47,29 +53,39 @@ use utils::{
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
+/// Brief public API.
 pub struct Args {
+    /// Brief public API.
     pub input: Vec<PathBuf>,
 
+    /// Brief public API.
     pub room: Option<String>,
 
+    /// Brief public API.
     pub homeserver: Option<String>,
 
     /// Matrix access token. Falls back to per-domain env var (e.g. `MTOKEN_MATRIX_UNREDACTED_ORG`)
     pub token: Option<String>,
 
+    /// Brief public API.
     pub output: Option<PathBuf>,
 
+    /// Brief public API.
     pub state_res: Option<StateResVersion>,
 
+    /// Brief public API.
     pub format: OutputFormat,
 
+    /// Brief public API.
     pub debug: bool,
 
+    /// Brief public API.
     pub quiet: bool,
 
     /// Validate input only; suppress state output and exit.
     pub check: bool,
 
+    /// Brief public API.
     pub origin: String,
 
     /// Ordering for `-f timeline`.

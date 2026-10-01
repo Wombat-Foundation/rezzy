@@ -26,19 +26,33 @@ use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Brief public API.
 pub struct FormattingContext<'a> {
+    /// Brief public API.
     pub args: &'a Args,
+    /// Brief public API.
     pub events_map: &'a HashMap<String, LeanEvent>,
+    /// Brief public API.
     pub raw_map: &'a HashMap<String, rezzy::JsonValue>,
+    /// Brief public API.
     pub heads: &'a [String],
+    /// Brief public API.
     pub final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
+    /// Brief public API.
     pub resolved_state_list: &'a [String],
+    /// Brief public API.
     pub auth_chain_ids: &'a [String],
+    /// Brief public API.
     pub auth_graph: &'a rezzy::auth::roaring::AuthGraph,
+    /// Brief public API.
     pub version: StateResVersion,
+    /// Brief public API.
     pub room_version: Option<&'a str>,
+    /// Brief public API.
     pub duration: std::time::Duration,
+    /// Brief public API.
     pub event_count: usize,
+    /// Brief public API.
     pub stream_order: Option<&'a StreamOrderIndex>,
 }
 
@@ -58,8 +72,11 @@ fn format_structural_hash(hash: &StructuralHash) -> String {
 
 /// Output of a live event walk over the DAG.
 pub struct HamtLiveWalkOutput {
+    /// Brief public API.
     pub roots: Vec<rezzy::JsonValue>,
+    /// Brief public API.
     pub nodes: Vec<rezzy::JsonValue>,
+    /// Brief public API.
     pub checkpoints: Vec<rezzy::JsonValue>,
 }
 
@@ -1250,6 +1267,7 @@ pub fn format_timeline_output(ctx: &FormattingContext) -> rezzy::JsonValue {
 }
 
 #[must_use]
+/// Brief public API.
 pub fn format_timeline_chronological_output(ctx: &FormattingContext) -> rezzy::JsonValue {
     eprint!("{}", render_timeline_chronological(ctx));
     rezzy::json!({

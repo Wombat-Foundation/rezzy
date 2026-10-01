@@ -33,6 +33,7 @@ pub use rezzy::{
     RawEventSpan, ADJACENCY_MASK,
 };
 
+/// Brief public API.
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
 
 /// Parse a room version string.
@@ -499,6 +500,7 @@ pub fn compute_state_maps<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher
     }
 }
 
+/// Brief public API.
 pub type ResolvedState = imbl::OrdMap<(EventType, String), String>;
 
 /// Resolve parent states for a set of events.
