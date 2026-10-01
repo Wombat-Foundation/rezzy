@@ -1888,8 +1888,7 @@ pub mod causal {
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    for (label, keys) in
-                        [("bit", &bit_keys as &[Hash]), ("dense", &dense as &[Hash])]
+                    for (label, keys) in [("bit", bit_keys.as_slice()), ("dense", dense.as_slice())]
                     {
                         let mut forward = CausalSet::empty();
                         for &k in keys {

@@ -134,8 +134,9 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
         // `u32::MAX`), silently losing one addressable slot. For `Idx = usize`,
         // the cast is a no-op and `usize::MAX + 1` overflows; saturating keeps
         // the bound at `usize::MAX`, which no real universe reaches.
-        #[allow(clippy::unnecessary_cast)]
-        let bound = (Idx::MAX as usize).saturating_add(1);
+        let bound = usize::try_from(Idx::MAX)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
         Self::try_build_bounded(universe, bound)
     }
 

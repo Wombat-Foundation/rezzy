@@ -1299,13 +1299,14 @@ impl<Id> Default for RedactionReport<Id> {
 pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
     id: &Id,
 ) -> alloc::borrow::Cow<'_, str> {
-    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::string::String>() {
+    let any: &dyn core::any::Any = id;
+    if let Some(s) = any.downcast_ref::<alloc::string::String>() {
         return alloc::borrow::Cow::Borrowed(s.as_str());
     }
-    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::sync::Arc<str>>() {
+    if let Some(s) = any.downcast_ref::<alloc::sync::Arc<str>>() {
         return alloc::borrow::Cow::Borrowed(s.as_ref());
     }
-    if let Some(s) = (id as &dyn core::any::Any).downcast_ref::<alloc::boxed::Box<str>>() {
+    if let Some(s) = any.downcast_ref::<alloc::boxed::Box<str>>() {
         return alloc::borrow::Cow::Borrowed(s.as_ref());
     }
     alloc::borrow::Cow::Owned(alloc::string::ToString::to_string(id))
