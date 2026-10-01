@@ -474,7 +474,7 @@ impl ReconciliationClient {
     /// significant.
     #[must_use]
     pub fn with_max_aggregate_capacity(mut self, max_aggregate_capacity: usize) -> Self {
-        self.max_aggregate_capacity = max_aggregate_capacity;
+        self.max_aggregate_capacity = max_aggregate_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY);
         self.gate_threshold = derive_gate_threshold(self.max_rounds, max_aggregate_capacity);
         self
     }

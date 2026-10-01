@@ -19,6 +19,7 @@ use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
     Engine as _,
 };
+use core::fmt::Write as _;
 use sha2::{Digest as Sha2Digest, Sha256};
 
 pub use super::gf64::mul as gf64_mul;
@@ -296,7 +297,25 @@ impl RoomAccumulator {
             "[{}]",
             extremities
                 .iter()
-                .map(|s| alloc::format!("\"{s}\""))
+                .map(|s| {
+                    let mut escaped = alloc::string::String::new();
+                    for ch in s.chars() {
+                        match ch {
+                            '"' => escaped.push_str("\\\""),
+                            '\\' => escaped.push_str("\\\\"),
+                            '\u{08}' => escaped.push_str("\\b"),
+                            '\u{0c}' => escaped.push_str("\\f"),
+                            '\n' => escaped.push_str("\\n"),
+                            '\r' => escaped.push_str("\\r"),
+                            '\t' => escaped.push_str("\\t"),
+                            c if c.is_control() => {
+                                let _ = write!(escaped, "\\u{:04x}", c as u32);
+                            }
+                            c => escaped.push(c),
+                        }
+                    }
+                    alloc::format!("\"{escaped}\"")
+                })
                 .collect::<alloc::vec::Vec<_>>()
                 .join(",")
         );

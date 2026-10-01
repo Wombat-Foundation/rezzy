@@ -3,7 +3,7 @@
 use crate::error::{AppError, ErrorCode};
 use crate::jsonl_merge::merge_event_slices;
 use crate::provenance::{self, RawObservation, SourceInfo};
-use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap::{builder::TypedValueParser, Arg, ArgAction, ArgMatches, Command};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
@@ -48,6 +48,13 @@ pub fn command() -> Command {
             Arg::new("room")
                 .long("room")
                 .conflicts_with("input")
+                .value_parser(clap::builder::StringValueParser::new().try_map(|room| {
+                    if room.is_empty() {
+                        Err("room must not be empty".to_owned())
+                    } else {
+                        Ok(room)
+                    }
+                }))
                 .help("Room slug to select from --input-dir; omit to aggregate every room found there"),
         )
         .arg(
@@ -138,6 +145,9 @@ fn json_bytes(value: &rezzy::JsonValue) -> Result<Vec<u8>, AppError> {
 }
 
 fn filename_matches_room(path: &Path, room: &str) -> bool {
+    if room.is_empty() {
+        return false;
+    }
     let Some(name) = path.file_stem().map(|name| name.to_string_lossy()) else {
         return false;
     };
@@ -450,7 +460,13 @@ fn read_raw_input_with_repair(
             .map_err(|e| AppError::new(ErrorCode::MalformedJson, format!("{label}: {e}")))?
             .trim();
         if !line.is_empty() {
-            events.push(rezzy::JsonValue::parse(line)?);
+            let event = rezzy::JsonValue::parse(line).map_err(|e| {
+                AppError::new(
+                    ErrorCode::MalformedJson,
+                    format!("{label}: line {}: {e}", index.saturating_add(1)),
+                )
+            })?;
+            events.push(event);
             line_numbers.push(index.saturating_add(1));
             line_hashes.push(provenance::sha256_hex(line.as_bytes()));
         }
