@@ -76,6 +76,9 @@ pub const ADJACENCY_MASK: FieldMask<'static> = FieldMask {
 /// - `prev_events` and `auth_events` are cleared (O(1)) and refilled without
 ///   reallocating as long as the new event has ≤ the previously seen maximum
 ///   number of parent references.
+///   An oversized `prev_events` or `auth_events` array grows its corresponding
+///   `Vec`; callers requiring a strict zero-allocation pass must provision
+///   capacities for the largest expected arrays.
 /// - Each `*_buf` `String` is cleared and written in-place as long as the decoded
 ///   value fits within the existing allocated capacity.
 ///
