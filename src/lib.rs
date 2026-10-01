@@ -63,6 +63,7 @@ pub mod cuckoo_verify;
 pub mod dense_index;
 pub mod hamt;
 pub mod merkle;
+pub mod raw_event;
 pub mod resolve;
 #[cfg(any(feature = "signing", feature = "signing-dalek"))]
 pub mod signing;
@@ -72,6 +73,7 @@ pub mod warnings;
 pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
+pub use raw_event::*;
 pub use resolve::*;
 pub use rezzy_json::{
     write_raw_canonical_filtered, write_string_value_filtered, Error as JsonError, FieldMask,
