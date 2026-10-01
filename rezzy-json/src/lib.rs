@@ -21,6 +21,21 @@ use core::{
 
 pub type Object = BTreeMap<String, Value>;
 
+pub const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+pub const MIN_SAFE_INTEGER: i64 = -((1_i64 << 53) - 1);
+
+#[must_use]
+pub fn is_canonical_integer_str(value: &str) -> bool {
+    if value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+        return false;
+    }
+    value.parse::<i64>().is_ok_and(|number| {
+        (MIN_SAFE_INTEGER..=i64::try_from(MAX_SAFE_INTEGER).unwrap_or(i64::MAX)).contains(&number)
+    }) || value
+        .parse::<u64>()
+        .is_ok_and(|number| number <= MAX_SAFE_INTEGER)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum Value {
     #[default]
@@ -85,6 +100,11 @@ impl Number {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    #[must_use]
+    pub fn is_canonical_integer(&self) -> bool {
+        is_canonical_integer_str(self.as_str())
     }
 }
 
@@ -557,11 +577,15 @@ where
 ///
 /// # Errors
 /// Returns [`Error`] when `input` is malformed JSON.
-pub fn write_raw_canonical_filtered<F>(input: &[u8], mut exclude: F) -> Result<String, Error>
+fn write_raw_canonical_filtered_internal<F>(
+    input: &[u8],
+    mut exclude: F,
+    strict: bool,
+) -> Result<String, Error>
 where
     F: FnMut(&str) -> bool,
 {
-    fn emit<F>(raw: &[u8], out: &mut String, exclude: &mut F) -> Result<(), Error>
+    fn emit<F>(raw: &[u8], out: &mut String, exclude: &mut F, strict: bool) -> Result<(), Error>
     where
         F: FnMut(&str) -> bool,
     {
@@ -599,7 +623,7 @@ where
                     let key = Value::String(member.key.into_owned());
                     out.push_str(&write_string_value(&key).map_err(|_| Error::InvalidString)?);
                     out.push(':');
-                    emit(member.raw_value, out, exclude)?;
+                    emit(member.raw_value, out, exclude, strict)?;
                 }
                 out.push('}');
             }
@@ -615,7 +639,7 @@ where
                         out.push(',');
                     }
                     first = false;
-                    emit(&tokenizer.input[start..tokenizer.pos], out, exclude)?;
+                    emit(&tokenizer.input[start..tokenizer.pos], out, exclude, strict)?;
                     tokenizer.ws();
                     if tokenizer.input.get(tokenizer.pos) == Some(&b',') {
                         tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
@@ -629,6 +653,16 @@ where
                 }
                 out.push(']');
             }
+            Some(b'-' | b'0'..=b'9') if strict => {
+                let text = core::str::from_utf8(raw).map_err(|_| Error::InvalidNumber)?;
+                if !is_canonical_integer_str(text) {
+                    return Err(Error::InvalidNumber);
+                }
+                out.push_str(
+                    &write_string_value(&Value::parse_bytes(raw)?)
+                        .map_err(|_| Error::InvalidString)?,
+                );
+            }
             Some(_) => out.push_str(
                 &write_string_value(&Value::parse_bytes(raw)?).map_err(|_| Error::InvalidString)?,
             ),
@@ -637,8 +671,36 @@ where
         Ok(())
     }
     let mut output = String::new();
-    emit(input, &mut output, &mut exclude)?;
+    emit(input, &mut output, &mut exclude, strict)?;
     Ok(output)
+}
+
+/// Canonicalizes JSON from raw spans with caller-supplied field exclusion.
+///
+/// # Errors
+/// Returns [`Error`] when the input is malformed JSON or cannot be
+/// canonicalized.
+pub fn write_raw_canonical_filtered<F>(input: &[u8], exclude: F) -> Result<String, Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    write_raw_canonical_filtered_internal(input, exclude, false)
+}
+
+/// Canonicalizes JSON after enforcing Matrix's strict canonical-number rules.
+///
+/// Strict mode accepts only integer spellings without fractions or exponents,
+/// and limits values to `[-(2^53 - 1), 2^53 - 1]`. Numeric spans are checked
+/// directly without constructing a DOM.
+///
+/// # Errors
+/// Returns [`Error::InvalidNumber`] when a number violates those rules, or a
+/// parsing error for malformed JSON.
+pub fn write_raw_canonical_filtered_strict<F>(input: &[u8], exclude: F) -> Result<String, Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    write_raw_canonical_filtered_internal(input, exclude, true)
 }
 
 /// Writes `value` as indented, human-readable JSON.
@@ -1178,8 +1240,24 @@ impl FieldMask<'_> {
         }
         self.paths.iter().any(|p| {
             *p == prefix
-                || p.starts_with(&alloc::format!("{prefix}."))
-                || prefix.starts_with(&alloc::format!("{p}."))
+                || p.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('.'))
+                || prefix
+                    .strip_prefix(p)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
+
+    #[must_use]
+    pub fn matches_segments(&self, segments: &[&str]) -> bool {
+        if self.paths.is_empty() || segments.is_empty() {
+            return true;
+        }
+        self.paths.iter().any(|path| {
+            segments
+                .iter()
+                .zip(path.split('.'))
+                .all(|(segment, part)| *segment == part)
         })
     }
 }
@@ -1207,7 +1285,8 @@ impl<'a> ValueRef<'a> {
     /// paths are invalid.
     pub fn parse_masked(input: &'a [u8], mask: &FieldMask<'_>) -> Result<Self, TokenizerError> {
         let mut tokenizer = Tokenizer::new(input);
-        let value = Self::parse_masked_value(&mut tokenizer, mask, "")?;
+        let mut segments = Vec::new();
+        let value = Self::parse_masked_value(&mut tokenizer, mask, &mut segments)?;
         tokenizer.ws();
         if tokenizer.position() != tokenizer.input.len() {
             return Err(TokenizerError::InvalidToken);
@@ -1218,7 +1297,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_value(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        current_prefix: &str,
+        segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
         tokenizer.ws();
         match tokenizer
@@ -1244,8 +1323,8 @@ impl<'a> ValueRef<'a> {
                 let s = core::str::from_utf8(s).map_err(|_| TokenizerError::InvalidString)?;
                 Ok(Self::String(s))
             }
-            b'[' => Self::parse_masked_array(tokenizer, mask, current_prefix),
-            b'{' => Self::parse_masked_object(tokenizer, mask, current_prefix),
+            b'[' => Self::parse_masked_array(tokenizer, mask, segments),
+            b'{' => Self::parse_masked_object(tokenizer, mask, segments),
             b'-' | b'0'..=b'9' => {
                 let n = tokenizer.number();
                 let n = core::str::from_utf8(n).map_err(|_| TokenizerError::InvalidNumber)?;
@@ -1258,7 +1337,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_array(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        current_prefix: &str,
+        segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
         tokenizer.pos = tokenizer.pos.saturating_add(1);
         tokenizer.ws();
@@ -1268,7 +1347,7 @@ impl<'a> ValueRef<'a> {
             return Ok(Self::Array(items));
         }
         loop {
-            items.push(Self::parse_masked_value(tokenizer, mask, current_prefix)?);
+            items.push(Self::parse_masked_value(tokenizer, mask, segments)?);
             tokenizer.ws();
             match tokenizer.input.get(tokenizer.pos) {
                 Some(b',') => tokenizer.pos = tokenizer.pos.saturating_add(1),
@@ -1285,7 +1364,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_object(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        current_prefix: &str,
+        segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
         tokenizer.pos = tokenizer.pos.saturating_add(1);
         tokenizer.ws();
@@ -1302,13 +1381,8 @@ impl<'a> ValueRef<'a> {
             let key_bytes = tokenizer.string_raw()?;
             let key = core::str::from_utf8(key_bytes).map_err(|_| TokenizerError::InvalidString)?;
 
-            let field_path = if current_prefix.is_empty() {
-                String::from(key)
-            } else {
-                alloc::format!("{current_prefix}.{key}")
-            };
-
-            let should_extract = mask.allows_prefix(&field_path);
+            segments.push(key);
+            let should_extract = mask.matches_segments(segments);
 
             tokenizer.ws();
             if tokenizer.input.get(tokenizer.pos) != Some(&b':') {
@@ -1317,11 +1391,12 @@ impl<'a> ValueRef<'a> {
             tokenizer.pos = tokenizer.pos.saturating_add(1);
 
             if should_extract {
-                let value = Self::parse_masked_value(tokenizer, mask, &field_path)?;
+                let value = Self::parse_masked_value(tokenizer, mask, segments)?;
                 fields.push((key, value));
             } else {
                 tokenizer.skip_value()?;
             }
+            let _ = segments.pop();
 
             tokenizer.ws();
             match tokenizer.input.get(tokenizer.pos) {
@@ -1676,9 +1751,10 @@ fn valid_number(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        write_raw_canonical_filtered, write_string_pretty, write_string_value,
-        write_string_value_filtered, Value,
+        write_raw_canonical_filtered, write_raw_canonical_filtered_strict, write_string_pretty,
+        write_string_value, write_string_value_filtered, Error, Value,
     };
+    use alloc::string::String;
 
     #[test]
     fn parses_nested_values_and_sorts_object_keys() {
@@ -1744,6 +1820,30 @@ mod tests {
             write_raw_canonical_filtered(input, |key| key == "skip").unwrap(),
             r#"{"a":-0.0,"b":[{"a":3,"z":2}],"z":10.0}"#
         );
+    }
+
+    #[test]
+    fn strict_raw_writer_enforces_safe_integer_bounds_and_spelling() {
+        assert_eq!(
+            write_raw_canonical_filtered_strict(
+                br#"{"min":-9007199254740991,"max":9007199254740991}"#,
+                |_| false,
+            )
+            .unwrap(),
+            r#"{"max":9007199254740991,"min":-9007199254740991}"#
+        );
+        for input in [
+            br"9007199254740992".as_slice(),
+            br"-9007199254740992".as_slice(),
+            br#"{"nested":[0,9007199254740992]}"#.as_slice(),
+        ] {
+            assert_eq!(
+                write_raw_canonical_filtered_strict(input, |_| false),
+                Err(Error::InvalidNumber),
+                "accepted non-canonical number: {}",
+                String::from_utf8_lossy(input)
+            );
+        }
     }
 
     #[test]
