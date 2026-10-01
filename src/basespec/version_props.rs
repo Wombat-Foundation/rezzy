@@ -47,6 +47,8 @@
 // Redaction algorithm
 //   - V1-V10: original redaction rules
 //   - V11:    clarified redaction algorithm
+//   - org.matrix.msc3389.10: V10 rules plus `m.relates_to.{rel_type,event_id}`
+//             preserved on every event type (`msc3389_redaction_rule`)
 //   - V12:    `m.room.redaction` events are subject to auth rules via
 //             `events` / `events_default` in `m.room.power_levels`
 // Authoritative: `RoomVersionFormat::uses_v11_redaction_rules`;

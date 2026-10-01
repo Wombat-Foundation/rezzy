@@ -182,7 +182,7 @@ impl StateResVersion {
         let format = RoomVersionFormat::parse(ver)?;
         Some(match format {
             RoomVersionFormat::Numeric(1) => Self::V1,
-            RoomVersionFormat::Numeric(2..=11) => Self::V2,
+            RoomVersionFormat::Numeric(2..=11) | RoomVersionFormat::Msc3389 => Self::V2,
             RoomVersionFormat::Numeric(12) if ver == "12.1" => Self::V2_1_1,
             RoomVersionFormat::Numeric(12) => Self::V2_1,
             RoomVersionFormat::Msc4242 => Self::V2_2,
@@ -309,6 +309,10 @@ enum RoomVersionFormat {
     /// The MSC4242 experimental room version (`"org.matrix.msc4242.12"`),
     /// which uses State DAGs and has its own event format.
     Msc4242,
+    /// The MSC3389 experimental room version (`"org.matrix.msc3389.10"`):
+    /// room v10 plus relation-preserving redaction (`m.relates_to.rel_type`
+    /// and `m.relates_to.event_id` survive on every event type).
+    Msc3389,
     /// Rezzy's experimental certified-causal-governance room version.
     NutraCdo,
 }
@@ -334,6 +338,7 @@ impl RoomVersionFormat {
             "11" => Some(Self::Numeric(11)),
             "12" | "12.1" => Some(Self::Numeric(12)),
             "org.matrix.msc4242.12" => Some(Self::Msc4242),
+            "org.matrix.msc3389.10" => Some(Self::Msc3389),
             "tk.nutra.cdo.12" => Some(Self::NutraCdo),
             _ => None,
         }
@@ -347,7 +352,8 @@ impl RoomVersionFormat {
     /// (a v12-derived format — see `redaction_preserved_keys`).
     #[must_use]
     const fn requires_strict_canonical_numbers(self) -> bool {
-        matches!(self, Self::Numeric(v) if v >= 6) || matches!(self, Self::Msc4242 | Self::NutraCdo)
+        matches!(self, Self::Numeric(v) if v >= 6)
+            || matches!(self, Self::Msc4242 | Self::Msc3389 | Self::NutraCdo)
     }
 
     /// Returns `true` for room versions that use v11 redaction rules (v11+),
@@ -431,6 +437,7 @@ mod room_version_format_tests {
             ("12", RoomVersionFormat::Numeric(12)),
             ("12.1", RoomVersionFormat::Numeric(12)),
             ("org.matrix.msc4242.12", RoomVersionFormat::Msc4242),
+            ("org.matrix.msc3389.10", RoomVersionFormat::Msc3389),
         ];
         for (input, expected) in cases {
             assert_eq!(
@@ -564,8 +571,13 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
     let Some(format) = RoomVersionFormat::parse(room_version) else {
         return RedactionRule::None;
     };
+    if format == RoomVersionFormat::Msc3389 {
+        return msc3389_redaction_rule(event_type);
+    }
     let ver_num: u32 = match format {
         RoomVersionFormat::Numeric(n) => n,
+        // Handled by the early return above; v10 is the nearest numeric rule set.
+        RoomVersionFormat::Msc3389 => 10,
         // MSC4242 inherits v11's redaction rules verbatim.
         RoomVersionFormat::Msc4242 | RoomVersionFormat::NutraCdo => 11,
     };
@@ -644,6 +656,54 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
     }
 }
 
+/// Redaction rules for `org.matrix.msc3389.10`: exactly room v10's per-type
+/// tables, each extended with `m.relates_to.rel_type` and
+/// `m.relates_to.event_id` (MSC3389). Spelled out as static slices because
+/// [`RedactionRule::Keys`] borrows `'static` data.
+fn msc3389_redaction_rule(event_type: &str) -> RedactionRule {
+    use crate::basespec::event_types::{
+        M_ROOM_CREATE, M_ROOM_HISTORY_VISIBILITY, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+        M_ROOM_POWER_LEVELS,
+    };
+    match event_type {
+        M_ROOM_CREATE => {
+            RedactionRule::Keys(&["creator", "m.relates_to.rel_type", "m.relates_to.event_id"])
+        }
+        M_ROOM_MEMBER => RedactionRule::Keys(&[
+            "membership",
+            "join_authorised_via_users_server",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        M_ROOM_POWER_LEVELS => RedactionRule::Keys(&[
+            "ban",
+            "events",
+            "events_default",
+            "kick",
+            "redact",
+            "state_default",
+            "users",
+            "users_default",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        M_ROOM_JOIN_RULES => RedactionRule::Keys(&[
+            "join_rule",
+            "allow",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        M_ROOM_HISTORY_VISIBILITY => RedactionRule::Keys(&[
+            "history_visibility",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        // Every other type (including aliases and redactions) preserves no
+        // content in v10; the relation keys are the only survivors.
+        _ => RedactionRule::Keys(&["m.relates_to.rel_type", "m.relates_to.event_id"]),
+    }
+}
+
 /// Splits `content` into MSC4511's `redacted_content` (the fields this room
 /// version's redaction algorithm preserves) and `redactable_content` (every
 /// remaining field, i.e. what redaction strips), for the given event type and
@@ -709,7 +769,7 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
         RedactionRule::Keys(paths) => {
             let mut out = crate::json::Object::new();
             for path in paths {
-                if let Some((top, rest)) = path.split_once('.') {
+                if let Some((top, rest)) = path.rsplit_once('.') {
                     if let Some(Value::Object(inner)) = content.get(top) {
                         if let Some(v) = inner.get(rest) {
                             // Accumulate into the existing parent so paths sharing
@@ -740,10 +800,9 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
 /// them. v12+ (MSC4291) drops `room_id` on `m.room.create` (the room ID is
 /// derived from the event ID, so the create carries none).
 ///
-/// The unstable-version deviations are intentionally not modeled — rezzy
-/// handles the stable v1-v12 set, and their redaction identifiers
-/// (`org.matrix.msc3389.10` preserving `m.relates_to.{rel_type,event_id}`)
-/// are unrecognized and fail closed. `org.matrix.msc4242.12`'s swap of
+/// `org.matrix.msc3389.10`'s relation-preserving redaction is a content-level
+/// rule, modeled in [`redaction_preserved_keys`]; it needs no top-level change
+/// beyond v10's. `org.matrix.msc4242.12`'s swap of
 /// `auth_events` for `prev_state_events` is modeled in `redact_top_level`:
 /// the swapped-in field is preserved alongside `auth_events`.
 #[must_use]
@@ -4494,5 +4553,76 @@ mod cdo_content_tests {
             json!({"tk.nutra.cdo": {"active_member": ["$join"]}}).get_cdo_active_member(),
             None
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod msc3389_redaction_tests {
+    use super::{redact_json, redaction_preserved_keys, split_redaction_content, StateResVersion};
+    use crate::json::json;
+
+    const V: &str = "org.matrix.msc3389.10";
+
+    #[test]
+    fn preserves_only_relation_rel_type_and_event_id() {
+        let content = json!({
+            "body": "hi",
+            "m.relates_to": {"rel_type": "m.annotation", "event_id": "$t", "key": "x"}
+        });
+        let (kept, rest) = split_redaction_content(&content, "m.room.message", V);
+        assert_eq!(
+            kept,
+            json!({"m.relates_to": {"rel_type": "m.annotation", "event_id": "$t"}})
+        );
+        assert_eq!(rest, json!({"body": "hi", "m.relates_to": {"key": "x"}}));
+    }
+
+    #[test]
+    fn plain_event_without_relation_redacts_to_empty() {
+        let (kept, _) = split_redaction_content(&json!({"body": "hi"}), "m.room.message", V);
+        assert_eq!(kept, json!({}));
+    }
+
+    #[test]
+    fn keeps_v10_state_keys_not_v11() {
+        let content = json!({
+            "membership": "join",
+            "third_party_invite": {"signed": {"a": 1}},
+            "m.relates_to": {"rel_type": "r", "event_id": "$e"}
+        });
+        let (kept, _) = split_redaction_content(&content, "m.room.member", V);
+        assert_eq!(
+            kept,
+            json!({"membership": "join", "m.relates_to": {"rel_type": "r", "event_id": "$e"}})
+        );
+    }
+
+    #[test]
+    fn older_versions_do_not_preserve_relations() {
+        let content = json!({"m.relates_to": {"rel_type": "r", "event_id": "$e"}});
+        for v in ["10", "11"] {
+            assert_eq!(
+                redaction_preserved_keys("m.room.message", v),
+                super::RedactionRule::None
+            );
+            assert_eq!(
+                redact_json(
+                    &json!({"type":"m.room.message","content":content.clone()}),
+                    v
+                )["content"],
+                json!({})
+            );
+        }
+    }
+
+    #[test]
+    fn uses_v2_state_res_and_v10_top_level() {
+        assert_eq!(
+            StateResVersion::from_room_version(V),
+            Some(StateResVersion::V2)
+        );
+        let ev = json!({"type":"m.room.message","origin":"o","content":{}});
+        assert!(redact_json(&ev, V).get("origin").is_some());
     }
 }
