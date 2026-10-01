@@ -82,16 +82,15 @@ pub fn validate_stripped_state(
             AuthError::InvalidSyntax(format!("stripped state event {index} is not a PDU"))
         })?;
         if is_create && crate::basespec::rezzy_types::room_version_is_v12_or_later(room_version) {
-            let Some(explicit_room_id) = ev.get("room_id").and_then(Value::as_str) else {
+            let hash =
+                crate::basespec::rezzy_types::reference_hash(ev, room_version).map_err(|why| {
+                    AuthError::InvalidSyntax(format!("stripped state event {index} {why}"))
+                })?;
+            let actual = format!("!{hash}");
+            if actual != room_id {
                 return Err(AuthError::InvalidSyntax(format!(
-                    "stripped state event {index} m.room.create is missing room_id"
+                    "stripped state event {index} is for a different room"
                 )));
-            };
-            if explicit_room_id != room_id {
-                return Err(AuthError::CreateEventRoomIdMismatch {
-                    expected: String::from(room_id),
-                    actual: String::from(explicit_room_id),
-                });
             }
         }
         check_event(ev, room_id, room_version).map_err(|why| {
@@ -163,19 +162,20 @@ mod tests {
     }
 
     #[test]
-    fn v12_stripped_create_binds_explicit_room_id() {
-        let good = "!room-hash:example.org";
-        let create = pdu("m.room.create", good);
+    fn v12_room_id_must_be_create_hash() {
+        let mut create = pdu("m.room.create", "");
+        create.as_object_mut().unwrap().remove("room_id");
+        let hash = crate::basespec::rezzy_types::reference_hash(&create, "12").unwrap();
+        let good = alloc::format!("!{hash}");
         let mut name = pdu("m.room.name", &good);
         name["room_id"] = json!(good.clone());
         let evs = [create.clone(), name];
         assert_eq!(validate_stripped_state(&good, "12", &evs), Ok(()));
         assert_eq!(
             validate_stripped_state("!forged", "12", &evs),
-            Err(AuthError::CreateEventRoomIdMismatch {
-                expected: "!forged".into(),
-                actual: good.into(),
-            })
+            Err(AuthError::InvalidSyntax(
+                "stripped state event 0 is for a different room".into()
+            ))
         );
     }
 
