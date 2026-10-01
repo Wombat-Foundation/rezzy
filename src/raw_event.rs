@@ -61,6 +61,18 @@ pub struct MatrixEventFields {
     pub relates_to: Option<(String, String)>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatrixEventFieldsRef<'a> {
+    pub event_id: Option<&'a str>,
+    pub room_id: Option<&'a str>,
+    pub event_type: Option<&'a str>,
+    pub state_key: Option<&'a str>,
+    pub prev_events: Vec<&'a str>,
+    pub auth_events: Vec<&'a str>,
+    pub room_version: Option<&'a str>,
+    pub relates_to: Option<(&'a str, &'a str)>,
+}
+
 /// Spans of `pdus` and `auth_chain` arrays discovered within a federation transaction payload.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FederationSpans {
@@ -220,6 +232,53 @@ fn id_array(value: &ValueRef<'_>, key: &str) -> Vec<String> {
         .collect()
 }
 
+fn string_field_ref<'a>(value: &ValueRef<'a>, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(ValueRef::as_str)
+}
+
+fn id_array_ref<'a>(value: &ValueRef<'a>, key: &str) -> Vec<&'a str> {
+    value
+        .get(key)
+        .and_then(ValueRef::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.as_str().or_else(|| {
+                item.as_array()
+                    .and_then(|pair| pair.first())
+                    .and_then(ValueRef::as_str)
+            })
+        })
+        .collect()
+}
+
+/// Extracts adjacency fields while retaining references into `raw`.
+///
+/// # Errors
+/// Returns [`TokenizerError`] if the span is not valid JSON.
+pub fn extract_matrix_event_fields_ref(
+    raw: &[u8],
+) -> Result<MatrixEventFieldsRef<'_>, TokenizerError> {
+    let value = ValueRef::parse_masked(raw, &ADJACENCY_MASK)?;
+    let content = value.get("content");
+    let relates = content.and_then(|c| c.get("m.relates_to"));
+    Ok(MatrixEventFieldsRef {
+        event_id: string_field_ref(&value, "event_id"),
+        room_id: string_field_ref(&value, "room_id"),
+        event_type: string_field_ref(&value, "type"),
+        state_key: string_field_ref(&value, "state_key"),
+        prev_events: id_array_ref(&value, "prev_events"),
+        auth_events: id_array_ref(&value, "auth_events"),
+        room_version: content.and_then(|c| string_field_ref(c, "room_version")),
+        relates_to: relates.and_then(|r| {
+            Some((
+                string_field_ref(r, "rel_type")?,
+                string_field_ref(r, "event_id")?,
+            ))
+        }),
+    })
+}
+
 /// Extracts adjacency fields from one raw event span using the selective JSON API.
 ///
 /// # Errors
@@ -273,6 +332,16 @@ mod tests {
             fields.relates_to,
             Some(("m.thread".to_owned(), "$root".to_owned()))
         );
+
+        let fields_ref = extract_matrix_event_fields_ref(raw).unwrap();
+        assert_eq!(fields_ref.event_id, Some("$e"));
+        assert_eq!(fields_ref.room_id, Some("!r:x"));
+        assert_eq!(fields_ref.event_type, Some("m.room.message"));
+        assert_eq!(fields_ref.state_key, Some(""));
+        assert_eq!(fields_ref.prev_events, vec!["$p"]);
+        assert_eq!(fields_ref.auth_events, vec!["$a"]);
+        assert_eq!(fields_ref.room_version, Some("10"));
+        assert_eq!(fields_ref.relates_to, Some(("m.thread", "$root")));
     }
 
     #[test]
