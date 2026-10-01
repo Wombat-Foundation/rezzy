@@ -69,7 +69,8 @@ pub fn retain_valid_stripped_state(
 /// - Room v1-v11: every event's `room_id` must equal `room_id`.
 ///
 /// Signatures are not checked here (that needs the server's keys); callers
-/// should run [`crate::signing::verify_event_signatures`] on each event too.
+/// should run `signing::verify_event_signatures` on each event too when the
+/// signing feature is enabled.
 ///
 /// # Errors
 /// [`AuthError::MissingCreate`] when no create event is present, otherwise
@@ -86,10 +87,24 @@ pub fn validate_stripped_state(
     }
     let mut create_seen = false;
     for (index, ev) in events.iter().enumerate() {
+        let is_create = ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
+        if is_create && crate::basespec::rezzy_types::room_version_is_v12_or_later(room_version) {
+            let hash =
+                crate::basespec::rezzy_types::reference_hash(ev, room_version).map_err(|why| {
+                    AuthError::InvalidSyntax(format!("stripped state event {index} {why}"))
+                })?;
+            let actual = format!("!{hash}");
+            if actual != room_id {
+                return Err(AuthError::CreateEventRoomIdMismatch {
+                    expected: String::from(room_id),
+                    actual,
+                });
+            }
+        }
         check_event(ev, room_id, room_version).map_err(|why| {
             AuthError::InvalidSyntax(format!("stripped state event {index} {why}"))
         })?;
-        create_seen |= ev.get("type").and_then(Value::as_str) == Some(M_ROOM_CREATE);
+        create_seen |= is_create;
     }
     if !create_seen {
         return Err(AuthError::MissingCreate);
@@ -166,9 +181,40 @@ mod tests {
         assert_eq!(validate_stripped_state(&good, "12", &evs), Ok(()));
         assert_eq!(
             validate_stripped_state("!forged", "12", &evs),
-            Err(AuthError::InvalidSyntax(
-                "stripped state event 0 is for a different room".into()
-            ))
+            Err(AuthError::CreateEventRoomIdMismatch {
+                expected: "!forged".into(),
+                actual: good,
+            })
+        );
+    }
+
+    #[test]
+    fn v12_create_room_id_mismatch_has_specific_error() {
+        let mut create = pdu("m.room.create", "");
+        create.as_object_mut().unwrap().remove("room_id");
+
+        let error = validate_stripped_state("!not-the-create-hash", "12", &[create])
+            .expect_err("a create event with the wrong reference hash must fail");
+
+        assert_eq!(
+            error,
+            AuthError::CreateEventRoomIdMismatch {
+                expected: "!not-the-create-hash".into(),
+                actual: format!(
+                    "!{}",
+                    crate::basespec::rezzy_types::reference_hash(
+                        &json!({
+                            "type": "m.room.create",
+                            "sender": "@a:x",
+                            "content": {},
+                            "origin_server_ts": 1,
+                            "state_key": ""
+                        }),
+                        "12"
+                    )
+                    .unwrap()
+                ),
+            }
         );
     }
 }
