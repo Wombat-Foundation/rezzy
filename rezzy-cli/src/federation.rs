@@ -199,20 +199,21 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                     starts.extend(crate::repair::read_event_ids(path)?);
                 }
             }
-            get_remote_dag(
-                m.get_one::<String>("origin").expect("default"),
-                m.get_one::<String>("destination").expect("required"),
-                m.get_one::<String>("room").expect("required"),
-                &starts,
-                m.get_one::<String>("room-version").expect("default"),
-                *m.get_one::<i64>("limit").expect("default"),
-                m.get_one::<PathBuf>("output").expect("default"),
-                m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-                m.get_one::<String>("signing-key-keyring")
+            get_remote_dag(DagRequest {
+                origin: m.get_one::<String>("origin").expect("default"),
+                destination: m.get_one::<String>("destination").expect("required"),
+                room_id: m.get_one::<String>("room").expect("required"),
+                starts: &starts,
+                room_version: m.get_one::<String>("room-version").expect("default"),
+                limit: *m.get_one::<i64>("limit").expect("default"),
+                output: m.get_one::<PathBuf>("output").expect("default"),
+                key_path: m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+                keyring_account: m
+                    .get_one::<String>("signing-key-keyring")
                     .map(String::as_str),
-                m.get_flag("no-fallback"),
-                m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
-            )
+                no_fallback: m.get_flag("no-fallback"),
+                emit_missing: m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
+            })
         }
         Some(("gap-fill", m)) => {
             let inputs = m
@@ -220,19 +221,20 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 .expect("required")
                 .cloned()
                 .collect::<Vec<_>>();
-            gap_fill(
-                &inputs,
-                m.get_one::<String>("origin").expect("default"),
-                m.get_one::<String>("destination").expect("required"),
-                m.get_one::<String>("room").expect("required"),
-                m.get_one::<String>("room-version").expect("default"),
-                *m.get_one::<u32>("rounds").expect("default"),
-                m.get_one::<PathBuf>("output-dir").expect("required"),
-                m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-                m.get_one::<String>("signing-key-keyring")
+            gap_fill(GapFillRequest {
+                inputs: &inputs,
+                origin: m.get_one::<String>("origin").expect("default"),
+                destination: m.get_one::<String>("destination").expect("required"),
+                room_id: m.get_one::<String>("room").expect("required"),
+                room_version: m.get_one::<String>("room-version").expect("default"),
+                rounds: *m.get_one::<u32>("rounds").expect("default"),
+                output_dir: m.get_one::<PathBuf>("output-dir").expect("required"),
+                key_path: m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+                keyring_account: m
+                    .get_one::<String>("signing-key-keyring")
                     .map(String::as_str),
-                m.get_flag("no-fallback"),
-            )
+                no_fallback: m.get_flag("no-fallback"),
+            })
         }
         _ => Err(AppError::new(
             ErrorCode::MissingInputFlag,
@@ -607,19 +609,45 @@ fn is_unreachable(err: &AppError) -> bool {
 ///
 /// # Errors
 /// Returns an error if inputs cannot be read, requests fail, or outputs cannot be written.
-pub fn get_remote_dag(
-    origin: &str,
-    destination: &str,
-    room_id: &str,
-    starts: &[String],
-    room_version: &str,
-    limit: i64,
-    output: &Path,
-    key_path: Option<&Path>,
-    keyring_account: Option<&str>,
-    no_fallback: bool,
-    emit_missing: Option<&Path>,
-) -> Result<JsonValue, AppError> {
+pub struct DagRequest<'a> {
+    /// Origin server name used for signing.
+    pub origin: &'a str,
+    /// Destination server name.
+    pub destination: &'a str,
+    /// Room being crawled.
+    pub room_id: &'a str,
+    /// Initial event frontier.
+    pub starts: &'a [String],
+    /// Room version used for event hashing.
+    pub room_version: &'a str,
+    /// Maximum number of events to fetch.
+    pub limit: i64,
+    /// JSONL output path.
+    pub output: &'a Path,
+    /// Optional signing-key file.
+    pub key_path: Option<&'a Path>,
+    /// Optional keyring account.
+    pub keyring_account: Option<&'a str>,
+    /// Disable per-event fallback requests.
+    pub no_fallback: bool,
+    /// Optional unresolved-frontier output path.
+    pub emit_missing: Option<&'a Path>,
+}
+
+pub fn get_remote_dag(dag_request: DagRequest<'_>) -> Result<JsonValue, AppError> {
+    let DagRequest {
+        origin,
+        destination,
+        room_id,
+        starts,
+        room_version,
+        limit,
+        output,
+        key_path,
+        keyring_account,
+        no_fallback,
+        emit_missing,
+    } = dag_request;
     if starts.is_empty() {
         return Err(AppError::new(
             ErrorCode::MissingInputFlag,
@@ -842,21 +870,36 @@ pub fn get_remote_dag(
     Ok(result)
 }
 
+/// Parameters for filling missing references from a remote server.
+struct GapFillRequest<'a> {
+    inputs: &'a [PathBuf],
+    origin: &'a str,
+    destination: &'a str,
+    room_id: &'a str,
+    room_version: &'a str,
+    rounds: u32,
+    output_dir: &'a Path,
+    key_path: Option<&'a Path>,
+    keyring_account: Option<&'a str>,
+    no_fallback: bool,
+}
+
 /// Fetch missing timeline and authentication references for a bounded number
 /// of rounds. This intentionally writes fetched batches separately; callers
 /// can inspect or aggregate them without mutating the original input.
-fn gap_fill(
-    inputs: &[PathBuf],
-    origin: &str,
-    destination: &str,
-    room_id: &str,
-    room_version: &str,
-    rounds: u32,
-    output_dir: &Path,
-    key_path: Option<&Path>,
-    keyring_account: Option<&str>,
-    no_fallback: bool,
-) -> Result<JsonValue, AppError> {
+fn gap_fill(request: GapFillRequest<'_>) -> Result<JsonValue, AppError> {
+    let GapFillRequest {
+        inputs,
+        origin,
+        destination,
+        room_id,
+        room_version,
+        rounds,
+        output_dir,
+        key_path,
+        keyring_account,
+        no_fallback,
+    } = request;
     fs::create_dir_all(output_dir)?;
     let mut events = Vec::new();
     for input in inputs {
@@ -884,19 +927,19 @@ fn gap_fill(
         if !report.missing_prev.is_empty() {
             let path = round_dir.join("backfill.jsonl");
             let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
-            let summary = get_remote_dag(
+            let summary = get_remote_dag(DagRequest {
                 origin,
                 destination,
                 room_id,
-                &starts,
+                starts: &starts,
                 room_version,
-                -1,
-                &path,
+                limit: -1,
+                output: &path,
                 key_path,
                 keyring_account,
                 no_fallback,
-                None,
-            )?;
+                emit_missing: None,
+            })?;
             if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
                 failed_requests =
                     failed_requests.saturating_add(usize::try_from(n).unwrap_or(usize::MAX));
