@@ -902,7 +902,7 @@ mod tests {
             partition_state_maps([map.iter(), map.iter()].into_iter(), 2);
 
         assert_eq!(unconflicted.len(), 2);
-        assert_eq!(conflicted, [] as [std::string::String; 0]);
+        assert!(conflicted.is_empty());
     }
 
     #[test]

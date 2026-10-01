@@ -1116,7 +1116,7 @@ mod tests {
         let result = super::kahn_sort_diag(&events, rezzy::StateResVersion::V2);
         match result {
             KahnSortResult::CycleDetected { sorted, stuck } => {
-                assert_eq!(sorted, [] as [std::string::String; 0]);
+                assert!(sorted.is_empty());
                 assert_eq!(stuck.len(), 2);
                 let mut stuck_sorted = stuck.clone();
                 stuck_sorted.sort();

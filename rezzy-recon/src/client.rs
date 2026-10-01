@@ -1330,7 +1330,7 @@ mod tests {
             panic!("expected a partially drained request round");
         };
 
-        assert_eq!(accumulated_roots, [] as [u64; 0]);
+        assert!(accumulated_roots.is_empty());
         assert_eq!(requests, vec![BucketRequest::new(0, 0, 18)]);
         assert_eq!(exchange.pending_len(), 1);
         assert_eq!(exchange.rounds_emitted(), 1);

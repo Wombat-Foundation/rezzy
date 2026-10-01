@@ -485,7 +485,7 @@ fn test_walk_state_dag_incomplete_missing_gap() {
             reachable_event_ids,
         } => {
             assert_eq!(missing_event_ids, vec!["$create_missing"]);
-            assert_eq!(disconnected_event_ids, [] as [std::string::String; 0]);
+            assert!(disconnected_event_ids.is_empty());
             assert!(reachable_event_ids.contains(&"$join".to_string()));
             assert!(reachable_event_ids.contains(&"$pl".to_string()));
         }
@@ -518,7 +518,7 @@ fn test_walk_state_dag_incomplete_disconnected_leaf() {
             disconnected_event_ids,
             reachable_event_ids,
         } => {
-            assert_eq!(missing_event_ids, [] as [std::string::String; 0]);
+            assert!(missing_event_ids.is_empty());
             assert_eq!(disconnected_event_ids, vec!["$disconnected_pl"]);
             assert!(reachable_event_ids.contains(&"$join".to_string()));
             assert!(reachable_event_ids.contains(&"$disconnected_pl".to_string()));

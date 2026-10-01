@@ -157,8 +157,8 @@ fn test_lthash_short_circuit() {
     // Simulate identical roots.
     let (added, removed) =
         isolate_delta(&leaf1, &lattice_a, &leaf1, &lattice_b, &mut resolver).unwrap();
-    assert_eq!(added, [] as [(i32, i32); 0]);
-    assert_eq!(removed, [] as [(i32, i32); 0]);
+    assert!(added.is_empty());
+    assert!(removed.is_empty());
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn test_isolate_delta_resolves_lazy_child() {
     )
     .expect("delta should resolve lazy child");
 
-    assert_eq!(added, [] as [(u64, u64); 0]);
+    assert!(added.is_empty());
     assert_eq!(removed, vec![(1, 100)]);
 }
 
@@ -1685,7 +1685,7 @@ fn test_persist_mutations_noop_and_remove_existing() {
     )
     .expect("empty mutation batch should succeed");
     assert_eq!(same_root.structural_hash, root.structural_hash);
-    assert_eq!(displaced, [] as [core::option::Option<u64>; 0]);
+    assert!(displaced.is_empty());
     assert_eq!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
 
     let (removed_root, displaced, created) =
@@ -2010,8 +2010,8 @@ fn test_diff_hamt_nodes_shortcut() {
     // Identical structural hash fast-path
     let (added_same, removed_same) =
         crate::hamt::diff_hamt_nodes(&root_a, &root_a, &mut resolver).expect("diff should succeed");
-    assert_eq!(added_same, [] as [(u64, u64); 0]);
-    assert_eq!(removed_same, [] as [(u64, u64); 0]);
+    assert!(added_same.is_empty());
+    assert!(removed_same.is_empty());
 }
 
 #[test]
@@ -3101,7 +3101,7 @@ fn test_collect_all_leaves_recursion() {
 
     let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
-    assert_eq!(added, [] as [(i32, i32); 0]);
+    assert!(added.is_empty());
     assert_eq!(removed.len(), 1);
     assert!(removed.contains(&(1, 100)));
 }
@@ -3125,7 +3125,7 @@ fn test_collect_all_leaves_recursion_added_side() {
 
     let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
-    assert_eq!(removed, [] as [(i32, i32); 0]);
+    assert!(removed.is_empty());
     assert_eq!(added.len(), 1);
     assert!(added.contains(&(1, 100)));
 }
@@ -3154,15 +3154,15 @@ fn test_diff_nodes_fast_paths() {
     // node1 and node1 are the same Arc allocation.
     let (added1, removed1) =
         isolate_delta(&node1, &lattice_a, &node1, &lattice_b, &mut panic_resolver).unwrap();
-    assert_eq!(added1, [] as [(i32, i32); 0]);
-    assert_eq!(removed1, [] as [(i32, i32); 0]);
+    assert!(added1.is_empty());
+    assert!(removed1.is_empty());
 
     // -- Structural hash equality --
     // node1 and node2 are different Arcs, but have the exact same structural hash.
     let (added2, removed2) =
         isolate_delta(&node1, &lattice_a, &node2, &lattice_b, &mut panic_resolver).unwrap();
-    assert_eq!(added2, [] as [(i32, i32); 0]);
-    assert_eq!(removed2, [] as [(i32, i32); 0]);
+    assert!(added2.is_empty());
+    assert!(removed2.is_empty());
 }
 
 #[test]

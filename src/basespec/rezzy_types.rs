@@ -4102,10 +4102,7 @@ mod dag_node_tests {
             &["$prev1:example", "$prev2:example"]
         );
         // V2_2: must return empty — callers must not walk these as auth-chain edges.
-        assert_eq!(
-            ev.auth_chain_events(StateResVersion::V2_2),
-            &[] as &[String]
-        );
+        assert!(ev.auth_chain_events(StateResVersion::V2_2).is_empty());
     }
 
     /// `dag_edges` returns `prev_state_events` for `V2_2` and `auth_events`

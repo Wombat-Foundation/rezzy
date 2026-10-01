@@ -167,7 +167,7 @@ fn causal_non_inclusion_proof_rejects_member() {
 #[test]
 fn causal_non_inclusion_proof_on_empty_set() {
     let (d, path, terminal_depth, root, count) = empty_non_inclusion();
-    assert_eq!(path, [] as [rezzy::merkle::causal::CausalProofStep; 0]);
+    assert!(path.is_empty());
     assert_eq!(terminal_depth, 0);
     assert!(verify_causal_non_inclusion(
         &d,
@@ -380,7 +380,7 @@ fn compress_non_inclusion_on_empty_set() {
     let d = key(0xd4);
     let s = CausalSet::empty();
     let (path, terminal_depth, root, count) = non_inclusion_proof_of(&s, &d);
-    assert_eq!(path, [] as [rezzy::merkle::causal::CausalProofStep; 0]);
+    assert!(path.is_empty());
     assert_eq!(terminal_depth, 0);
     let compressed = compress_causal_path(terminal_depth, &path);
     assert_eq!(

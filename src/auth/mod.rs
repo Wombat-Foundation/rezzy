@@ -2543,7 +2543,7 @@ mod tests {
         );
         let event = make_test_event("$event", "m.room.name", "@creator:example.com", json!({}));
         let (accepted, rejected) = check_auth_chain(&[event], &initial_state, StateResVersion::V1);
-        assert_eq!(accepted, [] as [std::string::String; 0]);
+        assert!(accepted.is_empty());
         assert!(matches!(
             rejected.as_slice(),
             [(id, AuthError::InvalidSyntax(message))]
