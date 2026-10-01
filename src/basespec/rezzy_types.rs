@@ -1462,7 +1462,7 @@ pub fn ingest_events(
     Ok(events)
 }
 
-/// Validates fields required before a raw PDU may be parsed or hashed.
+/// Validates fields required before a raw PDU may be parsed.
 pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), alloc::string::String> {
     for field in ["type", "sender", "content", "origin_server_ts"] {
         if value.get(field).is_none() {
@@ -2958,7 +2958,7 @@ fn is_msc4242_room_version(room_version: &str) -> bool {
 /// Delegates to [`RoomVersionFormat::uses_v12_create_rules`] for the
 /// authoritative capability check, falling back to `false` for unparsable
 /// version strings.
-pub(crate) fn room_version_is_v12_or_later(room_version: &str) -> bool {
+fn room_version_is_v12_or_later(room_version: &str) -> bool {
     RoomVersionFormat::parse(room_version).is_some_and(RoomVersionFormat::uses_v12_create_rules)
 }
 
