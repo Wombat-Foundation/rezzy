@@ -17,7 +17,7 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use rezzy_json::{FieldMask, Token, Tokenizer, TokenizerError, Value as JsonValue, ValueType};
 
@@ -189,6 +189,61 @@ pub struct MatrixEventView<'buf, 'a> {
     pub room_version: Option<&'buf str>,
     pub relates_to: Option<(&'buf str, &'buf str)>,
     pub(crate) _marker: core::marker::PhantomData<&'a ()>,
+}
+
+/// Owned Matrix event fields for batch processing.
+///
+/// Unlike `MatrixEventView`, this type owns all its data and has no lifetime
+/// dependency on a reusable scratch buffer. Suitable for collecting multiple
+/// events into a batch before processing (e.g., adjacency recording).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnedMatrixEvent {
+    pub event_id: Option<String>,
+    pub room_id: Option<String>,
+    pub event_type: Option<String>,
+    pub state_key: Option<String>,
+    pub prev_events: Vec<String>,
+    pub auth_events: Vec<String>,
+    pub room_version: Option<String>,
+    pub relates_to: Option<(String, String)>,
+}
+
+impl<'buf, 'a> From<MatrixEventView<'buf, 'a>> for OwnedMatrixEvent {
+    fn from(view: MatrixEventView<'buf, 'a>) -> Self {
+        Self {
+            event_id: view.event_id.map(std::string::ToString::to_string),
+            room_id: view.room_id.map(std::string::ToString::to_string),
+            event_type: view.event_type.map(std::string::ToString::to_string),
+            state_key: view.state_key.map(std::string::ToString::to_string),
+            prev_events: view.prev_events.iter().map(|s| (*s).to_string()).collect(),
+            auth_events: view.auth_events.iter().map(|s| (*s).to_string()).collect(),
+            room_version: view.room_version.map(std::string::ToString::to_string),
+            relates_to: view
+                .relates_to
+                .map(|(r, id)| (r.to_string(), id.to_string())),
+        }
+    }
+}
+
+impl OwnedMatrixEvent {
+    /// Extracts a batch of Matrix events directly into owned representations.
+    ///
+    /// This is the batch-safe entry point: it internally uses a single
+    /// `MatrixEventScratch` for zero-allocation extraction of each event,
+    /// then converts each `MatrixEventView` into an `OwnedMatrixEvent` before
+    /// the scratch is reused for the next event.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError`] if any input is not a valid JSON object.
+    pub fn extract_batch(raw_events: &[&[u8]]) -> Result<Vec<Self>, TokenizerError> {
+        let mut scratch = MatrixEventScratch::new();
+        let mut results = Vec::with_capacity(raw_events.len());
+        for raw in raw_events {
+            let view = extract_matrix_event_view(raw, &mut scratch)?;
+            results.push(view.into());
+        }
+        Ok(results)
+    }
 }
 
 type RelationView<'a> = Option<(&'a str, &'a str)>;
@@ -737,5 +792,35 @@ mod tests {
         assert_eq!(view.auth_events, &["$a"]);
         assert_eq!(view.room_version, Some("10"));
         assert_eq!(view.relates_to, Some(("m.thread", "$root")));
+    }
+
+    #[test]
+    fn owned_matrix_event_batch_extraction() {
+        let raw1 = br#"{"event_id":"$e1","room_id":"!r1:x","type":"m.room.message","prev_events":["$p1"],"auth_events":["$a1"]}"#;
+        let raw2 = br#"{"event_id":"$e2","room_id":"!r2:x","type":"m.room.encrypted","prev_events":["$p2"],"auth_events":["$a2","$a3"]}"#;
+        let batch = OwnedMatrixEvent::extract_batch(&[raw1, raw2]).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].event_id.as_deref(), Some("$e1"));
+        assert_eq!(batch[0].room_id.as_deref(), Some("!r1:x"));
+        assert_eq!(batch[0].event_type.as_deref(), Some("m.room.message"));
+        assert_eq!(batch[0].prev_events, vec!["$p1"]);
+        assert_eq!(batch[0].auth_events, vec!["$a1"]);
+        assert_eq!(batch[1].event_id.as_deref(), Some("$e2"));
+        assert_eq!(batch[1].room_id.as_deref(), Some("!r2:x"));
+        assert_eq!(batch[1].event_type.as_deref(), Some("m.room.encrypted"));
+        assert_eq!(batch[1].prev_events, vec!["$p2"]);
+        assert_eq!(batch[1].auth_events, vec!["$a2", "$a3"]);
+    }
+
+    #[test]
+    fn owned_matrix_event_from_view_conversion() {
+        let raw = br#"{"event_id":"$e","room_id":"!r:x","type":"m.room.message","prev_events":["$p1","$p2"],"auth_events":["$a1"]}"#;
+        let mut scratch = MatrixEventScratch::new();
+        let view = extract_matrix_event_view(raw, &mut scratch).unwrap();
+        let owned: OwnedMatrixEvent = view.into();
+        assert_eq!(owned.event_id.as_deref(), Some("$e"));
+        assert_eq!(owned.room_id.as_deref(), Some("!r:x"));
+        assert_eq!(owned.prev_events, vec!["$p1", "$p2"]);
+        assert_eq!(owned.auth_events, vec!["$a1"]);
     }
 }
