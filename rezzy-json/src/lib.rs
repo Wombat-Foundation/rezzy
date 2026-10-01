@@ -26,7 +26,7 @@ pub const MIN_SAFE_INTEGER: i64 = -((1_i64 << 53) - 1);
 
 #[must_use]
 pub fn is_canonical_integer_str(value: &str) -> bool {
-    if value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+    if value == "-0" || value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
         return false;
     }
     value.parse::<i64>().is_ok_and(|number| {
@@ -1835,6 +1835,7 @@ mod tests {
         for input in [
             br"9007199254740992".as_slice(),
             br"-9007199254740992".as_slice(),
+            br"-0".as_slice(),
             br#"{"nested":[0,9007199254740992]}"#.as_slice(),
         ] {
             assert_eq!(
