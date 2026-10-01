@@ -36,6 +36,7 @@ fn federation_agent() -> &'static ureq::Agent {
     })
 }
 
+#[must_use]
 pub fn command() -> Command {
     Command::new("federation")
         .about("Make signed Matrix server-server requests")
@@ -152,6 +153,13 @@ fn signing_key_args() -> [Arg; 2] {
     ]
 }
 
+/// Runs the selected federation subcommand.
+///
+/// # Errors
+/// Returns an error when arguments, credentials, or the remote request are invalid.
+///
+/// # Panics
+/// Panics if a required default argument is absent from a parsed subcommand.
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
         let origin = m.get_one::<String>("origin").expect("default");
@@ -230,7 +238,9 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
 
 #[derive(Debug, Clone)]
 pub struct SigningKeySpec {
+    /// The key identifier used for signing.
     pub key_id: String,
+    /// The parsed signing key.
     pub key: SigningKey,
 }
 
@@ -251,6 +261,9 @@ fn domain_env_suffix(domain: &str) -> String {
 ///
 /// Private key files and `MATRIX_SERVER_SIGNING_KEY` are intentionally not
 /// accepted: federation credentials must be stored through the OS keyring.
+///
+/// # Errors
+/// Returns an error when no usable key is configured or the configured key is invalid.
 pub fn load_signing_key(
     origin: &str,
     explicit: Option<&Path>,
@@ -616,7 +629,7 @@ pub fn get_remote_dag(
     let max = if limit < 0 {
         usize::MAX
     } else {
-        limit as usize
+        usize::try_from(limit).unwrap_or(usize::MAX)
     };
     while !queue.is_empty() && seen.len() < max {
         let mut ids = Vec::new();
@@ -873,7 +886,7 @@ fn gap_fill(
                 None,
             )?;
             if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
-                failed_requests = failed_requests.saturating_add(n as usize);
+                failed_requests = failed_requests.saturating_add(usize::try_from(n).unwrap_or(usize::MAX));
                 if let Some(detail) = summary.get("failures").and_then(JsonValue::as_str) {
                     eprintln!("[warn] round {round}: {n} backfill request(s) failed: {detail}");
                 }
@@ -949,7 +962,8 @@ struct FetchFailures {
 
 impl FetchFailures {
     fn record(&mut self, error: &AppError) {
-        *self.by_code.entry(error.code().code()).or_default() += 1;
+        let count = self.by_code.entry(error.code().code()).or_default();
+        *count = count.saturating_add(1);
         if self.first.is_none() {
             self.first = Some(error.to_string());
         }
