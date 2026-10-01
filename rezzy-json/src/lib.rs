@@ -783,6 +783,8 @@ pub struct Tokenizer<'a> {
     input: &'a [u8],
     pos: usize,
     depth: usize,
+    /// Stack tracking whether each container in the nesting is an object (true) or array (false).
+    is_object: [bool; 128],
     /// Stack tracking whether the next string in an object is a key (true) or value (false).
     expecting_key: [bool; 128],
 }
@@ -844,6 +846,7 @@ impl<'a> Tokenizer<'a> {
             input,
             pos: 0,
             depth: 0,
+            is_object: [false; 128],
             expecting_key: [false; 128],
         }
     }
@@ -937,6 +940,87 @@ impl<'a> Tokenizer<'a> {
         Ok(members)
     }
 
+    /// Visits object members without allocating a member container.
+    ///
+    /// If a key contains escape sequences, it is unescaped into `scratch_buf`.
+    /// Otherwise, a direct subslice of the input is yielded without touching `scratch_buf`.
+    ///
+    /// # Errors
+    /// Returns [`TokenizerError`] for malformed JSON or invalid escape sequences.
+    pub fn for_each_object_member<F>(
+        &mut self,
+        scratch_buf: &mut String,
+        mut callback: F,
+    ) -> Result<(), TokenizerError>
+    where
+        F: FnMut(&str, ValueType, &'a [u8]) -> Result<(), TokenizerError>,
+    {
+        self.ws();
+        if self.input.get(self.pos) != Some(&b'{') {
+            return Err(TokenizerError::InvalidToken);
+        }
+        self.pos = self
+            .pos
+            .checked_add(1)
+            .ok_or(TokenizerError::UnexpectedEnd)?;
+        self.ws();
+        if self.input.get(self.pos) == Some(&b'}') {
+            self.pos = self
+                .pos
+                .checked_add(1)
+                .ok_or(TokenizerError::UnexpectedEnd)?;
+            return Ok(());
+        }
+        loop {
+            self.ws();
+            let key_bytes = self.string_raw()?;
+            let key = if key_bytes.contains(&b'\\') {
+                unescape_raw_string(key_bytes, scratch_buf)?;
+                scratch_buf.as_str()
+            } else {
+                core::str::from_utf8(key_bytes).map_err(|_| TokenizerError::InvalidString)?
+            };
+            self.ws();
+            if self.input.get(self.pos) != Some(&b':') {
+                return Err(TokenizerError::InvalidToken);
+            }
+            self.pos = self
+                .pos
+                .checked_add(1)
+                .ok_or(TokenizerError::UnexpectedEnd)?;
+            self.ws();
+            let start = self.pos;
+            let value_type = match self.input.get(self.pos).copied() {
+                Some(b'n') => ValueType::Null,
+                Some(b't' | b'f') => ValueType::Bool,
+                Some(b'-' | b'0'..=b'9') => ValueType::Number,
+                Some(b'"') => ValueType::String,
+                Some(b'[') => ValueType::Array,
+                Some(b'{') => ValueType::Object,
+                _ => return Err(TokenizerError::InvalidToken),
+            };
+            self.skip_value()?;
+            callback(key, value_type, &self.input[start..self.pos])?;
+            self.ws();
+            match self.input.get(self.pos) {
+                Some(b',') => {
+                    self.pos = self
+                        .pos
+                        .checked_add(1)
+                        .ok_or(TokenizerError::UnexpectedEnd)?;
+                }
+                Some(b'}') => {
+                    self.pos = self
+                        .pos
+                        .checked_add(1)
+                        .ok_or(TokenizerError::UnexpectedEnd)?;
+                    return Ok(());
+                }
+                _ => return Err(TokenizerError::InvalidToken),
+            }
+        }
+    }
+
     fn ws(&mut self) {
         while self
             .input
@@ -976,7 +1060,10 @@ impl<'a> Tokenizer<'a> {
             }
             b'"' => {
                 let s = self.string()?;
-                if self.depth > 0 && self.expecting_key[self.depth.saturating_sub(1)] {
+                if self.depth > 0
+                    && self.is_object[self.depth.saturating_sub(1)]
+                    && self.expecting_key[self.depth.saturating_sub(1)]
+                {
                     self.expecting_key[self.depth.saturating_sub(1)] = false;
                     Ok(Some(Token::Key(s)))
                 } else {
@@ -987,6 +1074,7 @@ impl<'a> Tokenizer<'a> {
                 if self.depth >= Self::MAX_DEPTH {
                     return Err(TokenizerError::DepthLimitExceeded);
                 }
+                self.is_object[self.depth] = false;
                 self.expecting_key[self.depth] = false;
                 self.depth = self.depth.saturating_add(1);
                 self.pos = self.pos.saturating_add(1);
@@ -1004,6 +1092,7 @@ impl<'a> Tokenizer<'a> {
                 if self.depth >= Self::MAX_DEPTH {
                     return Err(TokenizerError::DepthLimitExceeded);
                 }
+                self.is_object[self.depth] = true;
                 self.expecting_key[self.depth] = true;
                 self.depth = self.depth.saturating_add(1);
                 self.pos = self.pos.saturating_add(1);
@@ -1023,7 +1112,7 @@ impl<'a> Tokenizer<'a> {
             }
             b',' => {
                 self.pos = self.pos.saturating_add(1);
-                if self.depth > 0 && !self.expecting_key[self.depth.saturating_sub(1)] {
+                if self.depth > 0 && self.is_object[self.depth.saturating_sub(1)] {
                     self.expecting_key[self.depth.saturating_sub(1)] = true;
                 }
                 Ok(Some(Token::Comma))
@@ -1075,6 +1164,7 @@ impl<'a> Tokenizer<'a> {
         if self.depth >= Self::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
         }
+        self.is_object[self.depth] = true;
         self.expecting_key[self.depth] = true;
         self.depth = self.depth.saturating_add(1);
         self.pos = self.pos.saturating_add(1); // skip '{'
@@ -1115,6 +1205,7 @@ impl<'a> Tokenizer<'a> {
         if self.depth >= Self::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
         }
+        self.is_object[self.depth] = false;
         self.expecting_key[self.depth] = false;
         self.depth = self.depth.saturating_add(1);
         self.pos = self.pos.saturating_add(1); // skip '['
@@ -1224,6 +1315,80 @@ impl<'a> Tokenizer<'a> {
             Err(TokenizerError::InvalidToken)
         }
     }
+}
+
+fn hex4(input: &[u8], pos: &mut usize) -> Result<u16, TokenizerError> {
+    let mut n = 0u16;
+    for _ in 0..4 {
+        let b = *input.get(*pos).ok_or(TokenizerError::UnexpectedEnd)?;
+        *pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
+        let digit = (b as char)
+            .to_digit(16)
+            .ok_or(TokenizerError::InvalidEscape)?;
+        let digit = u8::try_from(digit).map_err(|_| TokenizerError::InvalidEscape)?;
+        n = (n << 4) | u16::from(digit);
+    }
+    Ok(n)
+}
+
+fn decode_unicode_escape(input: &[u8], pos: &mut usize) -> Result<char, TokenizerError> {
+    let high = hex4(input, pos)?;
+    let scalar = if (0xd800..=0xdbff).contains(&high) {
+        if input.get(*pos..pos.saturating_add(2)) != Some(b"\\u") {
+            return Err(TokenizerError::InvalidEscape);
+        }
+        *pos = pos.checked_add(2).ok_or(TokenizerError::UnexpectedEnd)?;
+        let low = hex4(input, pos)?;
+        if !(0xdc00..=0xdfff).contains(&low) {
+            return Err(TokenizerError::InvalidEscape);
+        }
+        0x10000_u32
+            .saturating_add((u32::from(high).saturating_sub(0xd800)) << 10)
+            .saturating_add(u32::from(low).saturating_sub(0xdc00))
+    } else {
+        u32::from(high)
+    };
+    char::from_u32(scalar).ok_or(TokenizerError::InvalidEscape)
+}
+
+fn unescape_raw_string(input: &[u8], out: &mut String) -> Result<(), TokenizerError> {
+    out.clear();
+    let mut pos = 0;
+    let mut start = 0;
+    while pos < input.len() {
+        if input[pos] == b'\\' {
+            let seg = core::str::from_utf8(&input[start..pos])
+                .map_err(|_| TokenizerError::InvalidString)?;
+            out.push_str(seg);
+            pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
+            let esc = *input.get(pos).ok_or(TokenizerError::UnexpectedEnd)?;
+            pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
+            match esc {
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                b'/' => out.push('/'),
+                b'b' => out.push('\u{8}'),
+                b'f' => out.push('\u{c}'),
+                b'n' => out.push('\n'),
+                b'r' => out.push('\r'),
+                b't' => out.push('\t'),
+                b'u' => {
+                    let c = decode_unicode_escape(input, &mut pos)?;
+                    out.push(c);
+                }
+                _ => return Err(TokenizerError::InvalidEscape),
+            }
+            start = pos;
+        } else {
+            pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
+        }
+    }
+    if start < input.len() {
+        let seg =
+            core::str::from_utf8(&input[start..pos]).map_err(|_| TokenizerError::InvalidString)?;
+        out.push_str(seg);
+    }
+    Ok(())
 }
 
 /// A field mask for selective parsing - specifies which JSON paths to extract.

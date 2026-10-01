@@ -29,8 +29,9 @@ use std::time::Instant;
 
 pub use rezzy::{
     discover_array_spans, discover_envelope_spans, discover_federation_spans, discover_jsonl_spans,
-    extract_matrix_event_fields, EnvelopeSpans, FederationSpans, MatrixEventFields, RawEventSpan,
-    ADJACENCY_MASK,
+    extract_matrix_event_fields, extract_matrix_event_fields_ref, extract_matrix_event_view,
+    EnvelopeSpans, FederationSpans, MatrixEventFields, MatrixEventFieldsRef, MatrixEventScratch,
+    MatrixEventView, RawEventSpan, ADJACENCY_MASK,
 };
 
 pub type SharedStateMap = std::sync::Arc<ResolvedState>;
