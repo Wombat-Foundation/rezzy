@@ -106,14 +106,6 @@ pub struct MatrixEventScratch<'a> {
     pub rel_type_buf: String,
     /// Decode buffer for `content.m.relates_to.event_id` values.
     pub rel_event_id_buf: String,
-    /// Decode buffer for escaped IDs found inside `prev_events` / `auth_events`.
-    ///
-    /// When an event ID in a reference array is escape-encoded (e.g. `"\u0024parent"`),
-    /// it is decoded into this buffer and the resulting `&str` stored in `prev_events`
-    /// or `auth_events` borrows from `id_decode_buf` rather than from the raw input.
-    /// The decoded bytes are appended with a NUL separator so multiple escaped IDs
-    /// from the same array can coexist in the buffer.
-    pub id_decode_buf: String,
 }
 
 impl MatrixEventScratch<'_> {
@@ -150,7 +142,6 @@ impl MatrixEventScratch<'_> {
             room_version_buf: String::with_capacity(key_cap),
             rel_type_buf: String::with_capacity(key_cap),
             rel_event_id_buf: String::with_capacity(key_cap),
-            id_decode_buf: String::with_capacity(key_cap),
         }
     }
 
@@ -166,7 +157,6 @@ impl MatrixEventScratch<'_> {
         self.room_version_buf.clear();
         self.rel_type_buf.clear();
         self.rel_event_id_buf.clear();
-        self.id_decode_buf.clear();
     }
 }
 
@@ -178,7 +168,7 @@ impl MatrixEventScratch<'_> {
 /// `*_buf` field of the [`MatrixEventScratch`] (`'buf`) when decoding was required.
 ///
 /// `prev_events` and `auth_events` borrow from the scratch's `Vec` storage.
-/// IDs that required escape decoding borrow from `scratch.id_decode_buf`.
+/// Escaped IDs in reference arrays are rejected explicitly.
 ///
 /// The view is valid for the shorter of `'buf` and `'a`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -340,12 +330,8 @@ pub fn discover_envelope_spans(input: &[u8]) -> Result<EnvelopeSpans, TokenizerE
 /// Fills `out` with the event-ID strings from a raw JSON `prev_events` or `auth_events`
 /// array, supporting both bare strings and room-version-1/2 `[event_id, hashes]` tuples.
 ///
-/// Escape sequences in IDs (e.g. `"\u0024child"`) are decoded into `id_decode_buf` and the
-/// resulting `&str` borrows from that buffer.  Plain IDs (no backslash) borrow directly
-/// from the raw input as `'a`.
-///
-/// `id_decode_buf` must live at least as long as `'a` when decoded IDs are stored;
-/// in practice both are fields of [`MatrixEventScratch`] and share the same lifetime.
+/// Escape-encoded IDs are rejected rather than silently dropped, because a single
+/// reusable buffer cannot safely back multiple returned `&str` values.
 fn fill_id_array<'a>(raw: &'a [u8], out: &mut Vec<&'a str>) -> Result<(), TokenizerError> {
     let mut tokenizer = Tokenizer::new(raw);
     if tokenizer.next_token()? != Some(Token::ArrayStart) {
@@ -601,7 +587,7 @@ where
 /// All scalar fields are decoded from `raw` without allocating: plain values borrow directly
 /// from the input; escape-encoded values are decoded into the corresponding `*_buf` field of
 /// `scratch`.  `prev_events` and `auth_events` are filled into the scratch's `Vec` storage;
-/// IDs that contain escape sequences are decoded into `scratch.id_decode_buf`.
+/// Escape-encoded IDs in those arrays are rejected explicitly.
 ///
 /// # Zero-allocation contract
 ///
