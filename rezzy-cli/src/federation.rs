@@ -87,6 +87,7 @@ pub fn command() -> Command {
                     Arg::new("limit")
                         .long("limit")
                         .default_value("-1")
+                        .allow_negative_numbers(true)
                         .value_parser(clap::value_parser!(i64)),
                 )
                 .arg(
@@ -353,7 +354,12 @@ fn canonical_request(
     destination: &str,
     body: &JsonValue,
 ) -> Result<Vec<u8>, AppError> {
-    let value = rezzy::json!({"method": method, "uri": uri, "origin": origin, "destination": destination, "content": body});
+    let mut value =
+        rezzy::json!({"method": method, "uri": uri, "origin": origin, "destination": destination});
+    if !(method.eq_ignore_ascii_case("GET") && matches!(body, JsonValue::Object(o) if o.is_empty()))
+    {
+        let _ = value.insert("content".to_owned(), body.clone());
+    }
     rezzy::json::write_string_value(&value)
         .map(|s| s.into_bytes())
         .map_err(|e| AppError::new(ErrorCode::NetworkError, e.to_string()))
@@ -367,22 +373,20 @@ fn delegation_cache() -> &'static Mutex<BTreeMap<String, String>> {
 
 /// Process-wide cache of parsed signing keys, keyed by `(origin, account)`.
 ///
-/// `load_signing_key` runs once per federation request, and each call opens a
-/// fresh Secret Service session; that pattern reliably crashes gnome-keyring's
-/// `plain_negotiate` path under load. Reading each key once per process avoids
-/// the churn (and is faster).
+/// Each `(origin, account)` keyring value is read once per process. Changes to
+/// the keyring take effect after restarting the CLI.
 fn signing_key_cache() -> &'static Mutex<BTreeMap<(String, String), SigningKeySpec>> {
     static CACHE: OnceLock<Mutex<BTreeMap<(String, String), SigningKeySpec>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 /// Resolve a Matrix server name to its federation endpoint, honoring
-/// server-server delegation: DNS SRV (`_matrix-fed._tcp`, then the legacy
-/// `_matrix._tcp`) first, then `/.well-known/matrix/server` (spec order).
+/// server-server delegation: `/.well-known/matrix/server` first, then DNS SRV
+/// (`_matrix-fed._tcp`, then the legacy `_matrix._tcp`).
 ///
 /// Returns `None` when delegation does not apply (explicit scheme/port) or no
 /// delegation record is found, in which case callers fall back to the literal
-/// host on port 443.
+/// host on port 8448.
 fn resolve_delegation(destination: &str) -> Option<String> {
     if destination.contains(':') {
         return None;
@@ -392,7 +396,7 @@ fn resolve_delegation(destination: &str) -> Option<String> {
             return Some(cached.clone());
         }
     }
-    let resolved = srv_lookup(destination).or_else(|| well_known_lookup(destination));
+    let resolved = well_known_lookup(destination).or_else(|| srv_lookup(destination));
     if let Some(ref endpoint) = resolved {
         eprintln!("[info] federation delegation: {destination} -> {endpoint}");
         if let Ok(mut cache) = delegation_cache().lock() {
@@ -471,12 +475,11 @@ fn base_url(destination: &str) -> String {
     } else if let Some(endpoint) = resolve_delegation(destination) {
         endpoint
     } else {
-        format!("https://{destination}")
+        format!("https://{destination}:8448")
     }
 }
 
-/// Send one signed federation request. The key file is loaded on every call,
-/// so key rotation is visible without restarting the CLI.
+/// Send one signed federation request. Keyring values are cached per process.
 pub fn request(
     origin: &str,
     destination: &str,
@@ -609,6 +612,7 @@ pub fn get_remote_dag(
     let mut output_writer = open_output_writer(output)?;
     let mut event_count = 0_usize;
     let mut failures = FetchFailures::default();
+    let mut unresolved = Vec::new();
     let max = if limit < 0 {
         usize::MAX
     } else {
@@ -618,10 +622,15 @@ pub fn get_remote_dag(
         let mut ids = Vec::new();
         while ids.len() < 50 {
             if let Some(id) = queue.pop_front() {
-                ids.push(id);
+                if !seen.contains(&id) {
+                    ids.push(id);
+                }
             } else {
                 break;
             }
+        }
+        if ids.is_empty() {
+            continue;
         }
         let uri = format!(
             "/_matrix/federation/v1/backfill/{}?{}&limit=500",
@@ -648,9 +657,7 @@ pub fn get_remote_dag(
             Err(e) if is_unreachable(&e) => return Err(e),
             Err(e) if !no_fallback => {
                 failures.record(&e);
-                for id in &ids {
-                    queue.push_front(id.clone());
-                }
+                unresolved.extend(ids.iter().cloned());
                 let Some(id) = queue.pop_front() else {
                     continue;
                 };
@@ -682,15 +689,11 @@ pub fn get_remote_dag(
             .and_then(JsonValue::as_array)
             .map_or(true, Vec::is_empty);
         if empty_backfill && no_fallback {
-            for id in ids.iter().rev() {
-                queue.push_front(id.clone());
-            }
+            unresolved.extend(ids.iter().cloned());
             break;
         }
         if empty_backfill {
-            for id in ids.iter().rev() {
-                queue.push_front(id.clone());
-            }
+            unresolved.extend(ids.iter().cloned());
             if let Some(id) = queue.pop_front() {
                 let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
                 match request(
@@ -709,7 +712,7 @@ pub fn get_remote_dag(
                     Err(e) if is_unreachable(&e) => return Err(e),
                     Err(e) => {
                         failures.record(&e);
-                        queue.push_front(id);
+                        unresolved.push(id);
                     }
                 }
             }
@@ -765,7 +768,12 @@ pub fn get_remote_dag(
         // If interrupted after this point, re-fetching the checkpointed
         // frontier is safe because aggregate deduplicates event IDs.
         output_writer.flush()?;
-        let frontier = queue.iter().cloned().collect::<Vec<_>>();
+        let frontier = queue
+            .iter()
+            .filter(|id| !seen.contains(*id))
+            .cloned()
+            .chain(unresolved.iter().filter(|id| !seen.contains(*id)).cloned())
+            .collect::<Vec<_>>();
         if let Some(path) = emit_missing.filter(|path| *path != Path::new("-")) {
             write_frontier_checkpoint(path, &frontier)?;
         }
@@ -780,7 +788,11 @@ pub fn get_remote_dag(
             ),
         ));
     }
-    let remaining_frontier = queue.into_iter().collect::<Vec<_>>();
+    let remaining_frontier = queue
+        .into_iter()
+        .chain(unresolved)
+        .filter(|id| !seen.contains(id))
+        .collect::<Vec<_>>();
     if let Some(path) = emit_missing {
         crate::repair::write_event_ids(path, &remaining_frontier)?;
     }

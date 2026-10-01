@@ -59,13 +59,10 @@ pub fn detect_version(
     events: &[rezzy::JsonValue],
     debug: bool,
 ) -> Result<StateResVersion, AppError> {
-    let mut create_event_id = None;
+    let mut saw_create_event = false;
     for ev in events {
         if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) == Some(M_ROOM_CREATE) {
-            create_event_id = ev
-                .get("event_id")
-                .and_then(|id| id.as_str())
-                .map(str::to_owned);
+            saw_create_event = true;
             if let Some(ver) = ev
                 .get(FIELD_CONTENT)
                 .and_then(|c| c.get(FIELD_ROOM_VERSION))
@@ -79,12 +76,10 @@ pub fn detect_version(
         }
     }
 
-    if let Some(event_id) = create_event_id {
+    if saw_create_event {
         return Err(AppError::new(
             ErrorCode::UnsupportedVersion,
-            format!(
-                "m.room.create event {event_id} is missing content.room_version; the input is not self-describing"
-            ),
+            "m.room.create event is missing content.room_version; the input is not self-describing",
         ));
     }
 

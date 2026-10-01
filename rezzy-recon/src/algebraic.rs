@@ -308,7 +308,7 @@ impl RoomAccumulator {
                             '\n' => escaped.push_str("\\n"),
                             '\r' => escaped.push_str("\\r"),
                             '\t' => escaped.push_str("\\t"),
-                            c if c.is_control() => {
+                            c if (c as u32) < 0x20 => {
                                 let _ = write!(escaped, "\\u{:04x}", c as u32);
                             }
                             c => escaped.push(c),

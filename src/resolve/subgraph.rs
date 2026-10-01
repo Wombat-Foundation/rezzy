@@ -11,7 +11,7 @@
 use super::RangePrefilterReachability;
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -173,9 +173,12 @@ where
     let mut backwards = BTreeSet::new();
     let mut missing = BTreeSet::new();
     // Each stack entry is (event_id, depth_from_conflicted_set).
-    let mut stack: Vec<(Id, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
-    while let Some((node, depth)) = stack.pop() {
-        if backwards.insert(node.clone()) {
+    let mut queue: VecDeque<(Id, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
+    let mut visited_depth = HashMap::new();
+    while let Some((node, depth)) = queue.pop_front() {
+        if visited_depth.get(&node).map_or(true, |&old| depth < old) {
+            visited_depth.insert(node.clone(), depth);
+            backwards.insert(node.clone());
             if let Some(max_depth) = max_auth_depth {
                 if depth >= max_depth {
                     continue;
@@ -186,7 +189,7 @@ where
                     if !events.contains_key(auth_id) {
                         missing.insert(auth_id.clone());
                     }
-                    stack.push((auth_id.clone(), depth.saturating_add(1)));
+                    queue.push_back((auth_id.clone(), depth.saturating_add(1)));
                 }
             }
         }

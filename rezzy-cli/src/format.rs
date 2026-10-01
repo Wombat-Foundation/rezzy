@@ -381,6 +381,12 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
 
         let new_root_hash_str = format_structural_hash(&new_root.structural_hash);
         root_hashes_map.insert(ev.event_id.clone(), new_root_hash_str.clone());
+        let delta_base = ev
+            .prev_events
+            .first()
+            .and_then(|id| roots_map.get(id))
+            .cloned()
+            .unwrap_or_else(|| base_root.clone());
 
         // Live-frontier GC: only retain active Arc<HamtNode> in roots_map while
         // unvisited child events in the DAG cite this event.
@@ -425,7 +431,7 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext) -> HamtLiveWalkOutput {
                 Ok::<(), std::convert::Infallible>(())
             });
         } else if let Ok((added, removed)) =
-            diff_hamt_nodes(&base_root, &new_root, &mut no_resolver)
+            diff_hamt_nodes(&delta_base, &new_root, &mut no_resolver)
         {
             let added_keys: std::collections::HashSet<&(EventType, String)> =
                 added.iter().map(|(k, _)| k).collect();
@@ -1117,6 +1123,10 @@ fn reorder_by_kahn(
     keys: &[OrderKey],
     stream: Option<&StreamOrderIndex>,
 ) -> Vec<usize> {
+    let mut augmented_keys = keys.to_vec();
+    if !augmented_keys.contains(&OrderKey::EventId) {
+        augmented_keys.push(OrderKey::EventId);
+    }
     let ids: Vec<String> = events.iter().map(|event| event.event_id.clone()).collect();
     let parents: Vec<Vec<String>> = events
         .iter()
@@ -1129,7 +1139,7 @@ fn reorder_by_kahn(
                 .and_then(|index| index.get(&event.event_id))
                 .unwrap_or(MISSING_STREAM_ORDER);
             build_key(
-                keys,
+                &augmented_keys,
                 &event.event_id,
                 event.depth,
                 event.origin_server_ts,

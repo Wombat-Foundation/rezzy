@@ -47,16 +47,27 @@ pub fn output_arg(required: bool) -> Arg {
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     let input = matches.get_one::<PathBuf>("input").expect("required");
     let output = matches.get_one::<PathBuf>("output").expect("required");
-    let room_version = infer_room_version(input)?;
-    validate_repair_room_version(&room_version)?;
-
-    let reader = BufReader::new(File::open(input)?);
-    if input == output {
+    let input_identity = fs::canonicalize(input)?;
+    let output_identity = if output.exists() {
+        fs::canonicalize(output)?
+    } else {
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        fs::canonicalize(parent)?.join(
+            output
+                .file_name()
+                .ok_or_else(|| AppError::new(ErrorCode::IoError, "output path has no file name"))?,
+        )
+    };
+    if input_identity == output_identity {
         return Err(AppError::new(
             ErrorCode::IoError,
             "--input and --output must be different files",
         ));
     }
+    let room_version = infer_room_version(input)?;
+    validate_repair_room_version(&room_version)?;
+
+    let reader = BufReader::new(File::open(input)?);
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }

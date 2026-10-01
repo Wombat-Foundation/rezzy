@@ -644,6 +644,9 @@ where
                     if tokenizer.input.get(tokenizer.pos) == Some(&b',') {
                         tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
                         tokenizer.ws();
+                        if tokenizer.input.get(tokenizer.pos) == Some(&b']') {
+                            return Err(Error::InvalidToken);
+                        }
                     } else {
                         break;
                     }
@@ -652,6 +655,11 @@ where
                     return Err(Error::InvalidToken);
                 }
                 out.push(']');
+                tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
+                tokenizer.ws();
+                if tokenizer.pos != raw.len() {
+                    return Err(Error::TrailingCharacters);
+                }
             }
             Some(b'-' | b'0'..=b'9') if strict => {
                 let text = core::str::from_utf8(raw).map_err(|_| Error::InvalidNumber)?;
@@ -1260,32 +1268,9 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    /// Parses a string, unescaping it, returning the unescaped bytes.
+    /// Parses a string, returning its raw escaped content bytes.
     fn string(&mut self) -> Result<&'a [u8], TokenizerError> {
-        self.pos = self.pos.saturating_add(1);
-        let start = self.pos;
-        loop {
-            let b = *self
-                .input
-                .get(self.pos)
-                .ok_or(TokenizerError::UnexpectedEnd)?;
-            match b {
-                b'"' => {
-                    let slice = &self.input[start..self.pos];
-                    self.pos = self.pos.saturating_add(1);
-                    return Ok(slice);
-                }
-                b'\\' => {
-                    let _ = self
-                        .input
-                        .get(self.pos)
-                        .ok_or(TokenizerError::UnexpectedEnd)?;
-                    self.pos = self.pos.saturating_add(1);
-                }
-                0..=0x1f => return Err(TokenizerError::InvalidString),
-                _ => self.pos = self.pos.saturating_add(1),
-            }
-        }
+        self.string_raw()
     }
 
     fn skip_number(&mut self) {

@@ -93,6 +93,7 @@ pub struct ReconciliationClient {
     /// agree out of band attempt larger single-exchange deltas than the
     /// MSC4521 default operating point.
     max_aggregate_capacity: usize,
+    requested_aggregate_capacity: usize,
 }
 
 /// Information learned from the responder's room digest.
@@ -425,6 +426,7 @@ impl Default for ReconciliationClient {
                 MAX_BUCKETED_SKETCH_CAPACITY,
             ),
             max_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
+            requested_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
         }
     }
 }
@@ -447,6 +449,7 @@ impl ReconciliationClient {
                 MAX_BUCKETED_SKETCH_CAPACITY,
             ),
             max_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
+            requested_aggregate_capacity: MAX_BUCKETED_SKETCH_CAPACITY,
         })
     }
 
@@ -457,7 +460,7 @@ impl ReconciliationClient {
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
-        self.gate_threshold = derive_gate_threshold(max_rounds, self.max_aggregate_capacity);
+        self.gate_threshold = derive_gate_threshold(max_rounds, self.requested_aggregate_capacity);
         self
     }
 
@@ -474,6 +477,7 @@ impl ReconciliationClient {
     /// significant.
     #[must_use]
     pub fn with_max_aggregate_capacity(mut self, max_aggregate_capacity: usize) -> Self {
+        self.requested_aggregate_capacity = max_aggregate_capacity;
         self.max_aggregate_capacity = max_aggregate_capacity.min(MAX_BUCKETED_SKETCH_CAPACITY);
         self.gate_threshold = derive_gate_threshold(self.max_rounds, max_aggregate_capacity);
         self

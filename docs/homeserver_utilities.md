@@ -205,7 +205,7 @@ rezzy federation request --destination remote.example --path /_matrix/federation
 
 rezzy federation get-remote-dag --origin example.org \
   --destination remote.example --room '!room:example.org' \
-  --from '$event:example.org' --limit -1 --output remote.jsonl
+  --from '$event:example.org' --output remote.jsonl
 ```
 
 Federation signing keys must be stored in the OS keyring. Plaintext key files,
@@ -247,5 +247,6 @@ rezzy federation request --origin your.server \
 ```
 
 Use `MATRIX_SERVER_SIGNING_KEY_KEYRING_<DOMAIN>` for per-origin accounts, or
-pass `--signing-key-keyring <account>` on either federation subcommand. The
-keyring value is read on every request; no plaintext key file is created.
+pass `--signing-key-keyring <account>` on either federation subcommand. Each
+(origin, account) keyring value is read once per process; restart the CLI after
+rotating a key. No plaintext key file is created.

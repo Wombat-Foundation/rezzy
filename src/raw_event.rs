@@ -211,13 +211,13 @@ pub struct OwnedMatrixEvent {
 impl<'buf, 'a> From<MatrixEventView<'buf, 'a>> for OwnedMatrixEvent {
     fn from(view: MatrixEventView<'buf, 'a>) -> Self {
         Self {
-            event_id: view.event_id.map(std::string::ToString::to_string),
-            room_id: view.room_id.map(std::string::ToString::to_string),
-            event_type: view.event_type.map(std::string::ToString::to_string),
-            state_key: view.state_key.map(std::string::ToString::to_string),
+            event_id: view.event_id.map(ToString::to_string),
+            room_id: view.room_id.map(ToString::to_string),
+            event_type: view.event_type.map(ToString::to_string),
+            state_key: view.state_key.map(ToString::to_string),
             prev_events: view.prev_events.iter().map(|s| (*s).to_string()).collect(),
             auth_events: view.auth_events.iter().map(|s| (*s).to_string()).collect(),
-            room_version: view.room_version.map(std::string::ToString::to_string),
+            room_version: view.room_version.map(ToString::to_string),
             relates_to: view
                 .relates_to
                 .map(|(r, id)| (r.to_string(), id.to_string())),

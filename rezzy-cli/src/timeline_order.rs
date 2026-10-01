@@ -12,9 +12,8 @@ pub enum TimelineOrder {
     /// sidecar. Including a stream key makes it server-local.
     #[default]
     Causal,
-    /// Synapse-like `matrix_depth, stream_ordering, event_id`. Stream order is
-    /// read from the provenance sidecar; absent entries fall back to
-    /// `matrix_depth, origin_server_ts, event_id` with a summary warning.
+    /// Synapse-like `matrix_depth, stream_ordering, event_id`. Missing stream
+    /// order entries use `MISSING_STREAM_ORDER` and sort after known entries.
     Synapse,
 }
 
