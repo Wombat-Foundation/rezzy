@@ -214,22 +214,26 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
             )
         }
-        Some(("gap-fill", m)) => gap_fill(
-            m.get_many::<PathBuf>("input")
+        Some(("gap-fill", m)) => {
+            let inputs = m
+                .get_many::<PathBuf>("input")
                 .expect("required")
                 .cloned()
-                .collect(),
-            m.get_one::<String>("origin").expect("default"),
-            m.get_one::<String>("destination").expect("required"),
-            m.get_one::<String>("room").expect("required"),
-            m.get_one::<String>("room-version").expect("default"),
-            *m.get_one::<u32>("rounds").expect("default"),
-            m.get_one::<PathBuf>("output-dir").expect("required"),
-            m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-            m.get_one::<String>("signing-key-keyring")
-                .map(String::as_str),
-            m.get_flag("no-fallback"),
-        ),
+                .collect::<Vec<_>>();
+            gap_fill(
+                &inputs,
+                m.get_one::<String>("origin").expect("default"),
+                m.get_one::<String>("destination").expect("required"),
+                m.get_one::<String>("room").expect("required"),
+                m.get_one::<String>("room-version").expect("default"),
+                *m.get_one::<u32>("rounds").expect("default"),
+                m.get_one::<PathBuf>("output-dir").expect("required"),
+                m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+                m.get_one::<String>("signing-key-keyring")
+                    .map(String::as_str),
+                m.get_flag("no-fallback"),
+            )
+        }
         _ => Err(AppError::new(
             ErrorCode::MissingInputFlag,
             "choose `request`, `get-remote-dag`, or `gap-fill`",
@@ -842,7 +846,7 @@ pub fn get_remote_dag(
 /// of rounds. This intentionally writes fetched batches separately; callers
 /// can inspect or aggregate them without mutating the original input.
 fn gap_fill(
-    inputs: Vec<PathBuf>,
+    inputs: &[PathBuf],
     origin: &str,
     destination: &str,
     room_id: &str,
@@ -855,7 +859,7 @@ fn gap_fill(
 ) -> Result<JsonValue, AppError> {
     fs::create_dir_all(output_dir)?;
     let mut events = Vec::new();
-    for input in &inputs {
+    for input in inputs {
         events.extend(crate::repair::read_jsonl_events(input)?);
     }
 
