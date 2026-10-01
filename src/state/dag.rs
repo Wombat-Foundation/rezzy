@@ -1598,7 +1598,7 @@ mod targeted_coverage_tests {
         );
         assert_eq!(
             derive_auth_events_from_state_dag(&create, &state, &events, "12").unwrap(),
-            [] as [std::string::String; 0]
+            Vec::<String>::new()
         );
     }
 }

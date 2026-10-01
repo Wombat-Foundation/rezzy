@@ -886,7 +886,7 @@ fn test_persist_mutations_and_chain_with_key_hash() {
             .persist_mutations(&root, key, batch.clone())
             .expect("persist_mutations should work");
     assert_eq!(displaced_vec, alloc::vec![None, Some(50_u64), None]);
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert!(!created.is_empty());
     assert_eq!(
         batched_root.get_with_key_hash(&100_u64, linear_key_hash),
         Some(&1_u64)
@@ -1668,7 +1668,7 @@ fn test_persist_mutations_insert_and_remove() {
 
     assert_eq!(displaced, vec![None, None]);
     assert_eq!(new_root.get(structural_key, &1), Some(&10));
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert!(!created.is_empty());
 }
 
 #[test]
@@ -1686,7 +1686,7 @@ fn test_persist_mutations_noop_and_remove_existing() {
     .expect("empty mutation batch should succeed");
     assert_eq!(same_root.structural_hash, root.structural_hash);
     assert!(displaced.is_empty());
-    assert_eq!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert!(created.is_empty());
 
     let (removed_root, displaced, created) =
         persist_mutations(&root, structural_key, vec![(1_u64, None)], &mut resolver)
@@ -1694,14 +1694,14 @@ fn test_persist_mutations_noop_and_remove_existing() {
     assert_eq!(displaced, vec![Some(10)]);
     assert_eq!(removed_root.get(structural_key, &1), None);
     assert_eq!(removed_root.get(structural_key, &2), Some(&20));
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert!(!created.is_empty());
 
     let (single_removed_root, displaced, created) =
         persist_mutation(&root, structural_key, 1_u64, None, &mut resolver)
             .expect("single remove mutation should succeed");
     assert_eq!(displaced, Some(10));
     assert_eq!(single_removed_root.get(structural_key, &2), Some(&20));
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert!(!created.is_empty());
 }
 
 #[test]
@@ -1855,7 +1855,7 @@ fn test_hamt_remove_empties_root() {
     assert_eq!(displaced, Some(42_u64));
     assert_eq!(new_root.datamap, 0);
     assert_eq!(new_root.nodemap, 0);
-    assert_eq!(new_root.leaves, [] as [(u64, u64); 0]);
+    assert!(new_root.leaves.is_empty());
     assert!(new_root.children.is_empty());
 }
 
@@ -2031,8 +2031,8 @@ fn test_diff_node_hashes_root_only_change() {
     // Identical roots: nothing superseded, nothing new.
     let delta_same = crate::hamt::diff_node_hashes(&root_a, &root_a, &mut resolver)
         .expect("diff should succeed");
-    assert_eq!(delta_same.superseded_node_hashes, [] as [[u8; 32]; 0]);
-    assert_eq!(delta_same.new_node_hashes, [] as [[u8; 32]; 0]);
+    assert!(delta_same.superseded_node_hashes.is_empty());
+    assert!(delta_same.new_node_hashes.is_empty());
 }
 
 #[test]
@@ -2058,8 +2058,8 @@ fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
         .superseded_node_hashes
         .contains(&root_a.structural_hash));
     assert!(delta.new_node_hashes.contains(&root_b.structural_hash));
-    assert_ne!(delta.superseded_node_hashes, [] as [[u8; 32]; 0]);
-    assert_ne!(delta.new_node_hashes, [] as [[u8; 32]; 0]);
+    assert!(!delta.superseded_node_hashes.is_empty());
+    assert!(!delta.new_node_hashes.is_empty());
 
     assert_diff_is_gc_safe(
         &root_a,
@@ -2169,8 +2169,8 @@ fn test_diff_node_hashes_structural_hash_fast_path_without_ptr_eq() {
 
     let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
-    assert_eq!(delta.superseded_node_hashes, [] as [[u8; 32]; 0]);
-    assert_eq!(delta.new_node_hashes, [] as [[u8; 32]; 0]);
+    assert!(delta.superseded_node_hashes.is_empty());
+    assert!(delta.new_node_hashes.is_empty());
 }
 
 #[test]
@@ -4386,7 +4386,7 @@ fn test_refcount_debug_guard_catches_branching_hazard() {
     let key = b"dummy_server_key";
     let root = build_root(key, 8);
     let hashes = reachable_hashes(&root);
-    assert_ne!(hashes, [] as [[u8; 32]; 0]);
+    assert!(!hashes.is_empty());
 
     // Simulate: `apply_superseded` reported `hashes[0]` as zeroed, but it is
     // in fact still reachable from a different, still-live root (the
@@ -4752,7 +4752,7 @@ fn test_persist_chain_overwrite_then_revert() {
 
     assert_eq!(steps[0].displaced, Some(100_u64));
     assert_ne!(steps[0].root_hash, root_0.structural_hash);
-    assert_ne!(steps[0].created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert!(!steps[0].created.is_empty());
 
     assert_eq!(steps[1].displaced, Some(200_u64));
     // Step 2 restored state to exact root_0
@@ -4797,7 +4797,7 @@ fn test_hamt_deep_split_mutation() {
         let (new_root, _, created) =
             persist_mutation(&root, key, i, Some(u64::from(i) * 10), &mut no_resolver)
                 .expect("persist mutation");
-        assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+        assert!(!created.is_empty());
         root = new_root;
     }
 

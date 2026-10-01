@@ -621,19 +621,19 @@ fn test_compute_merge_bases_convergence_and_edge_cases() {
     // Fewer than 2 extremities -> empty.
     assert_eq!(
         rezzy::compute_merge_bases(&["A"], &events_map, 100),
-        [] as [rezzy::MergeBase<&std::string::String>; 0]
+        Vec::<rezzy::MergeBase<&std::string::String>>::new()
     );
 
     // Zero step budget -> no traversal happens.
     assert_eq!(
         rezzy::compute_merge_bases(&["A", "B"], &events_map, 0),
-        [] as [rezzy::MergeBase<&std::string::String>; 0]
+        Vec::<rezzy::MergeBase<&std::string::String>>::new()
     );
 
     // Disjoint tips -> no common ancestor, empty result.
     assert_eq!(
         rezzy::compute_merge_bases(&["X", "Y"], &events_map, 100),
-        [] as [rezzy::MergeBase<&std::string::String>; 0]
+        Vec::<rezzy::MergeBase<&std::string::String>>::new()
     );
 }
 

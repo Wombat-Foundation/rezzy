@@ -980,10 +980,7 @@ fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
     );
 
     assert_eq!(accepted, vec!["$create", "$foreign_pl", "$msg"]);
-    assert_eq!(
-        rejected,
-        [] as [(std::string::String, rezzy::auth::AuthError); 0]
-    );
+    assert_eq!(rejected, Vec::<(String, rezzy::auth::AuthError)>::new());
 }
 
 #[test]

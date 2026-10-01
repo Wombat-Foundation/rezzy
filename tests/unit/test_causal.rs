@@ -181,7 +181,7 @@ fn causal_non_inclusion_proof_on_empty_set() {
 #[test]
 fn verify_causal_inclusion_rejects_tampered_sibling() {
     let (_s, a, _b, mut path, root, count) = two_key_inclusion();
-    assert_ne!(path, [] as [rezzy::merkle::causal::CausalProofStep; 0]);
+    assert!(!path.is_empty());
     path[0].hash[0] ^= 0xFF;
     assert!(!verify_causal_inclusion(&a, &path, root, count));
 }
@@ -320,10 +320,7 @@ fn compress_inclusion_roundtrip_root_level_sibling() {
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     // At least the root-level sibling should be a Step (the other
     // branch), but deeper levels may be EmptyRun.
-    assert_ne!(
-        compressed,
-        [] as [rezzy::merkle::causal::CompressedCausalStep; 0]
-    );
+    assert!(!compressed.is_empty());
     let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
     assert_eq!(decompressed.len(), path.len());
     assert!(verify_causal_inclusion(&k1, &decompressed, root, count));
@@ -383,15 +380,9 @@ fn compress_non_inclusion_on_empty_set() {
     assert!(path.is_empty());
     assert_eq!(terminal_depth, 0);
     let compressed = compress_causal_path(terminal_depth, &path);
-    assert_eq!(
-        compressed,
-        [] as [rezzy::merkle::causal::CompressedCausalStep; 0]
-    );
+    assert!(compressed.is_empty());
     let decompressed = decompress_causal_path(terminal_depth, &compressed).unwrap();
-    assert_eq!(
-        decompressed,
-        [] as [rezzy::merkle::causal::CausalProofStep; 0]
-    );
+    assert!(decompressed.is_empty());
     assert!(verify_causal_non_inclusion(
         &d,
         terminal_depth,
