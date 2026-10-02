@@ -49,7 +49,28 @@ pub(crate) fn decode(
     odd_syndromes: &[u64],
     max_elements: usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
-    decode_roots(prepare_locator(odd_syndromes, max_elements)?, find_roots)
+    let roots = decode_roots(prepare_locator(odd_syndromes, max_elements)?, find_roots)?;
+    require_reencode(roots, odd_syndromes)
+}
+
+/// MSC4521 phase-1 re-encode check: re-encoding the recovered roots into a
+/// temporary sketch MUST reproduce the residual syndromes ($O(k^2)$).
+///
+/// Done here, at the one place every caller decodes through, so the bucket,
+/// `decode_elements` and strata-estimator paths all get it.
+fn require_reencode(roots: Vec<u64>, odd_syndromes: &[u64]) -> Result<Vec<u64>, AlgebraicError> {
+    let mut check = vec![0_u64; odd_syndromes.len()];
+    for &root in &roots {
+        let squared = gf64_mul(root, root);
+        let mut odd_power = root;
+        for coordinate in &mut check {
+            *coordinate ^= odd_power;
+            odd_power = gf64_mul(odd_power, squared);
+        }
+    }
+    (check == odd_syndromes)
+        .then_some(roots)
+        .ok_or(AlgebraicError::DecodeFailure)
 }
 
 /// Like [`decode`], but draws factoring work from `budget` and leaves the
@@ -61,10 +82,11 @@ pub(crate) fn decode_with_budget(
     max_elements: usize,
     budget: &mut usize,
 ) -> Result<Vec<u64>, AlgebraicError> {
-    decode_roots(
+    let roots = decode_roots(
         prepare_locator(odd_syndromes, max_elements)?,
         |locator, roots| find_roots_with_budget(locator, roots, budget),
-    )
+    )?;
+    require_reencode(roots, odd_syndromes)
 }
 
 /// Finds the roots of an already-prepared locator and finalizes them, or
@@ -894,5 +916,29 @@ mod tests {
             sorted_recovered.sort_unstable();
             assert_eq!(sorted_recovered, expected);
         }
+    }
+
+    #[test]
+    fn reencode_accepts_the_true_set_and_rejects_anything_else() {
+        let mut odd = vec![0_u64; 4];
+        for root in [3_u64, 9] {
+            let squared = gf64_mul(root, root);
+            let mut power = root;
+            for coordinate in &mut odd {
+                *coordinate ^= power;
+                power = gf64_mul(power, squared);
+            }
+        }
+        assert_eq!(require_reencode(vec![3, 9], &odd), Ok(vec![3, 9]));
+        assert_eq!(
+            require_reencode(vec![3, 10], &odd),
+            Err(AlgebraicError::DecodeFailure)
+        );
+        // Unaccounted syndromes beyond the decoded roots are caught too.
+        assert_eq!(
+            require_reencode(vec![3], &odd),
+            Err(AlgebraicError::DecodeFailure)
+        );
+        assert_eq!(require_reencode(Vec::new(), &[0, 0]), Ok(Vec::new()));
     }
 }
