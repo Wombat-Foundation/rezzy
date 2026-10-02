@@ -16,7 +16,7 @@ fn load_uuids(filename: &str) -> (ResidentKernel, Vec<ElementHash>) {
         if uuid == "$" {
             continue;
         }
-        let hash = ElementHash::from_matrix_event_id(&uuid, EventIdFormat::Legacy).unwrap();
+        let hash = ElementHash::from_opaque_bytes(uuid.as_bytes());
         resident.insert(hash).unwrap();
         elements.push(hash);
     }
