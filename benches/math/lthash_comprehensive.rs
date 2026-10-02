@@ -25,9 +25,10 @@ use std::time::{Duration, Instant};
 
 use rezzy::state::LtHash;
 
-use crate::common::{generate_unique_entries, Xorshift128};
-
-type StateKey = (String, String);
+use crate::common::{
+    apply_state_op_lthash, generate_state_ops, generate_unique_entries, random_member_key,
+    StateKey, Xorshift128,
+};
 
 /// Largest state size run with `InputSize::Large` (~64 MiB of event IDs).
 const MAX_LARGE_STATE: usize = 1024;
@@ -35,9 +36,9 @@ const MAX_LARGE_STATE: usize = 1024;
 /// Input size categories for testing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputSize {
-    Small,   // Minimal event IDs like "$a"
-    Medium,  // Typical event IDs like "$event123:example.org"
-    Large,   // Max-length event IDs (65535 bytes)
+    Small,  // Minimal event IDs like "$a"
+    Medium, // Typical event IDs like "$event123:example.org"
+    Large,  // Max-length event IDs (65535 bytes)
 }
 
 impl InputSize {
@@ -74,21 +75,10 @@ impl InputSize {
 
 /// Generate entries with configurable input size
 fn make_entries_with_size(n: usize, seed: u64, size: InputSize) -> Vec<(StateKey, String)> {
-    generate_unique_entries(
-        n,
-        seed,
-        |rng| {
-            let uid = rng.next_u64() % 1_000_000;
-            (
-                "m.room.member".to_string(),
-                format!("@user{uid}:example.org"),
-            )
-        },
-        |rng| {
-            let index = rng.next_u64() as usize;
-            size.generate_event_id(rng, index)
-        },
-    )
+    generate_unique_entries(n, seed, random_member_key, |rng| {
+        let index = rng.next_u64() as usize;
+        size.generate_event_id(rng, index)
+    })
 }
 
 /// Benchmark a single operation type
@@ -131,7 +121,10 @@ fn bench_single_operations(size: InputSize) {
     let elapsed = bench_single_op(iterations, || {
         black_box(LtHash::seed(event_type, state_key, &event_id));
     });
-    println!("  seed()            : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  seed()            : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 
     // Benchmark insert (seed + add)
     let mut lt = LtHash::ZERO;
@@ -139,7 +132,10 @@ fn bench_single_operations(size: InputSize) {
         lt.insert(event_type, state_key, &event_id);
         black_box(&lt);
     });
-    println!("  insert()          : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  insert()          : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 
     // Benchmark remove (seed + sub)
     let seed = LtHash::seed(event_type, state_key, &event_id);
@@ -149,7 +145,10 @@ fn bench_single_operations(size: InputSize) {
         lt.remove(event_type, state_key, &event_id);
         black_box(&lt);
     });
-    println!("  remove()          : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  remove()          : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 
     // Benchmark replace (2 seeds + add + sub)
     let event_id2 = size.generate_event_id(&mut rng, 1);
@@ -160,7 +159,10 @@ fn bench_single_operations(size: InputSize) {
         lt.replace(event_type, state_key, &event_id2, &event_id);
         black_box(&lt);
     });
-    println!("  replace (x2)      : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  replace (x2)      : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 
     // Benchmark lattice add (just the arithmetic, no expansion)
     let seed1 = LtHash::seed(event_type, state_key, &event_id);
@@ -171,7 +173,10 @@ fn bench_single_operations(size: InputSize) {
         lt.add_seed(&seed2);
         black_box(&lt);
     });
-    println!("  add_lattice (x2)  : {}", format_ns_per_op(elapsed, iterations * 10));
+    println!(
+        "  add_lattice (x2)  : {}",
+        format_ns_per_op(elapsed, iterations * 10)
+    );
 
     // Benchmark lattice sub (just the arithmetic, no expansion)
     let mut lt = seed1;
@@ -180,7 +185,10 @@ fn bench_single_operations(size: InputSize) {
         lt.add_seed(&seed2);
         black_box(&lt);
     });
-    println!("  sub_lattice (x2)  : {}", format_ns_per_op(elapsed, iterations * 10));
+    println!(
+        "  sub_lattice (x2)  : {}",
+        format_ns_per_op(elapsed, iterations * 10)
+    );
 
     // Benchmark digest (BLAKE3 collapse)
     let mut lt = LtHash::ZERO;
@@ -191,7 +199,10 @@ fn bench_single_operations(size: InputSize) {
     let elapsed = bench_single_op(iterations, || {
         black_box(lt.digest());
     });
-    println!("  digest()          : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  digest()          : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 }
 
 /// Run multi/batch operation benchmarks
@@ -220,15 +231,12 @@ fn bench_batch_operations(size: InputSize) {
         let iterations = (10_000 / batch_size.max(1)) as u32;
         let mut lt = LtHash::ZERO;
 
-        let elapsed = bench_single_op(
-            iterations,
-            || {
-                for seed in &seeds {
-                    lt.add_seed(seed);
-                }
-                black_box(&lt);
-            },
-        );
+        let elapsed = bench_single_op(iterations, || {
+            for seed in &seeds {
+                lt.add_seed(seed);
+            }
+            black_box(&lt);
+        });
         println!(
             "  batch insert [{:>4}]: {} ({} seeds = {} total ops)",
             batch_size,
@@ -243,15 +251,12 @@ fn bench_batch_operations(size: InputSize) {
             lt.add_seed(seed);
         }
 
-        let elapsed = bench_single_op(
-            iterations,
-            || {
-                for seed in &seeds {
-                    lt.sub_seed(seed);
-                }
-                black_box(&lt);
-            },
-        );
+        let elapsed = bench_single_op(iterations, || {
+            for seed in &seeds {
+                lt.sub_seed(seed);
+            }
+            black_box(&lt);
+        });
         println!(
             "  batch remove [{:>4}]: {} ({} seeds = {} total ops)",
             batch_size,
@@ -264,7 +269,10 @@ fn bench_batch_operations(size: InputSize) {
 
 /// Run large batch / bulk state construction benchmarks
 fn bench_bulk_construction(size: InputSize) {
-    println!("\n=== Bulk State Construction (input size: {}) ===", size.name());
+    println!(
+        "\n=== Bulk State Construction (input size: {}) ===",
+        size.name()
+    );
 
     let state_sizes = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
 
@@ -278,12 +286,9 @@ fn bench_bulk_construction(size: InputSize) {
         let iterations = ((1000 / (state_size / 16).max(1)) as u32).max(1);
 
         // Benchmark from_state (full state hashing)
-        let elapsed = bench_single_op(
-            iterations,
-            || {
-                black_box(LtHash::from_state_map(&entries));
-            },
-        );
+        let elapsed = bench_single_op(iterations, || {
+            black_box(LtHash::from_state_map(&entries));
+        });
         println!(
             "  from_state [{:>5}]: {} ({} entries × {} iters = {} total)",
             state_size,
@@ -294,16 +299,13 @@ fn bench_bulk_construction(size: InputSize) {
         );
 
         // Benchmark incremental build (insert one by one)
-        let elapsed = bench_single_op(
-            iterations,
-            || {
-                let mut lt = LtHash::ZERO;
-                for ((event_type, state_key), event_id) in &entries {
-                    lt.insert(event_type, state_key, event_id);
-                }
-                black_box(lt);
-            },
-        );
+        let elapsed = bench_single_op(iterations, || {
+            let mut lt = LtHash::ZERO;
+            for ((event_type, state_key), event_id) in &entries {
+                lt.insert(event_type, state_key, event_id);
+            }
+            black_box(lt);
+        });
         println!(
             "  incremental   [{:>5}]: {} ({} entries × {} iters = {} total)",
             state_size,
@@ -317,7 +319,10 @@ fn bench_bulk_construction(size: InputSize) {
 
 /// Run incremental mutation benchmarks (the original benchmark style)
 fn bench_incremental_mutations(size: InputSize) {
-    println!("\n=== Incremental Mutations (input size: {}) ===", size.name());
+    println!(
+        "\n=== Incremental Mutations (input size: {}) ===",
+        size.name()
+    );
 
     let state_sizes = [16, 64, 256, 1024, 4096, 16384, 65536];
     let steps = 300;
@@ -337,52 +342,12 @@ fn bench_incremental_mutations(size: InputSize) {
         let mut rng = Xorshift128::new(0xBEEF);
         let existing_keys: Vec<StateKey> = state.keys().cloned().collect();
 
-        enum Op {
-            Insert(StateKey, String),
-            Overwrite(StateKey, String),
-            Remove(StateKey),
-        }
-        let mut ops = Vec::with_capacity(steps);
-        for _ in 0..steps {
-            let roll = rng.next_u64() % 10;
-            if roll < 6 {
-                let key = (
-                    "m.room.member".to_string(),
-                    format!("@user{}:example.org", rng.next_u64()),
-                );
-                ops.push(Op::Insert(
-                    key,
-                    format!("$event{}:example.org", rng.next_u64()),
-                ));
-            } else if roll < 9 {
-                let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
-                ops.push(Op::Overwrite(
-                    key,
-                    format!("$event{}:example.org", rng.next_u64()),
-                ));
-            } else {
-                let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
-                ops.push(Op::Remove(key));
-            }
-        }
+        let ops = generate_state_ops(&mut rng, &existing_keys, steps);
 
         // LtHash incremental
         let lt_start = Instant::now();
         for op in &ops {
-            match op {
-                Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                    if let Some(old) = state.insert(k.clone(), v.clone()) {
-                        lt.replace(&k.0, &k.1, &old, v);
-                    } else {
-                        lt.insert(&k.0, &k.1, v);
-                    }
-                }
-                Op::Remove(k) => {
-                    if let Some(old) = state.remove(k) {
-                        lt.remove(&k.0, &k.1, &old);
-                    }
-                }
-            }
+            apply_state_op_lthash(&mut state, &mut lt, op);
             black_box(lt.digest());
         }
         let lt_elapsed = lt_start.elapsed();
@@ -463,7 +428,10 @@ fn bench_lattice_arithmetic() {
 /// pre-migration SHAKE256 backend is deliberately absent: it is no longer a
 /// code path, and keeping it here would only measure dead work.
 fn bench_expansion_backends(size: InputSize) {
-    println!("\n=== BLAKE3 Expansion and Collapse (input size: {}) ===", size.name());
+    println!(
+        "\n=== BLAKE3 Expansion and Collapse (input size: {}) ===",
+        size.name()
+    );
 
     let mut rng = Xorshift128::new(0x5EED);
     let event_type = "m.room.member";
@@ -485,7 +453,10 @@ fn bench_expansion_backends(size: InputSize) {
         hasher.finalize_xof().fill(&mut buf);
         black_box(buf);
     });
-    println!("  XOF expansion     : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  XOF expansion     : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 
     // The collapse half: one 2 KiB lattice in, 32 bytes out.
     let mut lattice = LtHash::ZERO;
@@ -497,7 +468,10 @@ fn bench_expansion_backends(size: InputSize) {
     let elapsed = bench_single_op(iterations, || {
         black_box(blake3::Hasher::new().update(&lattice_bytes).finalize());
     });
-    println!("  collapse          : {}", format_ns_per_op(elapsed, iterations));
+    println!(
+        "  collapse          : {}",
+        format_ns_per_op(elapsed, iterations)
+    );
 }
 
 /// Benchmark trait for extension - allows testing custom LtHash implementations

@@ -38,23 +38,15 @@ use std::time::{Duration, Instant};
 
 use rezzy::state::LtHash;
 
-use crate::common::{generate_unique_entries, sha256_sorted_hash, xor_fold_sha256, Xorshift128};
-
-type StateKey = (String, String); // (event_type, state_key)
+use crate::common::{
+    apply_state_op, apply_state_op_lthash, generate_state_ops, generate_unique_entries,
+    random_member_key, sha256_sorted_hash, xor_fold_sha256, StateKey, Xorshift128,
+};
 
 fn make_entries(n: usize, seed: u64) -> Vec<(StateKey, String)> {
-    generate_unique_entries(
-        n,
-        seed,
-        |rng| {
-            let uid = rng.next_u64() % 1_000_000;
-            (
-                "m.room.member".to_string(),
-                format!("@user{uid}:example.org"),
-            )
-        },
-        |rng| format!("$event{}:example.org", rng.next_u64()),
-    )
+    generate_unique_entries(n, seed, random_member_key, |rng| {
+        format!("$event{}:example.org", rng.next_u64())
+    })
 }
 
 fn canonical_row(event_type: &str, state_key: &str, event_id: &str) -> Vec<u8> {
@@ -113,46 +105,12 @@ fn bench_incremental_hash(n: usize, steps: usize) {
 
     let mut rng = Xorshift128::new(0xBEEF);
     let existing_keys: Vec<StateKey> = state.keys().cloned().collect();
-    enum Op {
-        Insert(StateKey, String),
-        Overwrite(StateKey, String),
-        Remove(StateKey),
-    }
-    let mut ops = Vec::with_capacity(steps);
-    for _ in 0..steps {
-        let roll = rng.next_u64() % 10;
-        if roll < 6 {
-            let key = (
-                "m.room.member".to_string(),
-                format!("@user{}:example.org", rng.next_u64()),
-            );
-            ops.push(Op::Insert(
-                key,
-                format!("$event{}:example.org", rng.next_u64()),
-            ));
-        } else if roll < 9 {
-            let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
-            ops.push(Op::Overwrite(
-                key,
-                format!("$event{}:example.org", rng.next_u64()),
-            ));
-        } else {
-            let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
-            ops.push(Op::Remove(key));
-        }
-    }
+    let ops = generate_state_ops(&mut rng, &existing_keys, steps);
 
     let mut conduwuit_state = state.clone();
     let conduwuit_start = Instant::now();
     for op in &ops {
-        match op {
-            Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                conduwuit_state.insert(k.clone(), v.clone());
-            }
-            Op::Remove(k) => {
-                conduwuit_state.remove(k);
-            }
-        }
+        apply_state_op(&mut conduwuit_state, op);
         std::hint::black_box(conduwuit_style_hash(&conduwuit_state));
     }
     let conduwuit_elapsed = conduwuit_start.elapsed();
@@ -160,34 +118,14 @@ fn bench_incremental_hash(n: usize, steps: usize) {
     let mut synapse_state = state.clone();
     let synapse_start = Instant::now();
     for op in &ops {
-        match op {
-            Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                synapse_state.insert(k.clone(), v.clone());
-            }
-            Op::Remove(k) => {
-                synapse_state.remove(k);
-            }
-        }
+        apply_state_op(&mut synapse_state, op);
         std::hint::black_box(synapse_style_hash(&synapse_state));
     }
     let synapse_elapsed = synapse_start.elapsed();
 
     let lt_start = Instant::now();
     for op in &ops {
-        match op {
-            Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                if let Some(old) = state.insert(k.clone(), v.clone()) {
-                    lt.replace(&k.0, &k.1, &old, v);
-                } else {
-                    lt.insert(&k.0, &k.1, v);
-                }
-            }
-            Op::Remove(k) => {
-                if let Some(old) = state.remove(k) {
-                    lt.remove(&k.0, &k.1, &old);
-                }
-            }
-        }
+        apply_state_op_lthash(&mut state, &mut lt, op);
         std::hint::black_box(lt.digest());
     }
     let lt_elapsed = lt_start.elapsed();

@@ -386,3 +386,89 @@ pub fn member_event(
         room_id: None,
     }
 }
+
+/// `(event_type, state_key)` pair keying a room state map.
+pub type StateKey = (String, String);
+
+/// Draws a random `m.room.member` key from a bounded user-id space.
+pub fn random_member_key(rng: &mut Xorshift128) -> StateKey {
+    let uid = rng.next_u64() % 1_000_000;
+    (
+        "m.room.member".to_string(),
+        format!("@user{uid}:example.org"),
+    )
+}
+
+/// One state mutation for the incremental `LtHash` benches.
+pub enum StateOp {
+    Insert(StateKey, String),
+    Overwrite(StateKey, String),
+    Remove(StateKey),
+}
+
+/// Generates `steps` mutations (60% insert, 30% overwrite, 10% remove) over
+/// `existing_keys`, deterministically from `rng`.
+pub fn generate_state_ops(
+    rng: &mut Xorshift128,
+    existing_keys: &[StateKey],
+    steps: usize,
+) -> Vec<StateOp> {
+    let mut ops = Vec::with_capacity(steps);
+    for _ in 0..steps {
+        let roll = rng.next_u64() % 10;
+        if roll < 6 {
+            let key = (
+                "m.room.member".to_string(),
+                format!("@user{}:example.org", rng.next_u64()),
+            );
+            ops.push(StateOp::Insert(
+                key,
+                format!("$event{}:example.org", rng.next_u64()),
+            ));
+        } else if roll < 9 {
+            let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
+            ops.push(StateOp::Overwrite(
+                key,
+                format!("$event{}:example.org", rng.next_u64()),
+            ));
+        } else {
+            let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
+            ops.push(StateOp::Remove(key));
+        }
+    }
+    ops
+}
+
+/// Applies `op` to the plain state map only.
+pub fn apply_state_op(state: &mut HashMap<StateKey, String>, op: &StateOp) {
+    match op {
+        StateOp::Insert(k, v) | StateOp::Overwrite(k, v) => {
+            state.insert(k.clone(), v.clone());
+        }
+        StateOp::Remove(k) => {
+            state.remove(k);
+        }
+    }
+}
+
+/// Applies `op` to the state map and incrementally updates `lt` to match.
+pub fn apply_state_op_lthash(
+    state: &mut HashMap<StateKey, String>,
+    lt: &mut rezzy::state::LtHash,
+    op: &StateOp,
+) {
+    match op {
+        StateOp::Insert(k, v) | StateOp::Overwrite(k, v) => {
+            if let Some(old) = state.insert(k.clone(), v.clone()) {
+                lt.replace(&k.0, &k.1, &old, v);
+            } else {
+                lt.insert(&k.0, &k.1, v);
+            }
+        }
+        StateOp::Remove(k) => {
+            if let Some(old) = state.remove(k) {
+                lt.remove(&k.0, &k.1, &old);
+            }
+        }
+    }
+}
