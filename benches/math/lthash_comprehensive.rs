@@ -474,7 +474,7 @@ fn bench_expansion_backends(size: InputSize) {
         let id = size.generate_event_id(&mut rng, i);
         lattice.insert(event_type, state_key, &id);
     }
-    let lattice_bytes = lattice.lattice_bytes();
+    let lattice_bytes = lattice.to_bytes();
     let elapsed = bench_single_op(iterations, || {
         black_box(blake3::Hasher::new().update(&lattice_bytes).finalize());
     });

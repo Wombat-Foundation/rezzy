@@ -91,7 +91,7 @@ use core::ops::{Add, AddAssign, Sub, SubAssign};
 /// `StateUpdate::New/Unchanged` now carry `&LtHash` (borrowed, zero-copy); callers
 /// that need to retain the hash (e.g. across a thread channel) copy it explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LtLattice<const LANES: usize>(pub [u16; LANES]);
+pub struct LtLattice<const LANES: usize>([u16; LANES]);
 
 /// The MSC4500-shaped 2048-byte state hash: 1024 lanes of 16 bits.
 ///
@@ -303,7 +303,8 @@ impl<const LANES: usize> LtLattice<LANES> {
     ///
     /// [`LtHash`] is a type alias for one instantiation of this type, and Rust does not
     /// allow a type alias to be used as a tuple-struct constructor, so this is the
-    /// supported way to spell `LtHash([..])`.
+    /// supported way to spell `LtHash([..])`. See also `From<[u16; LANES]>` and
+    /// [`LtLattice::from_bytes`].
     #[must_use]
     pub const fn from_lanes(lanes: [u16; LANES]) -> Self {
         Self(lanes)
@@ -562,14 +563,32 @@ impl<const LANES: usize> LtLattice<LANES> {
     /// Serialize the raw lanes as the little-endian byte string the digest is taken over.
     ///
     /// This is the same 2048-byte buffer a [`Self::digest`] hashes, exposed for callers
-    /// that need to transmit or store the accumulator itself.
+    /// that need to transmit or store the accumulator itself. The inverse is
+    /// [`Self::from_bytes`].
     #[must_use]
-    pub fn lattice_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.0.len().wrapping_mul(2));
         for lane in &self.0 {
             bytes.extend_from_slice(&lane.to_le_bytes());
         }
         bytes
+    }
+
+    /// Parse an accumulator back out of a little-endian lane byte string.
+    ///
+    /// Returns [`None`] unless `bytes` is exactly `LANES * 2` long; there is no
+    /// zero-padding or truncation, so a length mismatch is always a corrupt or
+    /// foreign buffer rather than a recoverable one.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != LANES.wrapping_mul(2) {
+            return None;
+        }
+        let mut lanes = [0u16; LANES];
+        for (lane, chunk) in lanes.iter_mut().zip(bytes.chunks_exact(2)) {
+            *lane = u16::from_le_bytes([chunk[0], chunk[1]]);
+        }
+        Some(Self(lanes))
     }
 
     /// Finalize into the 32-byte wire digest: `BLAKE3(S)`, where `S` is the lattice.
@@ -650,6 +669,68 @@ impl<'a, const LANES: usize> FromIterator<(&'a str, &'a str, &'a str)> for LtLat
         let mut hash = Self::ZERO;
         hash.extend(items);
         hash
+    }
+}
+
+/// `lanes.into()` / `LtHash::from(lanes)`.
+///
+/// [`LtHash`] is a type alias, and Rust does not let a type alias be called as a
+/// tuple-struct constructor, so this plus [`LtLattice::from_lanes`] are the ways to
+/// spell the constructor that `LtHash([..])` would have been.
+impl<const LANES: usize> From<[u16; LANES]> for LtLattice<LANES> {
+    #[inline]
+    fn from(lanes: [u16; LANES]) -> Self {
+        Self(lanes)
+    }
+}
+
+/// Inverse of [`LtLattice::to_bytes`]; see [`LtLattice::from_bytes`].
+///
+/// Fails if the slice is not exactly `LANES * 2` bytes.
+impl<const LANES: usize> TryFrom<&[u8]> for LtLattice<LANES> {
+    type Error = WrongLatticeLength;
+
+    #[inline]
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(bytes).ok_or(WrongLatticeLength {
+            expected: LANES.wrapping_mul(2),
+            found: bytes.len(),
+        })
+    }
+}
+
+/// A lattice byte string was not `LANES * 2` bytes long.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrongLatticeLength {
+    /// Byte length the target width requires.
+    pub expected: usize,
+    /// Byte length the input actually had.
+    pub found: usize,
+}
+
+impl core::fmt::Display for WrongLatticeLength {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "lattice byte string is {} bytes, expected {}",
+            self.found, self.expected
+        )
+    }
+}
+
+impl core::error::Error for WrongLatticeLength {}
+
+impl<const LANES: usize> From<LtLattice<LANES>> for [u16; LANES] {
+    #[inline]
+    fn from(lattice: LtLattice<LANES>) -> Self {
+        lattice.into_lattice()
+    }
+}
+
+impl<const LANES: usize> AsRef<[u16]> for LtLattice<LANES> {
+    #[inline]
+    fn as_ref(&self) -> &[u16] {
+        self.lattice()
     }
 }
 
@@ -1305,14 +1386,45 @@ mod tests {
         assert_eq!(*h.lattice(), h.into_lattice());
         assert_eq!(h.finalize_both().0, h.into_lattice());
         assert_eq!(h.finalize_both().1, h.digest());
-        assert_eq!(h.lattice_bytes().len(), 2048);
+        assert_eq!(h.to_bytes().len(), 2048);
         assert_eq!(
-            h.lattice_bytes(),
+            h.to_bytes(),
             h.into_lattice()
                 .iter()
                 .flat_map(|lane| lane.to_le_bytes())
                 .collect::<Vec<u8>>()
         );
+    }
+
+    #[test]
+    fn test_bytes_roundtrip() {
+        let mut h = LtHash::ZERO;
+        h.insert("m.room.create", "", "$c");
+
+        let bytes = h.to_bytes();
+        assert_eq!(LtHash::from_bytes(&bytes), Some(h));
+        assert_eq!(LtHash::try_from(bytes.as_slice()), Ok(h));
+
+        // Every constructor spelling agrees, including the ones that work through the
+        // `LtHash` alias rather than naming `LtLattice<1024>`.
+        let lanes = h.into_lattice();
+        assert_eq!(LtHash::from_lanes(lanes), h);
+        assert_eq!(LtHash::from(lanes), h);
+        assert_eq!(<[u16; 1024]>::from(h), lanes);
+        assert_eq!(h.as_ref(), lanes.as_slice());
+
+        // A wrong-width buffer is rejected, never zero-padded or truncated.
+        assert_eq!(LtHash::from_bytes(&bytes[..2046]), None);
+        assert_eq!(
+            LtHash::try_from(&bytes[..2046]),
+            Err(WrongLatticeLength {
+                expected: 2048,
+                found: 2046
+            })
+        );
+        assert_eq!(LtHash::from_bytes(&[]), None);
+        assert!(LtLattice::<8>::from_bytes(&[0u8; 16]).is_some());
+        assert_eq!(LtLattice::<8>::from_bytes(&[0u8; 18]), None);
     }
 
     #[test]
@@ -1327,7 +1439,7 @@ mod tests {
 
             let digest = h.digest();
             assert_eq!(h.finalize_both(), (h.into_lattice(), digest));
-            assert_eq!(h.lattice_bytes().len(), LANES.wrapping_mul(2));
+            assert_eq!(h.to_bytes().len(), LANES.wrapping_mul(2));
 
             h.remove("m.room.create", "", "$c");
             h.remove("m.room.member", "@a:x", "$m");
@@ -1345,7 +1457,7 @@ mod tests {
         let narrow = LtLattice::<8>::seed("m.room.create", "", &"$c");
         let wide = LtHash::seed("m.room.create", "", &"$c");
         assert_ne!(narrow.digest(), wide.digest());
-        assert_ne!(narrow.lattice_bytes().len(), wide.lattice_bytes().len());
+        assert_ne!(narrow.to_bytes().len(), wide.to_bytes().len());
     }
 
     #[test]
@@ -1406,7 +1518,7 @@ mod tests {
             URL_SAFE_NO_PAD.encode(bytes)
         }
         fn lanes_hex(hash: &LtHash) -> String {
-            hex(&hash.lattice_bytes()[..16])
+            hex(&hash.to_bytes()[..16])
         }
 
         // The empty accumulator still collapses to a real digest rather than a
@@ -1418,7 +1530,7 @@ mod tests {
         );
 
         let seed1 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_1");
-        assert_eq!(hex(&seed1.lattice_bytes()[..8]), "c3b425b048d36923");
+        assert_eq!(hex(&seed1.to_bytes()[..8]), "c3b425b048d36923");
         let mut s1 = LtHash::ZERO;
         s1.add_seed(&seed1);
         assert_eq!(lanes_hex(&s1), "c3b425b048d369230ec3b609c1f0c5a5");
@@ -1428,7 +1540,7 @@ mod tests {
         );
 
         let seed2 = LtHash::seed("m.room.name", "", &"$event_2");
-        assert_eq!(hex(&seed2.lattice_bytes()[..8]), "a6f3137486864ae3");
+        assert_eq!(hex(&seed2.to_bytes()[..8]), "a6f3137486864ae3");
         let mut s2 = s1;
         s2.add_seed(&seed2);
         assert_eq!(lanes_hex(&s2), "69a83824ce59b3064470e993c77e73fe");
@@ -1439,7 +1551,7 @@ mod tests {
 
         // Removing the first seed must land exactly back on the second state.
         let seed3 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_3");
-        assert_eq!(hex(&seed3.lattice_bytes()[..8]), "2092781e84ce05bf");
+        assert_eq!(hex(&seed3.to_bytes()[..8]), "2092781e84ce05bf");
         let mut s3 = s2;
         s3.sub_seed(&seed1);
         s3.add_seed(&seed3);

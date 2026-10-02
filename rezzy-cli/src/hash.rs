@@ -253,7 +253,7 @@ fn report<const LANES: usize>(hash: &LtLattice<LANES>, plan: &Plan) -> rezzy::Js
     let mut out = rezzy::json!({
         "dst": String::from_utf8_lossy(&plan.dst).into_owned(),
         "lanes": LANES,
-        "lattice_bytes": LANES.wrapping_mul(2),
+        "byte_len": LANES.wrapping_mul(2),
         "elements": plan.element_count(),
     });
 
@@ -262,10 +262,7 @@ fn report<const LANES: usize>(hash: &LtLattice<LANES>, plan: &Plan) -> rezzy::Js
         let _ = out.insert("digest".to_owned(), rezzy::json!(digest));
     }
     if plan.output.wants_lattice() {
-        let _ = out.insert(
-            "lattice".to_owned(),
-            rezzy::json!(hex(&hash.lattice_bytes())),
-        );
+        let _ = out.insert("lattice".to_owned(), rezzy::json!(hex(&hash.to_bytes())));
     }
     out
 }
@@ -669,7 +666,7 @@ mod tests {
         let mut summed = LtHash::ZERO;
         summed.add_seed(&LtHash::seed("m.room.member", "@alice:x", &"$one"));
         summed.add_seed(&LtHash::seed("m.room.name", "", &"$two"));
-        assert_eq!(first["lattice"], rezzy::json!(hex(&summed.lattice_bytes())));
+        assert_eq!(first["lattice"], rezzy::json!(hex(&summed.to_bytes())));
         assert_ne!(one["lattice"].as_str(), two["lattice"].as_str());
     }
 
@@ -698,7 +695,7 @@ mod tests {
     fn lane_count_changes_the_width_but_not_the_element_count() {
         let out = run(&["--event", "m.room.create,,$c", "--lanes", "8"]);
         assert_eq!(out["lanes"], rezzy::json!(8));
-        assert_eq!(out["lattice_bytes"], rezzy::json!(16));
+        assert_eq!(out["byte_len"], rezzy::json!(16));
         let wide = run(&["--event", "m.room.create,,$c"]);
         assert_ne!(out["digest"], wide["digest"]);
     }
