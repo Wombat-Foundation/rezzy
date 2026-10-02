@@ -676,6 +676,15 @@ mod tests {
     use alloc::borrow::ToOwned;
     use alloc::vec;
 
+    /// Asserts the adjacency, version and thread relation shared by the
+    /// thread-reply extraction fixtures.
+    fn assert_thread_adjacency(view: &MatrixEventView<'_, '_>) {
+        assert_eq!(view.prev_events, &["$p"]);
+        assert_eq!(view.auth_events, &["$a"]);
+        assert_eq!(view.room_version, Some("10"));
+        assert_eq!(view.relates_to, Some(("m.thread", "$root")));
+    }
+
     #[test]
     fn raw_jsonl_spans_skip_blank_lines() {
         let input = b"\n {\"event_id\":\"$a\"}\n\n{\"event_id\":\"$b\"}";
@@ -700,10 +709,7 @@ mod tests {
         assert_eq!(view.room_id, Some("!r:x"));
         assert_eq!(view.event_type, Some("m.room.message"));
         assert_eq!(view.state_key, Some(""));
-        assert_eq!(view.prev_events, &["$p"]);
-        assert_eq!(view.auth_events, &["$a"]);
-        assert_eq!(view.room_version, Some("10"));
-        assert_eq!(view.relates_to, Some(("m.thread", "$root")));
+        assert_thread_adjacency(&view);
     }
 
     #[test]
@@ -788,10 +794,7 @@ mod tests {
         let mut scratch = MatrixEventScratch::with_capacity(4, 4, 64);
         let view = extract_matrix_event_into(raw, &mut scratch).unwrap();
         assert_eq!(view.event_id, Some("$e"));
-        assert_eq!(view.prev_events, &["$p"]);
-        assert_eq!(view.auth_events, &["$a"]);
-        assert_eq!(view.room_version, Some("10"));
-        assert_eq!(view.relates_to, Some(("m.thread", "$root")));
+        assert_thread_adjacency(&view);
     }
 
     #[test]

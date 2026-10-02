@@ -897,6 +897,14 @@ mod tests {
         )
     }
 
+    fn resolve_full(
+        parents: &[SharedStateMap],
+        events: &HashMap<String, LeanEvent>,
+    ) -> ResolvedState {
+        let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
+        rezzy::resolve_state_maps(&bare, events, StateResVersion::V2_1)
+    }
+
     fn resolve_indexed(
         parents: &[SharedStateMap],
         events: &HashMap<String, LeanEvent>,
@@ -950,8 +958,7 @@ mod tests {
         let parents = vec![state_a, state_b];
         let indexed = resolve_indexed(&parents, &events);
 
-        let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
-        let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
+        let full = resolve_full(&parents, &events);
 
         assert_eq!(
             indexed.as_ref(),
@@ -1002,9 +1009,7 @@ mod tests {
         ]);
 
         let parents = vec![state_a, state_b];
-        let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
-
-        let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
+        let full = resolve_full(&parents, &events);
 
         let borrowed = resolve_indexed(&parents, &events);
 
@@ -1013,7 +1018,7 @@ mod tests {
             filtered_events.len() < events.len(),
             "fixture must place events outside the fork's auth closure"
         );
-        let filtered = rezzy::resolve_state_maps(&bare, &filtered_events, StateResVersion::V2_1);
+        let filtered = resolve_full(&parents, &filtered_events);
 
         assert_eq!(borrowed.as_ref(), &full, "borrowed room must match full");
         assert_eq!(filtered.as_ref(), &full, "filtered closure must match full");

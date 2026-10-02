@@ -1962,42 +1962,25 @@ mod tests {
             origin_server_ts: 10,
             ..Default::default()
         };
-        // Branch A (parent 0 in merge): sets m.room.name to "Name A" with earlier ts=100
-        let ev_branch_a: LeanEvent = LeanEvent {
-            event_id: "$name_a".into(),
-            event_type: "m.room.name".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            prev_events: vec!["$create".into()],
-            auth_events: vec!["$create".into()],
-            depth: 2,
-            origin_server_ts: 100,
-            ..Default::default()
+        let branch = |id: &str, event_type: &str, ts: u64| -> LeanEvent {
+            LeanEvent {
+                event_id: id.into(),
+                event_type: event_type.into(),
+                state_key: Some(String::new()),
+                sender: "@alice:example.com".into(),
+                prev_events: vec!["$create".into()],
+                auth_events: vec!["$create".into()],
+                depth: 2,
+                origin_server_ts: ts,
+                ..Default::default()
+            }
         };
-        // Branch B (parent 1 in merge): sets m.room.name to "Name B" with later ts=200 (wins name)
-        let ev_branch_b: LeanEvent = LeanEvent {
-            event_id: "$name_b".into(),
-            event_type: "m.room.name".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            prev_events: vec!["$create".into()],
-            auth_events: vec!["$create".into()],
-            depth: 2,
-            origin_server_ts: 200,
-            ..Default::default()
-        };
-        // Branch C (parent 2 in merge): sets m.room.topic to "Topic C" (contributes new key)
-        let ev_branch_c: LeanEvent = LeanEvent {
-            event_id: "$topic_c".into(),
-            event_type: "m.room.topic".into(),
-            state_key: Some(String::new()),
-            sender: "@alice:example.com".into(),
-            prev_events: vec!["$create".into()],
-            auth_events: vec!["$create".into()],
-            depth: 2,
-            origin_server_ts: 150,
-            ..Default::default()
-        };
+        // Branch A (parent 0 in merge): sets m.room.name with earlier ts=100
+        let ev_branch_a = branch("$name_a", "m.room.name", 100);
+        // Branch B (parent 1 in merge): sets m.room.name with later ts=200 (wins name)
+        let ev_branch_b = branch("$name_b", "m.room.name", 200);
+        // Branch C (parent 2 in merge): sets m.room.topic (contributes new key)
+        let ev_branch_c = branch("$topic_c", "m.room.topic", 150);
         // Merge event: combines branch A, B, and C
         let ev_merge: LeanEvent = LeanEvent {
             event_id: "$merge".into(),
