@@ -29,7 +29,7 @@ use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
 use rezzy_recon::{
     build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
-    ElementHash, NodeSummary,
+    ElementHash, NodeSummary, SortedPopulation,
 };
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
@@ -298,35 +298,27 @@ fn identical_sets_synchronize_without_a_round_trip() {
     assert!(roots.is_empty(), "identical sets resolve no roots");
 }
 
-/// One side's population as aligned, `h64`-sorted slices.
+/// One side's population: the resident kernel plus the sorted index.
 struct Side {
     kernel: ResidentKernel,
-    h64: Vec<u64>,
-    h128: Vec<u128>,
+    population: SortedPopulation,
 }
 
 impl Side {
-    fn new(mut elements: Vec<ElementHash>) -> Self {
-        elements.sort_by_key(|e| e.h64);
+    fn new(elements: Vec<ElementHash>) -> Self {
         let mut kernel = ResidentKernel::new();
         for element in &elements {
             kernel.insert(*element).unwrap();
         }
         Self {
             kernel,
-            h64: elements.iter().map(|e| e.h64).collect(),
-            h128: elements.iter().map(|e| e.h128).collect(),
+            population: SortedPopulation::new(elements),
         }
     }
 
     /// The multi-valued `h64 -> h128` map.
     fn candidates(&self, root: u64) -> Vec<u128> {
-        self.h64
-            .iter()
-            .zip(&self.h128)
-            .filter(|(h64, _)| **h64 == root)
-            .map(|(_, h128)| *h128)
-            .collect()
+        self.population.candidates(root).to_vec()
     }
 }
 
@@ -363,8 +355,8 @@ fn run_verified(local: &Side, remote: &Side) -> (ClientAction, BucketExchange) {
         MAX_BUCKETED_SKETCH_CAPACITY,
     );
     loop {
-        let remote_nodes = build_bucket_nodes(&remote.h64, &remote.h128, &requests).unwrap();
-        let local_nodes = build_bucket_nodes(&local.h64, &local.h128, &requests).unwrap();
+        let remote_nodes = build_bucket_nodes(&remote.population, &requests).unwrap();
+        let local_nodes = build_bucket_nodes(&local.population, &requests).unwrap();
         let mut batch = BucketDecodeBatch {
             successful_buckets: Vec::new(),
             failed_buckets: Vec::new(),

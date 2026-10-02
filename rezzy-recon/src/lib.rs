@@ -50,7 +50,7 @@ pub use resident::{
 };
 pub use server::{
     build_bucket_nodes, build_bucket_sketches, compute_frame_digest, ForwardGraph, H64Index,
-    ReconciliationContext,
+    ReconciliationContext, SortedPopulation,
 };
 pub use triage::{
     decode_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,

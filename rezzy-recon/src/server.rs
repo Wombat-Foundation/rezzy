@@ -283,26 +283,83 @@ pub fn build_bucket_sketches(
     Ok(sketches)
 }
 
+/// A population sorted by `(h64, h128)`, with the two columns kept aligned.
+///
+/// Building it from [`ElementHash`]es sorts once, so a node's elements are a
+/// contiguous slice of both columns and the `h64 -> h128` map is multi-valued
+/// by construction: [`candidates`](Self::candidates) returns every element
+/// sharing an `h64`. There is no way to construct it with misaligned columns.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SortedPopulation {
+    h64: Vec<u64>,
+    h128: Vec<u128>,
+}
+
+impl SortedPopulation {
+    /// Sorts `elements` by `(h64, h128)`.
+    #[must_use]
+    pub fn new(mut elements: Vec<ElementHash>) -> Self {
+        elements.sort_unstable_by_key(|e| (e.h64, e.h128));
+        Self {
+            h64: elements.iter().map(|e| e.h64).collect(),
+            h128: elements.iter().map(|e| e.h128).collect(),
+        }
+    }
+
+    /// Number of elements.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.h64.len()
+    }
+
+    /// Whether the population is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.h64.is_empty()
+    }
+
+    /// The sorted `h64` column.
+    #[must_use]
+    pub fn h64s(&self) -> &[u64] {
+        &self.h64
+    }
+
+    /// The `h128` column, aligned with [`h64s`](Self::h64s).
+    #[must_use]
+    pub fn h128s(&self) -> &[u128] {
+        &self.h128
+    }
+
+    /// An [`H64Index`] over this population's `h64` column.
+    #[must_use]
+    pub fn index(&self) -> H64Index<'_> {
+        H64Index::new(&self.h64)
+    }
+
+    /// The `h128` of every element whose `h64` is `root`, in order; empty when
+    /// the root is absent.
+    #[must_use]
+    pub fn candidates(&self, root: u64) -> &[u128] {
+        let start = self.h64.partition_point(|&x| x < root);
+        let end = self.h64.partition_point(|&x| x <= root);
+        &self.h128[start..end]
+    }
+}
+
 /// Like [`build_bucket_sketches`], but also returns each node's
 /// [`NodeSummary`] (count and `h128` XOR), computed over the same slice that
 /// is toggled into the sketch.
 ///
-/// `sorted_h128[i]` MUST belong to the element whose `h64` is `sorted_h64[i]`.
-///
 /// # Errors
-/// Returns an error if the slices differ in length, a sketch exceeds capacity
-/// limits, or the requests are invalid.
+/// Returns an error if a sketch exceeds capacity limits or the requests are
+/// invalid.
 pub fn build_bucket_nodes(
-    sorted_h64: &[u64],
-    sorted_h128: &[u128],
+    population: &SortedPopulation,
     requests: &[BucketRequest],
 ) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
-    if sorted_h64.len() != sorted_h128.len() {
-        return Err(AlgebraicError::InvalidSketchLength);
-    }
+    let (sorted_h64, sorted_h128) = (population.h64s(), population.h128s());
     crate::triage::validate_bucket_requests(requests)?;
-    let index = H64Index::new(sorted_h64);
-
+    let index = population.index();
     let mut nodes = Vec::with_capacity(requests.len());
     for request in requests {
         let range = index.bucket_range_unchecked(request);
@@ -924,5 +981,80 @@ mod tests {
             builder.build(&requests),
             Err(AlgebraicError::InvalidBucketIndex)
         ));
+    }
+
+    fn element(h128: u128, h64: u64) -> ElementHash {
+        ElementHash { h128, h64 }
+    }
+
+    #[test]
+    fn sorted_population_keeps_columns_aligned_and_ordered() {
+        let population =
+            SortedPopulation::new(vec![element(0xC, 30), element(0xA, 10), element(0xB, 20)]);
+        assert_eq!(population.h64s(), &[10, 20, 30]);
+        assert_eq!(population.h128s(), &[0xA, 0xB, 0xC]);
+        assert_eq!(population.len(), 3);
+        assert!(!population.is_empty());
+    }
+
+    #[test]
+    fn sorted_population_candidates_are_multi_valued_and_deterministic() {
+        let population = SortedPopulation::new(vec![
+            element(0x9, 7),
+            element(0x1, 7),
+            element(0x5, 3),
+            element(0x2, 9),
+        ]);
+        // Equal h64 values sort by h128, so the order is input-independent.
+        assert_eq!(population.candidates(7), &[0x1, 0x9]);
+        assert_eq!(population.candidates(3), &[0x5]);
+        assert!(population.candidates(8).is_empty());
+        assert!(population.candidates(u64::MAX).is_empty());
+    }
+
+    #[test]
+    fn empty_sorted_population_has_no_candidates_and_empty_nodes() {
+        let population = SortedPopulation::default();
+        assert!(population.is_empty());
+        assert!(population.candidates(1).is_empty());
+        let nodes = build_bucket_nodes(&population, &[BucketRequest::new(0, 0, 4)]).unwrap();
+        assert_eq!(nodes[0].1, NodeSummary::default());
+    }
+
+    #[test]
+    fn bucket_nodes_summarize_exactly_the_slice_they_sketch() {
+        let population = SortedPopulation::new(vec![
+            element(0x1, 5),
+            element(0x2, 6),
+            element(0x4, (1_u64 << 63) | 5),
+        ]);
+        let nodes = build_bucket_nodes(
+            &population,
+            &[BucketRequest::new(1, 0, 4), BucketRequest::new(1, 1, 4)],
+        )
+        .unwrap();
+        assert_eq!(
+            nodes[0].1,
+            NodeSummary {
+                count: 2,
+                digest: 0x3
+            }
+        );
+        assert_eq!(
+            nodes[1].1,
+            NodeSummary {
+                count: 1,
+                digest: 0x4
+            }
+        );
+        // The two children sum to the level-0 pair.
+        let whole = build_bucket_nodes(&population, &[BucketRequest::new(0, 0, 4)]).unwrap();
+        assert_eq!(
+            whole[0].1,
+            NodeSummary {
+                count: 3,
+                digest: 0x7
+            }
+        );
     }
 }
