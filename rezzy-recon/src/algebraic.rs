@@ -81,7 +81,11 @@ pub enum EventIdFormat {
 /// The two truncations of a reconciled element's canonical 32-byte digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ElementHash {
-    /// First 128 bits, interpreted in network byte order.
+    /// Last 128 bits (bytes 16..32), interpreted in network byte order.
+    ///
+    /// Drawn from bytes disjoint from `h64` so the integrity residual stays
+    /// independent of placement (the `h64` scan only reaches these bytes when
+    /// the first two 8-byte chunks are zero).
     pub h128: u128,
     /// First non-zero 64-bit chunk of the element digest (network byte order),
     /// falling back to 1 if all four 64-bit chunks are zero.
@@ -153,7 +157,7 @@ impl ElementHash {
     #[must_use]
     pub fn from_digest32(digest: [u8; 32]) -> Self {
         let mut wide = [0; 16];
-        wide.copy_from_slice(&digest[..16]);
+        wide.copy_from_slice(&digest[16..]);
         let mut short = [0; 8];
         let h64 = digest
             .chunks_exact(8)
@@ -666,6 +670,34 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+
+    #[test]
+    fn h128_comes_from_the_trailing_half_disjoint_from_h64() {
+        let mut digest = [0_u8; 32];
+        for (i, byte) in digest.iter_mut().enumerate() {
+            *byte = u8::try_from(i + 1).unwrap();
+        }
+        let hash = ElementHash::from_digest32(digest);
+        assert_eq!(hash.h64, 0x0102_0304_0506_0708);
+        assert_eq!(hash.h128, 0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20);
+
+        // Two digests colliding on h64 still differ in h128.
+        let mut other = digest;
+        other[31] ^= 1;
+        let collided = ElementHash::from_digest32(other);
+        assert_eq!(collided.h64, hash.h64);
+        assert_ne!(collided.h128, hash.h128);
+    }
+
+    #[test]
+    fn h64_falls_back_past_zero_leading_chunks_but_h128_stays_trailing() {
+        let mut digest = [0_u8; 32];
+        digest[8..16].copy_from_slice(&7_u64.to_be_bytes());
+        digest[31] = 9;
+        let hash = ElementHash::from_digest32(digest);
+        assert_eq!(hash.h64, 7);
+        assert_eq!(hash.h128, 9);
+    }
 
     fn hash(seed: u8) -> ElementHash {
         ElementHash {

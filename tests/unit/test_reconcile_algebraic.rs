@@ -18,9 +18,9 @@ fn generic_digest32_feeds_all_resident_layers() {
     let first = ElementHash::from_digest32(first_bytes);
     let second = ElementHash::from_digest32(second_bytes);
 
-    assert_eq!(first.h128, 0x0001_0203_0405_0607_0809_0a0b_0c0d_0e0f);
+    assert_eq!(first.h128, 0x1011_1213_1415_1617_1819_1a1b_1c1d_1e1f);
     assert_eq!(first.h64, 0x0001_0203_0405_0607);
-    assert_eq!(second.h128, 0xfffe_fdfc_fbfa_f9f8_f7f6_f5f4_f3f2_f1f0);
+    assert_eq!(second.h128, 0xefee_edec_ebea_e9e8_e7e6_e5e4_e3e2_e1e0);
     assert_eq!(second.h64, 0xfffe_fdfc_fbfa_f9f8);
 
     let mut accumulator = RoomAccumulator::new();

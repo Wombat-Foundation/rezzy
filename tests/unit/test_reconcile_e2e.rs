@@ -206,7 +206,7 @@ fn small_delta_resolves_in_one_round_trip() {
 /// Builds a pair with a large identical shared base plus a small, real
 /// difference. The shared base cancels out of `estimate_strata`'s per-stratum
 /// residuals entirely; the injected differences concentrate in the low strata
-/// (a hash's stratum is the trailing-zero count of its `h128`, so most hashes
+/// (a hash's stratum is the trailing-zero count of its `h64`, so most hashes
 /// land in stratum 0), which overflows a stratum and forces the
 /// `low_confidence` fallback. Confirms `low_confidence` only degrades the
 /// capacity *estimate* rather than blocking convergence: even with a poor
@@ -252,7 +252,7 @@ fn low_confidence_estimate_still_converges() {
     remote_h64.sort_unstable();
 
     // The injected differences cluster in the low strata (stratum == trailing
-    // zeros of h128), overflowing one and forcing the low_confidence fallback.
+    // zeros of h64), overflowing one and forcing the low_confidence fallback.
     let estimate =
         estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK).unwrap();
     assert!(
