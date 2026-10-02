@@ -162,6 +162,28 @@ impl fmt::Display for Number {
     }
 }
 
+/// Accessors with identical bodies on `Value` and `ValueRef`.
+macro_rules! shared_json_accessors {
+    () => {
+        #[must_use]
+        /// Returns the value as `array`, or `None` if it is not that type.
+        pub const fn as_array(&self) -> Option<&Vec<Self>> {
+            match self {
+                Self::Array(items) => Some(items),
+                _ => None,
+            }
+        }
+        #[must_use]
+        /// Returns the value as `bool`, or `None` if it is not that type.
+        pub const fn as_bool(&self) -> Option<bool> {
+            match self {
+                Self::Bool(v) => Some(*v),
+                _ => None,
+            }
+        }
+    };
+}
+
 impl Value {
     #[must_use]
     /// Returns the member named `key` if this is an object that has one.
@@ -193,27 +215,12 @@ impl Value {
             _ => None,
         }
     }
-    #[must_use]
-    /// Returns the value as `array`, or `None` if it is not that type.
-    pub const fn as_array(&self) -> Option<&Vec<Self>> {
-        match self {
-            Self::Array(items) => Some(items),
-            _ => None,
-        }
-    }
+    shared_json_accessors!();
     #[must_use]
     /// Returns the value as `str`, or `None` if it is not that type.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s),
-            _ => None,
-        }
-    }
-    #[must_use]
-    /// Returns the value as `bool`, or `None` if it is not that type.
-    pub const fn as_bool(&self) -> Option<bool> {
-        match self {
-            Self::Bool(v) => Some(*v),
             _ => None,
         }
     }
@@ -1733,6 +1740,7 @@ impl<'a> ValueRef<'a> {
 }
 
 impl<'a> ValueRef<'a> {
+    shared_json_accessors!();
     #[must_use]
     /// Returns the member named `key` if this is an object that has one.
     pub fn get(&self, key: &str) -> Option<&Self> {
@@ -1742,14 +1750,6 @@ impl<'a> ValueRef<'a> {
                 .rev()
                 .find(|(k, _)| raw_key_eq(k, key))
                 .map(|(_, v)| v),
-            _ => None,
-        }
-    }
-    #[must_use]
-    /// Returns the value as `array`, or `None` if it is not that type.
-    pub const fn as_array(&self) -> Option<&Vec<Self>> {
-        match self {
-            Self::Array(items) => Some(items),
             _ => None,
         }
     }
@@ -1766,14 +1766,6 @@ impl<'a> ValueRef<'a> {
     pub const fn as_str(&self) -> Option<&'a str> {
         match self {
             Self::String(s) => Some(s),
-            _ => None,
-        }
-    }
-    #[must_use]
-    /// Returns the value as `bool`, or `None` if it is not that type.
-    pub const fn as_bool(&self) -> Option<bool> {
-        match self {
-            Self::Bool(v) => Some(*v),
             _ => None,
         }
     }
