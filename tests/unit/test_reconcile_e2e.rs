@@ -24,12 +24,13 @@
 
 use rezzy_recon::client::{
     BucketExchange, ClientAction, ReconciliationClient, MAX_BUCKETS_PER_ROUND,
+    MAX_RECONCILIATION_ROUNDS,
 };
 use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
 use rezzy_recon::{
     build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
-    ElementHash, NodeSummary, SortedPopulation,
+    should_narrow, Classified, ElementHash, NodeSummary, SortedPopulation,
 };
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
@@ -316,6 +317,11 @@ impl Side {
         }
     }
 
+    /// The summary of one node of this side's population.
+    fn node_summary(&self, node: (u8, u64)) -> NodeSummary {
+        build_bucket_nodes(&self.population, &[BucketRequest::new(node.0, node.1, 1)]).unwrap()[0].1
+    }
+
     /// The multi-valued `h64 -> h128` map.
     fn candidates(&self, root: u64) -> Vec<u128> {
         self.population.candidates(root).to_vec()
@@ -598,7 +604,10 @@ fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
 
 /// Splits an exchange's classified nodes into the roots of those that pass
 /// phase 2 and the nodes that fail it. `returned` is the peer's identifiers.
-fn phase_two(exchange: &BucketExchange, returned: &[ElementHash]) -> (Vec<u64>, Vec<(u8, u64)>) {
+fn phase_two<'a>(
+    exchange: &'a BucketExchange,
+    returned: &[ElementHash],
+) -> (Vec<u64>, Vec<&'a Classified>) {
     let (mut good, mut failed) = (Vec::new(), Vec::new());
     for c in exchange.classified() {
         let digests: Vec<[u8; 32]> = returned
@@ -609,7 +618,7 @@ fn phase_two(exchange: &BucketExchange, returned: &[ElementHash]) -> (Vec<u64>, 
         if verify_follow_up(c, c.node(), &digests).is_ok() {
             good.extend(c.l_roots().iter().chain(c.m_roots()));
         } else {
-            failed.push(c.node());
+            failed.push(c);
         }
     }
     (good, failed)
@@ -641,25 +650,34 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
     let (action, exchange) = run_verified(&local, &remote);
     assert!(matches!(action, ClientAction::ResolveRoots { .. }));
 
-    let (mut recovered, mut pending) = phase_two(&exchange, &remote_extra);
-    assert_eq!(pending.len(), 1, "only the colliding node fails phase 2");
-    let node = pending[0];
+    let (mut recovered, failed) = phase_two(&exchange, &remote_extra);
+    assert_eq!(failed.len(), 1, "only the colliding node fails phase 2");
+    let node = failed[0].node();
+    let mut pending: Vec<Classified> = failed.into_iter().cloned().collect();
     let mut lost: Vec<(u8, u64)> = Vec::new();
-    for _ in 0..64 {
-        if pending.is_empty() {
+    let mut passes = 0;
+    while !pending.is_empty() {
+        // Same stop rule as phase 1: small or unsplittable nodes go to the
+        // caller's per-prefix fallback instead of another pass.
+        let (narrowable, fallback): (Vec<_>, Vec<_>) = pending
+            .iter()
+            .partition(|c| should_narrow(c, MAX_RECONCILIATION_ROUNDS - passes));
+        lost.extend(fallback.iter().map(|c| c.node()));
+        if narrowable.is_empty() {
             break;
         }
-        let Ok((exchange, requests)) = BucketExchange::narrow(
-            &pending,
-            rezzy_recon::client::MAX_RECONCILIATION_ROUNDS,
+        passes += 1;
+        let nodes: Vec<((u8, u64), NodeSummary)> = narrowable
+            .iter()
+            .map(|c| (c.node(), remote.node_summary(c.node())))
+            .collect();
+        let (exchange, requests) = BucketExchange::narrow(
+            &nodes,
+            MAX_RECONCILIATION_ROUNDS,
             MAX_BUCKETS_PER_ROUND,
             MAX_BUCKETED_SKETCH_CAPACITY,
-        ) else {
-            // At the depth cap there is nothing left to narrow: the caller's
-            // per-prefix fallback takes the node.
-            lost.append(&mut pending);
-            break;
-        };
+        )
+        .unwrap();
         let (action, exchange) = drive(&local, &remote, exchange, requests, None);
         let ClientAction::ResolveRoots { ladder_failed, .. } = action else {
             panic!("expected a partial resolve, got {action:?}");
@@ -667,9 +685,12 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
         lost.extend(ladder_failed);
         let (good, failed) = phase_two(&exchange, &remote_extra);
         recovered.extend(good);
-        pending = failed;
+        pending = failed.into_iter().cloned().collect();
     }
-    assert!(pending.is_empty() || !lost.is_empty());
+    assert!(
+        passes <= 3,
+        "phase-2 narrowing must stop under the give-up rule, took {passes} passes"
+    );
     assert!(!lost.is_empty());
     assert!(lost.iter().all(|&l| l.0 > node.0), "narrower than {node:?}");
     assert!(lost.iter().any(|&l| in_node(x.h64, l)));

@@ -153,7 +153,24 @@ const MAX_NO_PROGRESS_ROUNDS: usize = 3;
 /// one round, but siblings verify in parallel, so the loss shrinks from the
 /// whole population to about this many elements in `log2(n / T)` rounds. A
 /// starting point, to be tuned with the benches.
+///
+/// The count compared is the larger of the two sides', so it includes the
+/// peer's claim. A lying peer can make a node keep splitting (bounded by the
+/// depth cap and round budget) or give up early; either way the outcome stays
+/// within the baseline invariant, so no extra check is needed.
 const COLLISION_GIVE_UP_POPULATION: u64 = 2 * (MAX_BUCKET_SKETCH_CAPACITY as u64);
+
+/// Whether a node whose phase 2 failed is worth narrowing with
+/// [`BucketExchange::narrow`], under the same limits as a phase-1 known
+/// collision: its population is above the give-up threshold, it can still be
+/// split, and at least one round is left in the caller's budget. Otherwise the
+/// node goes straight to the caller's per-prefix fallback.
+#[must_use]
+pub fn should_narrow(classified: &Classified, rounds_left: usize) -> bool {
+    classified.population() > COLLISION_GIVE_UP_POPULATION
+        && classified.node().0 < crate::MAX_DEPTH
+        && rounds_left > 1
+}
 
 /// Stateful bucket exchange planner that carries deferred frontier nodes across rounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,43 +266,48 @@ impl BucketExchange {
 
     /// Starts an exchange that re-runs only the children of `nodes`, for
     /// example nodes whose phase 2 failed, so a loss is narrowed the way a
-    /// phase-1 failure is. Returns the exchange (one round already counted)
-    /// and the first round's requests, which are the two children of each
-    /// node.
+    /// phase-1 failure is. Each node comes with the responder summary it was
+    /// verified against, which seeds the split-consistency check on its
+    /// children. Returns the exchange (one round already counted) and the
+    /// first round's requests; children that do not fit the per-round caps are
+    /// queued in the pending frontier, as in a normal exchange.
+    ///
+    /// Call [`should_narrow`] first: below its threshold the node belongs to
+    /// the caller's per-prefix fallback.
     ///
     /// # Errors
     /// Returns an error if a node cannot be split (already at the depth cap),
-    /// the nodes are not an antichain, or the requests exceed the round caps.
+    /// the nodes are not an antichain, or a single request exceeds the caps.
     pub fn narrow(
-        nodes: &[(u8, u64)],
+        nodes: &[((u8, u64), NodeSummary)],
         max_rounds: usize,
         max_buckets_per_round: usize,
         max_aggregate_capacity: usize,
     ) -> Result<(Self, alloc::vec::Vec<BucketRequest>), AlgebraicError> {
-        let mut requests = alloc::vec::Vec::new();
-        for &(depth, prefix) in nodes {
+        let mut all = alloc::vec::Vec::new();
+        for &((depth, prefix), _) in nodes {
             let parent = BucketRequest::new(depth, prefix, MAX_BUCKET_SKETCH_CAPACITY);
             let children = retry_or_split_bucket(&parent, 0, true)
                 .map_err(|_| AlgebraicError::InvalidBucketIndex)?;
-            requests.extend(children);
+            all.extend(children);
         }
-        requests.sort_unstable_by_key(bucket_range_start);
-        crate::triage::validate_bucket_requests(&requests)?;
-        let total = requests
-            .iter()
-            .try_fold(0_usize, |acc, r| acc.checked_add(r.capacity))
-            .ok_or(AlgebraicError::InvalidSketchCapacity)?;
-        if requests.len() > max_buckets_per_round || total > max_aggregate_capacity {
-            return Err(AlgebraicError::InvalidSketchCapacity);
-        }
+        all.sort_unstable_by_key(bucket_range_start);
+        crate::triage::validate_bucket_requests(&all)?;
         let mut exchange = Self::new(
             alloc::vec::Vec::new(),
             max_rounds,
             max_buckets_per_round,
             max_aggregate_capacity,
         );
-        exchange.rounds_emitted = 1;
-        Ok((exchange, requests))
+        exchange.parents = nodes
+            .iter()
+            .map(|&((depth, prefix), summary)| (depth, prefix, summary))
+            .collect();
+        exchange.pending = all.into();
+        let first = exchange
+            .drain_pending_round()
+            .map_err(|_| AlgebraicError::InvalidSketchCapacity)?;
+        Ok((exchange, first.into()))
     }
 
     /// Prefixes the exchange gave up on. The same list is returned in
@@ -1913,7 +1935,7 @@ mod tests {
     #[test]
     fn narrow_requests_the_children_of_each_node() {
         let (exchange, requests) = BucketExchange::narrow(
-            &[(2, 1)],
+            &[((2, 1), summary(100, 7))],
             MAX_RECONCILIATION_ROUNDS,
             MAX_BUCKETS_PER_ROUND,
             MAX_BUCKETED_SKETCH_CAPACITY,
@@ -1929,8 +1951,53 @@ mod tests {
         assert_eq!(exchange.rounds_emitted(), 1);
         // A node at the depth cap cannot be narrowed, and overlapping nodes
         // are not an antichain.
-        assert!(BucketExchange::narrow(&[(crate::MAX_DEPTH, 0)], 20, 8, 4096).is_err());
-        assert!(BucketExchange::narrow(&[(1, 0), (2, 0)], 20, 8, 4096).is_err());
+        let s = summary(1, 1);
+        assert!(BucketExchange::narrow(&[((crate::MAX_DEPTH, 0), s)], 20, 8, 4096).is_err());
+        assert!(BucketExchange::narrow(&[((1, 0), s), ((2, 0), s)], 20, 8, 4096).is_err());
+    }
+
+    /// Children beyond the per-round cap are queued, not an error.
+    #[test]
+    fn narrow_queues_children_beyond_the_round_cap() {
+        let s = summary(100, 7);
+        let (exchange, requests) =
+            BucketExchange::narrow(&[((2, 0), s), ((2, 1), s), ((2, 2), s)], 20, 2, 4096).unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(exchange.pending_len(), 4);
+    }
+
+    /// The parent summaries seed split consistency, so a peer whose children
+    /// do not add up to the node being narrowed is caught on this path too.
+    #[test]
+    fn narrow_checks_split_consistency_of_its_children() {
+        let (mut exchange, requests) =
+            BucketExchange::narrow(&[((2, 1), summary(10, 0xff))], 20, 8, 4096).unwrap();
+        let (a, b) = (summary(5, 1), summary(5, 2));
+        let mut batch = success(3, 2, &[]);
+        batch
+            .successful_buckets
+            .extend(success(3, 3, &[]).successful_buckets);
+        exchange
+            .advance_verified(batch, &requests, &[a, b], &[a, b], None, |_| vec![])
+            .unwrap();
+        assert_eq!(exchange.ladder_failed(), &[(2, 1)]);
+    }
+
+    /// The phase-2 stop rule mirrors phase 1's: large, splittable, budget left.
+    #[test]
+    fn should_narrow_follows_the_phase_one_limits() {
+        let classify = |depth: u8, count: u64| {
+            let request = BucketRequest::new(depth, 0, 8);
+            let s = summary(count, 0);
+            crate::verify::verify_decode(&request, s, s, &[], |_| vec![]).unwrap()
+        };
+        assert!(should_narrow(&classify(2, 1_000), 10));
+        assert!(!should_narrow(
+            &classify(2, COLLISION_GIVE_UP_POPULATION),
+            10
+        ));
+        assert!(!should_narrow(&classify(crate::MAX_DEPTH, 1_000), 10));
+        assert!(!should_narrow(&classify(2, 1_000), 1));
     }
 
     /// Decoding the same sketch twice is deterministic, so a repeat of the

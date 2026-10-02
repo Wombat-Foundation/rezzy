@@ -42,9 +42,18 @@ pub struct Classified {
     residual: u128,
     /// XOR of every local `h128` candidate under an `L` root.
     local_accumulated: u128,
+    /// Local and remote element counts of the node.
+    local_count: u64,
+    remote_count: u64,
 }
 
 impl Classified {
+    /// The larger side's element count for the node.
+    #[must_use]
+    pub fn population(&self) -> u64 {
+        self.local_count.max(self.remote_count)
+    }
+
     /// The node's `(depth, prefix)`.
     #[must_use]
     pub const fn node(&self) -> (u8, u64) {
@@ -138,6 +147,8 @@ where
         m_roots,
         residual,
         local_accumulated,
+        local_count: local.count,
+        remote_count: remote.count,
     })
 }
 

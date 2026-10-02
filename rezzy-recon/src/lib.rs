@@ -44,8 +44,8 @@ pub use algebraic::{
     MAX_OVERFLOW_SKETCH_CAPACITY, MAX_SKETCH_CAPACITY,
 };
 pub use client::{
-    BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
-    MAX_RECONCILIATION_ROUNDS,
+    should_narrow, BucketExchange, ClientAction, ReconciliationClient, RemoteDigest,
+    MAX_BUCKETS_PER_ROUND, MAX_RECONCILIATION_ROUNDS,
 };
 pub use resident::{
     ResidentKernel, RESIDENT_FORMAT_VERSION, RESIDENT_SERIALIZED_LEN, STRATA_COUNT,
