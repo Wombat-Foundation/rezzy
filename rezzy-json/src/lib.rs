@@ -1532,6 +1532,10 @@ impl FieldMask<'_> {
     #[must_use]
     /// Whether the path made of `segments` is selected.
     pub fn matches_segments(&self, segments: &[&str]) -> bool {
+        self.matches_path(segments)
+    }
+
+    fn matches_path<S: AsRef<str>>(&self, segments: &[S]) -> bool {
         if self.paths.is_empty() || segments.is_empty() {
             return true;
         }
@@ -1539,9 +1543,25 @@ impl FieldMask<'_> {
             segments
                 .iter()
                 .zip(path.split('.'))
-                .all(|(segment, part)| *segment == part)
+                .all(|(segment, part)| segment.as_ref() == part)
         })
     }
+}
+
+/// Decodes a raw (still escaped) object key; borrows when it has no escapes.
+fn decode_key(raw: &str) -> Result<Cow<'_, str>, TokenizerError> {
+    if !raw.contains('\\') {
+        return Ok(Cow::Borrowed(raw));
+    }
+    match Value::parse_bytes(alloc::format!("\"{raw}\"").as_bytes()) {
+        Ok(Value::String(decoded)) => Ok(Cow::Owned(decoded)),
+        _ => Err(TokenizerError::InvalidString),
+    }
+}
+
+/// Whether the raw object key `raw` decodes to `key`.
+fn raw_key_eq(raw: &str, key: &str) -> bool {
+    decode_key(raw).is_ok_and(|decoded| decoded == key)
 }
 
 /// Zero-copy borrowed JSON value for selective parsing.
@@ -1573,7 +1593,7 @@ impl<'a> ValueRef<'a> {
     /// paths are invalid.
     pub fn parse_masked(input: &'a [u8], mask: &FieldMask<'_>) -> Result<Self, TokenizerError> {
         let mut tokenizer = Tokenizer::new(input);
-        let mut segments = Vec::new();
+        let mut segments: Vec<Cow<'a, str>> = Vec::new();
         let value = Self::parse_masked_value(&mut tokenizer, mask, &mut segments)?;
         tokenizer.ws();
         if tokenizer.position() != tokenizer.input.len() {
@@ -1585,7 +1605,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_value(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        segments: &mut Vec<&'a str>,
+        segments: &mut Vec<Cow<'a, str>>,
     ) -> Result<Self, TokenizerError> {
         tokenizer.ws();
         match tokenizer
@@ -1625,7 +1645,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_array(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        segments: &mut Vec<&'a str>,
+        segments: &mut Vec<Cow<'a, str>>,
     ) -> Result<Self, TokenizerError> {
         if tokenizer.depth >= Tokenizer::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
@@ -1658,7 +1678,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_object(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        segments: &mut Vec<&'a str>,
+        segments: &mut Vec<Cow<'a, str>>,
     ) -> Result<Self, TokenizerError> {
         if tokenizer.depth >= Tokenizer::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
@@ -1680,8 +1700,8 @@ impl<'a> ValueRef<'a> {
             let key_bytes = tokenizer.string_raw()?;
             let key = core::str::from_utf8(key_bytes).map_err(|_| TokenizerError::InvalidString)?;
 
-            segments.push(key);
-            let should_extract = mask.matches_segments(segments);
+            segments.push(decode_key(key)?);
+            let should_extract = mask.matches_path(segments);
 
             tokenizer.ws();
             if tokenizer.input.get(tokenizer.pos) != Some(&b':') {
@@ -1717,7 +1737,11 @@ impl<'a> ValueRef<'a> {
     /// Returns the member named `key` if this is an object that has one.
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
-            Self::Object(obj) => obj.iter().rev().find(|(k, _)| *k == key).map(|(_, v)| v),
+            Self::Object(obj) => obj
+                .iter()
+                .rev()
+                .find(|(k, _)| raw_key_eq(k, key))
+                .map(|(_, v)| v),
             _ => None,
         }
     }
@@ -2310,6 +2334,28 @@ mod tests {
         t.next_token().unwrap(); // Comma
         let kept = t.skip_value().unwrap(); // keep 3
         assert_eq!(kept, b"3");
+    }
+
+    #[test]
+    fn parse_masked_matches_escaped_keys_with_last_wins() {
+        use super::{FieldMask, ValueRef};
+        let mask = FieldMask {
+            paths: &["event_id", "content.body"],
+        };
+        let input =
+            br#"{"event_id":"first","event\u005fid":"second","content":{"bo\u0064y":"hi"}}"#;
+        let result = ValueRef::parse_masked(input, &mask).unwrap();
+        assert_eq!(
+            result.get("event_id").and_then(ValueRef::as_str),
+            Some("second")
+        );
+        assert_eq!(
+            result
+                .get("content")
+                .and_then(|content| content.get("body"))
+                .and_then(ValueRef::as_str),
+            Some("hi")
+        );
     }
 
     #[test]
