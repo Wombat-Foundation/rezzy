@@ -1048,21 +1048,34 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
             [] => base_state.clone(),
             [only] => state_after_event[&only.event_id].clone(),
             many => {
-                // Several parents: for each key keep the highest-ranked event
-                // (depth, then timestamp, then ID) as a deterministic stand-in
-                // for full resolution.
-                let mut merged: State = RoomState::new();
-                for parent in many {
-                    for (key, candidate) in &state_after_event[&parent.event_id] {
-                        let wins = merged
-                            .get(key)
-                            .map_or(true, |existing| rank(existing) < rank(candidate));
-                        if wins {
-                            merged.insert(key.clone(), candidate.clone());
-                        }
-                    }
-                }
-                merged
+                // Several parents: run real state resolution over their
+                // post-states, so conflicting power events are decided by the
+                // room's algorithm rather than by depth or timestamp.
+                let parent_maps: Vec<ResolvedState> = many
+                    .iter()
+                    .map(|parent| {
+                        state_after_event[&parent.event_id]
+                            .iter()
+                            .map(|((event_type, state_key), event)| {
+                                (
+                                    (EventType::from(event_type.as_str()), state_key.clone()),
+                                    event.event_id.clone(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect();
+                rezzy::resolve_state_maps(&parent_maps, ctx.events_map, ctx.version)
+                    .iter()
+                    .filter_map(|((event_type, state_key), event_id)| {
+                        ctx.events_map.get(event_id).map(|event| {
+                            (
+                                (event_type.as_str().to_owned(), state_key.clone()),
+                                event.clone(),
+                            )
+                        })
+                    })
+                    .collect()
             }
         };
         // Record state at this event's prev_events (before applying this event).
@@ -1638,6 +1651,125 @@ mod tests {
         assert!(
             !out.contains("secret"),
             "authorized self-redaction must strip the target content; got: {out:?}"
+        );
+    }
+
+    /// At a multi-parent merge the timeline must use real state resolution, not
+    /// a depth/timestamp stand-in, when it authorizes redactions. Two sibling
+    /// power-level events conflict: the one with the greater depth (`$pl_low`,
+    /// Mallory = 0) would win a depth heuristic, but resolution orders power
+    /// events by timestamp and lets `$pl_high` (Mallory = 100) win, so
+    /// Mallory's later redaction is authorized.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn timeline_redaction_uses_resolved_state_at_merge() {
+        let member = |id: &str, user: &str, prev: &str, auth: &[&str], depth: u64| LeanEvent {
+            event_id: id.into(),
+            event_type: "m.room.member".into(),
+            state_key: Some(user.into()),
+            sender: user.into(),
+            prev_events: vec![prev.into()],
+            auth_events: auth.iter().map(|a| (*a).to_string()).collect(),
+            depth,
+            origin_server_ts: depth * 10,
+            content: rezzy::json!({ "membership": "join" }),
+            ..Default::default()
+        };
+        let power = |id: &str, mallory: i64, depth: u64, ts: u64| LeanEvent {
+            event_id: id.into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            prev_events: vec!["$join_mallory".into()],
+            auth_events: vec!["$create".into(), "$join_admin".into(), "$pl0".into()],
+            depth,
+            origin_server_ts: ts,
+            content: rezzy::json!({
+                "users": { "@admin:x": 100, "@bob:x": 0, "@mallory:x": mallory },
+                "redact": 50
+            }),
+            ..Default::default()
+        };
+        let create: LeanEvent = LeanEvent {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@admin:x".into(),
+            depth: 1,
+            origin_server_ts: 10,
+            content: rezzy::json!({ "room_version": "11", "creator": "@admin:x" }),
+            ..Default::default()
+        };
+        let mut pl0 = power("$pl0", 0, 3, 30);
+        pl0.prev_events = vec!["$join_admin".into()];
+        pl0.auth_events = vec!["$create".into(), "$join_admin".into()];
+        let msg: LeanEvent = LeanEvent {
+            event_id: "$msg".into(),
+            event_type: "m.room.message".into(),
+            sender: "@bob:x".into(),
+            prev_events: vec!["$pl_high".into(), "$pl_low".into()],
+            auth_events: vec!["$create".into(), "$join_bob".into(), "$pl0".into()],
+            depth: 8,
+            origin_server_ts: 80,
+            content: rezzy::json!({ "body": "secret" }),
+            ..Default::default()
+        };
+        let redact: LeanEvent = LeanEvent {
+            event_id: "$redact".into(),
+            event_type: "m.room.redaction".into(),
+            sender: "@mallory:x".into(),
+            prev_events: vec!["$msg".into()],
+            auth_events: vec!["$create".into(), "$join_mallory".into(), "$pl0".into()],
+            depth: 9,
+            origin_server_ts: 90,
+            content: rezzy::json!({ "redacts": "$msg" }),
+            ..Default::default()
+        };
+        let events = vec![
+            create,
+            member("$join_admin", "@admin:x", "$create", &["$create"], 2),
+            pl0,
+            member("$join_bob", "@bob:x", "$pl0", &["$create", "$pl0"], 4),
+            member(
+                "$join_mallory",
+                "@mallory:x",
+                "$join_bob",
+                &["$create", "$pl0"],
+                5,
+            ),
+            power("$pl_high", 100, 6, 300),
+            power("$pl_low", 0, 7, 100),
+            msg,
+            redact,
+        ];
+        let mut events_map = HashMap::new();
+        for ev in &events {
+            events_map.insert(ev.event_id.clone(), ev.clone());
+        }
+        let args = test_args(OutputFormat::Timeline);
+        let raw_map = HashMap::new();
+        let heads = Vec::new();
+        let final_state_map = imbl::OrdMap::new();
+        let resolved_state_list: Vec<String> = Vec::new();
+        let auth_chain_ids: Vec<String> = Vec::new();
+        let auth_graph = build_auth_graph(&events_map);
+        let ctx = formatting_context(
+            Some("11"),
+            std::time::Duration::from_millis(0),
+            events.len(),
+            &args,
+            &events_map,
+            &raw_map,
+            &heads,
+            &final_state_map,
+            &resolved_state_list,
+            &auth_chain_ids,
+            &auth_graph,
+        );
+        let out = render_timeline(&ctx);
+        assert!(
+            !out.contains("secret"),
+            "redaction authorized by the resolved power levels must apply; got: {out:?}"
         );
     }
 
