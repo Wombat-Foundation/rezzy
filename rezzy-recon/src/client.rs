@@ -1371,6 +1371,76 @@ mod tests {
         );
     }
 
+    /// A 64-bit collision cannot be derived from real event IDs, so it is
+    /// mocked: two distinct elements (different `h128`) forced to one `h64`.
+    /// The sketch layer sees the pair cancel, the roots resolve to nothing,
+    /// and the 128-bit residual -- which is not truncated -- refuses to
+    /// admit the result, sending the caller down the fallback ladder.
+    #[test]
+    fn colliding_h64_decodes_clean_but_fails_the_global_residual() {
+        let colliding_local = hash(0xAAAA, 0x1234);
+        let colliding_remote = hash(0xBBBB, 0x1234);
+        let shared = hash(0xCCCC, 0x9999);
+
+        let client = ReconciliationClient::default();
+        let local = client.build_sketch(4, [colliding_local, shared]).unwrap();
+        let remote = client.build_sketch(4, [colliding_remote, shared]).unwrap();
+        let roots = local.subtract(&remote).unwrap().decode_elements(4).unwrap();
+        assert!(roots.is_empty(), "equal h64 values must cancel");
+
+        let local_digest = accumulator(&[colliding_local, shared])
+            .accumulator()
+            .digest();
+        let remote_digest = accumulator(&[colliding_remote, shared])
+            .accumulator()
+            .digest();
+        let residual = local_digest ^ remote_digest;
+        assert_eq!(residual, 0xAAAA ^ 0xBBBB);
+
+        // No roots resolved, so nothing accounts for the non-zero residual.
+        assert_eq!(
+            ReconciliationClient::verify_global_residual(residual, &[], &[]),
+            Err(AlgebraicError::DecodeFailure)
+        );
+    }
+
+    #[test]
+    fn collision_alongside_a_real_difference_still_fails_the_residual() {
+        let colliding_local = hash(0xAAAA, 0x1234);
+        let colliding_remote = hash(0xBBBB, 0x1234);
+        let only_remote = hash(0xDDDD, 0x5555);
+
+        let client = ReconciliationClient::default();
+        let local = client.build_sketch(4, [colliding_local]).unwrap();
+        let remote = client
+            .build_sketch(4, [colliding_remote, only_remote])
+            .unwrap();
+        let roots = local.subtract(&remote).unwrap().decode_elements(4).unwrap();
+        assert_eq!(roots, vec![only_remote.h64]);
+
+        let residual = 0xAAAA ^ 0xBBBB ^ 0xDDDD;
+        // Resolving the one decoded root explains only its own h128.
+        assert_eq!(
+            ReconciliationClient::verify_global_residual(residual, &[], &[only_remote.h128]),
+            Err(AlgebraicError::DecodeFailure)
+        );
+    }
+
+    #[test]
+    fn collision_free_difference_passes_the_residual() {
+        let local_only = hash(0xAAAA, 0x1234);
+        let remote_only = hash(0xBBBB, 0x4321);
+        let residual = 0xAAAA ^ 0xBBBB;
+        assert_eq!(
+            ReconciliationClient::verify_global_residual(
+                residual,
+                &[local_only.h128],
+                &[remote_only.h128]
+            ),
+            Ok(())
+        );
+    }
+
     #[test]
     fn test_bucket_round_depth() {
         assert_eq!(bucket_round_depth(1), 0);

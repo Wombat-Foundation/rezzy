@@ -15,6 +15,11 @@ pub const STRATA_COUNT: usize = 32;
 /// Extraction capacity maintained in each estimator stratum.
 pub const STRATUM_CAPACITY: usize = 8;
 
+/// Version tag leading [`ResidentKernel::to_bytes`] output.
+pub const RESIDENT_FORMAT_VERSION: u8 = 1;
+/// Exact byte length of a serialized [`ResidentKernel`].
+pub const RESIDENT_SERIALIZED_LEN: usize = 1 + 16 + 8 + STRATA_COUNT * STRATUM_CAPACITY * 8;
+
 /// Per-population resident reconciliation state.
 // TODO(prefix-grinding): this structure is built once and incrementally
 // maintained, then reused to serve every peer that reconciles against it --
@@ -46,6 +51,79 @@ impl ResidentKernel {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Rebuilds resident state from persisted parts.
+    ///
+    /// The parts are trusted to describe one population: `strata` must hold
+    /// the odd syndromes of exactly the elements counted in `accumulator`,
+    /// bucketed by trailing zeros as [`insert`](Self::insert) does. Only the
+    /// empty-population case is checkable here, and it is checked by
+    /// [`from_bytes`](Self::from_bytes), not this constructor.
+    #[must_use]
+    pub const fn from_parts(
+        accumulator: RoomAccumulator,
+        strata: [[u64; STRATUM_CAPACITY]; STRATA_COUNT],
+    ) -> Self {
+        Self {
+            accumulator,
+            strata,
+        }
+    }
+
+    /// Serializes to a fixed-size, versioned record.
+    ///
+    /// Layout: version byte, accumulator digest (16 bytes big-endian), event
+    /// count (8 bytes big-endian), then every stratum coordinate in order as
+    /// 8 bytes little-endian (matching the sketch wire encoding).
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; RESIDENT_SERIALIZED_LEN] {
+        let mut out = [0; RESIDENT_SERIALIZED_LEN];
+        out[0] = RESIDENT_FORMAT_VERSION;
+        out[1..17].copy_from_slice(&self.accumulator.digest().to_be_bytes());
+        out[17..25].copy_from_slice(&self.accumulator.known_event_count().to_be_bytes());
+        let coordinates = self.strata.iter().flatten();
+        for (chunk, coordinate) in out[25..].chunks_exact_mut(8).zip(coordinates) {
+            chunk.copy_from_slice(&coordinate.to_le_bytes());
+        }
+        out
+    }
+
+    /// Parses the record written by [`to_bytes`](Self::to_bytes).
+    ///
+    /// # Errors
+    /// Returns [`AlgebraicError::InvalidSketchLength`] when `bytes` is not
+    /// exactly [`RESIDENT_SERIALIZED_LEN`] long, and
+    /// [`AlgebraicError::DecodeFailure`] for an unknown version or a record
+    /// that claims an empty population but carries a non-zero digest or
+    /// syndrome.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AlgebraicError> {
+        if bytes.len() != RESIDENT_SERIALIZED_LEN {
+            return Err(AlgebraicError::InvalidSketchLength);
+        }
+        if bytes[0] != RESIDENT_FORMAT_VERSION {
+            return Err(AlgebraicError::DecodeFailure);
+        }
+        let (digest, count) = (
+            bytes[1..17].try_into().map(u128::from_be_bytes),
+            bytes[17..25].try_into().map(u64::from_be_bytes),
+        );
+        let (Ok(digest), Ok(count)) = (digest, count) else {
+            return Err(AlgebraicError::InvalidSketchLength);
+        };
+        let mut strata = [[0; STRATUM_CAPACITY]; STRATA_COUNT];
+        let coordinates = strata.iter_mut().flatten();
+        for (coordinate, chunk) in coordinates.zip(bytes[25..].chunks_exact(8)) {
+            let chunk = chunk
+                .try_into()
+                .map_err(|_| AlgebraicError::InvalidSketchLength)?;
+            *coordinate = u64::from_le_bytes(chunk);
+        }
+        let kernel = Self::from_parts(RoomAccumulator::from_parts(digest, count), strata);
+        if count == 0 && kernel != Self::new() {
+            return Err(AlgebraicError::DecodeFailure);
+        }
+        Ok(kernel)
     }
 
     /// Returns the level-0 room accumulator.
@@ -138,6 +216,75 @@ mod tests {
             assert_eq!(*syndrome, expected);
             expected = gf64::mul(expected, squared);
         }
+    }
+
+    #[test]
+    fn bytes_round_trip_and_stay_incrementally_maintainable() {
+        let mut resident = ResidentKernel::new();
+        for (h128, h64) in [(7, 0x100), (9, 0x3), (11, 1_u64 << 40)] {
+            resident.insert(hash(h128, h64)).unwrap();
+        }
+
+        let bytes = resident.to_bytes();
+        assert_eq!(bytes.len(), RESIDENT_SERIALIZED_LEN);
+        assert_eq!(bytes[0], RESIDENT_FORMAT_VERSION);
+        let mut restored = ResidentKernel::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, resident);
+
+        // A reloaded kernel keeps accepting updates identically.
+        restored.remove(hash(9, 0x3)).unwrap();
+        resident.remove(hash(9, 0x3)).unwrap();
+        assert_eq!(restored, resident);
+    }
+
+    #[test]
+    fn from_parts_matches_incremental_build() {
+        let mut built = ResidentKernel::new();
+        built.insert(hash(5, 0x40)).unwrap();
+        let rebuilt = ResidentKernel::from_parts(built.accumulator(), *built.strata());
+        assert_eq!(rebuilt, built);
+    }
+
+    #[test]
+    fn empty_kernel_round_trips() {
+        let bytes = ResidentKernel::new().to_bytes();
+        assert_eq!(
+            ResidentKernel::from_bytes(&bytes),
+            Ok(ResidentKernel::new())
+        );
+    }
+
+    #[test]
+    fn from_bytes_rejects_malformed_records() {
+        let mut resident = ResidentKernel::new();
+        resident.insert(hash(5, 0x40)).unwrap();
+        let good = resident.to_bytes();
+
+        assert_eq!(
+            ResidentKernel::from_bytes(&good[..good.len() - 1]),
+            Err(AlgebraicError::InvalidSketchLength)
+        );
+        let mut long = good.to_vec();
+        long.push(0);
+        assert_eq!(
+            ResidentKernel::from_bytes(&long),
+            Err(AlgebraicError::InvalidSketchLength)
+        );
+
+        let mut bad_version = good;
+        bad_version[0] = RESIDENT_FORMAT_VERSION + 1;
+        assert_eq!(
+            ResidentKernel::from_bytes(&bad_version),
+            Err(AlgebraicError::DecodeFailure)
+        );
+
+        // Count says empty, but the digest says otherwise.
+        let mut zero_count = good;
+        zero_count[17..25].fill(0);
+        assert_eq!(
+            ResidentKernel::from_bytes(&zero_count),
+            Err(AlgebraicError::DecodeFailure)
+        );
     }
 
     #[test]

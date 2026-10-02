@@ -43,7 +43,10 @@ pub use client::{
     BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
     MAX_RECONCILIATION_ROUNDS,
 };
-pub use resident::{ResidentKernel, STRATA_COUNT, STRATUM_CAPACITY};
+pub use resident::{
+    ResidentKernel, RESIDENT_FORMAT_VERSION, RESIDENT_SERIALIZED_LEN, STRATA_COUNT,
+    STRATUM_CAPACITY,
+};
 pub use server::{
     build_bucket_sketches, compute_frame_digest, ForwardGraph, H64Index, ReconciliationContext,
 };

@@ -625,6 +625,43 @@ mod tests {
         assert_eq!(slice, &[0x0000_0001_0000_0001, 0x0000_0001_0000_0002]);
     }
 
+    /// Two events sharing an `h64` (a 64-bit collision) occupy adjacent slots
+    /// in the sorted index. `bucket_slice` returns both -- the index is a
+    /// multiset -- but toggling an element twice is the identity in
+    /// characteristic two, so the pair contributes nothing to the sketch and
+    /// can never be decoded as a root. Only the 128-bit residual can notice.
+    #[test]
+    fn duplicate_h64_is_returned_twice_but_cancels_in_the_sketch() {
+        use crate::triage::BucketRequest;
+
+        let shared = 0x0000_0001_0000_0002;
+        let sorted_h64 = [0x0000_0001_0000_0001, shared, shared, 0x0000_0002_0000_0001];
+        let request = BucketRequest::new(32, 1, 4);
+
+        let slice = H64Index::new(&sorted_h64).bucket_slice(&request).unwrap();
+        assert_eq!(slice, &[0x0000_0001_0000_0001, shared, shared]);
+
+        let sketch = &build_bucket_sketches(&sorted_h64, &[request]).unwrap()[0];
+        let mut singleton = SyndromeSketch::new(4).unwrap();
+        singleton.toggle(0x0000_0001_0000_0001).unwrap();
+        assert_eq!(sketch, &singleton, "the colliding pair must cancel out");
+        assert_eq!(
+            sketch.decode_elements(4).unwrap(),
+            vec![0x0000_0001_0000_0001]
+        );
+    }
+
+    #[test]
+    fn duplicate_h64_alone_leaves_an_empty_sketch() {
+        use crate::triage::BucketRequest;
+
+        let sorted_h64 = [7, 7];
+        let sketch =
+            &build_bucket_sketches(&sorted_h64, &[BucketRequest::new(0, 0, 2)]).unwrap()[0];
+        assert_eq!(sketch, &SyndromeSketch::new(2).unwrap());
+        assert_eq!(sketch.decode_elements(2).unwrap(), Vec::<u64>::new());
+    }
+
     #[test]
     fn test_h64_index_bucket_range() {
         use crate::triage::BucketRequest;

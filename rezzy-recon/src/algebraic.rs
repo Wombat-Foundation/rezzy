@@ -235,6 +235,15 @@ impl RoomAccumulator {
         }
     }
     #[must_use]
+    /// Rebuilds an accumulator from a previously observed digest and count.
+    ///
+    /// This is the persistence counterpart of [`digest`](Self::digest) and
+    /// [`known_event_count`](Self::known_event_count). The pair is trusted: it
+    /// cannot be checked against the population it summarizes.
+    pub const fn from_parts(digest: u128, count: u64) -> Self {
+        Self { digest, count }
+    }
+    #[must_use]
     /// The accumulated 128-bit digest.
     pub const fn digest(self) -> u128 {
         self.digest
