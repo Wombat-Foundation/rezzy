@@ -223,16 +223,14 @@ pub type VerifiedBatch = (BucketDecodeBatch, Vec<Classified>, Vec<(u8, u64, Vec<
 ///
 /// # Errors
 /// [`AlgebraicError::DecodeFailure`] on any failure, including a `request`
-/// for a different node than `classified`; the caller must discard the node's
+/// for a different `node` than `classified`; the caller must discard the node's
 /// result and fall back.
 pub fn verify_follow_up(
     classified: &Classified,
-    request: &BucketRequest,
+    node: (u8, u64),
     returned: &[[u8; 32]],
 ) -> Result<(), AlgebraicError> {
-    if classified.node() != (request.depth, request.prefix)
-        || returned.len() != classified.m_roots.len()
-    {
+    if classified.node() != node || returned.len() != classified.m_roots.len() {
         return Err(AlgebraicError::DecodeFailure);
     }
     let returned: Vec<ElementHash> = returned
@@ -282,7 +280,7 @@ mod tests {
 
     fn fu(c: &Classified, returned: &[ElementHash]) -> Result<(), AlgebraicError> {
         let digests: Vec<[u8; 32]> = returned.iter().map(|e| dig(*e)).collect();
-        verify_follow_up(c, &BucketRequest::new(0, 0, 8), &digests)
+        verify_follow_up(c, (0, 0), &digests)
     }
 
     fn remote(digest: u128, count: u64) -> NodeSummary {
@@ -492,7 +490,7 @@ mod tests {
         let (c, m1, m2) = honest();
         let digests = [dig(m1), dig(m2)];
         assert_eq!(
-            verify_follow_up(&c, &BucketRequest::new(1, 1, 8), &digests),
+            verify_follow_up(&c, (1, 1), &digests),
             Err(AlgebraicError::DecodeFailure)
         );
     }

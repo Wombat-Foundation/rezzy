@@ -28,8 +28,8 @@ use rezzy_recon::client::{
 use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
 use rezzy_recon::{
-    build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
-    ElementHash, NodeSummary, SortedPopulation,
+    build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, ElementHash,
+    NodeSummary, SortedPopulation,
 };
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
@@ -419,15 +419,14 @@ fn verified_exchange_resolves_and_passes_phase_two() {
     // Phase 2, per node: the peer returns the identifiers for that node's M.
     let mut covered = 0;
     for classified in exchange.classified() {
-        let (depth, prefix) = classified.node();
-        let request = BucketRequest::new(depth, prefix, 8);
+        let node = classified.node();
         let returned: Vec<[u8; 32]> = remote_only
             .iter()
             .filter(|e| classified.m_roots().contains(&e.h64))
             .map(|e| digest_of(*e))
             .collect();
         covered += returned.len();
-        assert_eq!(verify_follow_up(classified, &request, &returned), Ok(()));
+        assert_eq!(verify_follow_up(classified, node, &returned), Ok(()));
     }
     assert_eq!(covered, remote_only.len());
 }
@@ -562,14 +561,13 @@ fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
 
     let mut rejected = Vec::new();
     for classified in exchange.classified() {
-        let (depth, prefix) = classified.node();
-        let request = BucketRequest::new(depth, prefix, 8);
+        let node = classified.node();
         let returned: Vec<[u8; 32]> = remote_extra
             .iter()
             .filter(|e| classified.m_roots().contains(&e.h64))
             .map(|e| digest_of(*e))
             .collect();
-        if verify_follow_up(classified, &request, &returned).is_err() {
+        if verify_follow_up(classified, node, &returned).is_err() {
             rejected.push(classified.node());
         }
     }
