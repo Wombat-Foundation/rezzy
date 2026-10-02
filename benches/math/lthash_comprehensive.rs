@@ -516,6 +516,13 @@ impl LtHashExt for LtHash {
     }
 }
 
+/// Start a new metric group so `scripts/compare_bench.py` keys the labels
+/// below by group instead of letting the per-input-size repeats collide.
+fn checkpoint(step: &mut u32) {
+    *step += 1;
+    println!("S={step}:");
+}
+
 /// Run all benchmarks
 pub fn run() {
     println!("============================================================");
@@ -524,8 +531,11 @@ pub fn run() {
     println!("Testing: single ops, batch ops, bulk construction, incremental");
     println!("Input sizes: small, medium, large");
 
+    let mut step = 0;
+
     // Single operations for each input size
     for size in [InputSize::Small, InputSize::Medium, InputSize::Large] {
+        checkpoint(&mut step);
         bench_single_operations(size);
         bench_batch_operations(size);
         bench_bulk_construction(size);
@@ -534,6 +544,7 @@ pub fn run() {
     }
 
     // Lattice arithmetic (independent of input size)
+    checkpoint(&mut step);
     bench_lattice_arithmetic();
 
     println!("\n============================================================");

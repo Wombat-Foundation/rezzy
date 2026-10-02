@@ -45,6 +45,12 @@ use crate::common::{
 type Key = String;
 type Value = String;
 
+type PersistFixture = (
+    Arc<HamtNode<Key, Value>>,
+    HashMap<Key, Value>,
+    Vec<(Key, Value)>,
+);
+
 const STRUCTURAL_KEY: &[u8] = b"bench-persistence";
 
 /// Encodes the whole flat state map as the legacy (full re-serialize)
@@ -60,14 +66,7 @@ fn legacy_snapshot_bytes(flat_state: &HashMap<Key, Value>) -> u64 {
 /// Builds the base HAMT/flat-state pair and the shared mutation stream (two
 /// new joins per overwrite of an existing key) used by both persistence
 /// variants.
-fn build_persist_fixture(
-    n: usize,
-    steps: usize,
-) -> (
-    Arc<HamtNode<Key, Value>>,
-    HashMap<Key, Value>,
-    Vec<(Key, Value)>,
-) {
+fn build_persist_fixture(n: usize, steps: usize) -> PersistFixture {
     let base_entries = make_string_entries(n, 0x5EED_0000 + n as u64);
     let root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, base_entries.iter().cloned())
         .expect("build should not collide");
