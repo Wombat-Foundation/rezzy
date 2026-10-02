@@ -27,6 +27,10 @@ use rezzy_recon::client::{
 };
 use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
+use rezzy_recon::{
+    build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
+    ElementHash, NodeSummary,
+};
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
 use reconciliation_support::{
@@ -292,4 +296,174 @@ fn identical_sets_synchronize_without_a_round_trip() {
     assert_eq!(terminal, "Synchronized");
     assert_eq!(round_trips, 0);
     assert!(roots.is_empty(), "identical sets resolve no roots");
+}
+
+/// One side's population as aligned, `h64`-sorted slices.
+struct Side {
+    kernel: ResidentKernel,
+    h64: Vec<u64>,
+    h128: Vec<u128>,
+}
+
+impl Side {
+    fn new(mut elements: Vec<ElementHash>) -> Self {
+        elements.sort_by_key(|e| e.h64);
+        let mut kernel = ResidentKernel::new();
+        for element in &elements {
+            kernel.insert(*element).unwrap();
+        }
+        Self {
+            kernel,
+            h64: elements.iter().map(|e| e.h64).collect(),
+            h128: elements.iter().map(|e| e.h128).collect(),
+        }
+    }
+
+    /// The multi-valued `h64 -> h128` map.
+    fn candidates(&self, root: u64) -> Vec<u128> {
+        self.h64
+            .iter()
+            .zip(&self.h128)
+            .filter(|(h64, _)| **h64 == root)
+            .map(|(_, h128)| *h128)
+            .collect()
+    }
+}
+
+/// A canonical digest whose derived `h64`/`h128` are exactly the element's.
+fn digest_of(element: ElementHash) -> [u8; 32] {
+    let mut digest = [0_u8; 32];
+    digest[..8].copy_from_slice(&element.h64.to_be_bytes());
+    digest[16..].copy_from_slice(&element.h128.to_be_bytes());
+    digest
+}
+
+/// Drives the verified exchange. Returns the terminal action and the exchange.
+fn run_verified(local: &Side, remote: &Side) -> (ClientAction, BucketExchange) {
+    let client = ReconciliationClient::default().allow_unlimited_delta();
+    let initial = client.select_action(&local.kernel, remote_digest(&remote.kernel), 0);
+    let ClientAction::BucketSketches {
+        mut requests,
+        accumulated_roots,
+    } = initial
+    else {
+        return (initial, BucketExchange::new(Vec::new(), 1, 1, 1));
+    };
+    let estimate = estimate_strata(
+        local.kernel.strata(),
+        remote.kernel.strata(),
+        MAX_STRATA_FACTOR_WORK,
+    )
+    .ok()
+    .map(|e| e.delta);
+    let mut exchange = BucketExchange::new(
+        accumulated_roots,
+        rezzy_recon::client::MAX_RECONCILIATION_ROUNDS,
+        MAX_BUCKETS_PER_ROUND,
+        MAX_BUCKETED_SKETCH_CAPACITY,
+    );
+    loop {
+        let remote_nodes = build_bucket_nodes(&remote.h64, &remote.h128, &requests).unwrap();
+        let local_nodes = build_bucket_nodes(&local.h64, &local.h128, &requests).unwrap();
+        let mut batch = BucketDecodeBatch {
+            successful_buckets: Vec::new(),
+            failed_buckets: Vec::new(),
+        };
+        for ((request, (remote_sketch, _)), (local_sketch, _)) in
+            requests.iter().zip(&remote_nodes).zip(&local_nodes)
+        {
+            let mut xored = remote_sketch.clone();
+            xored.xor(local_sketch).unwrap();
+            match xored.decode_elements(request.capacity) {
+                Ok(roots) => batch.successful_buckets.push(BucketDecodeSuccess {
+                    depth: request.depth,
+                    prefix: request.prefix,
+                    roots,
+                }),
+                Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
+            }
+        }
+        let local_summaries: Vec<NodeSummary> = local_nodes.iter().map(|n| n.1).collect();
+        let remote_summaries: Vec<NodeSummary> = remote_nodes.iter().map(|n| n.1).collect();
+        let action = exchange
+            .advance_verified(
+                batch,
+                &requests,
+                &local_summaries,
+                &remote_summaries,
+                estimate,
+                |root| local.candidates(root),
+            )
+            .unwrap();
+        match action {
+            ClientAction::BucketSketches { requests: next, .. } => requests = next,
+            terminal => return (terminal, exchange),
+        }
+    }
+}
+
+#[test]
+fn verified_exchange_resolves_and_passes_phase_two() {
+    let mut generator = Xorshift128::new(11);
+    let shared: Vec<ElementHash> = (0..300).map(|_| generator.hash()).collect();
+    let local_only: Vec<ElementHash> = (0..5).map(|_| generator.hash()).collect();
+    let remote_only: Vec<ElementHash> = (0..7).map(|_| generator.hash()).collect();
+    let local = Side::new([shared.clone(), local_only.clone()].concat());
+    let remote = Side::new([shared, remote_only.clone()].concat());
+
+    let (action, exchange) = run_verified(&local, &remote);
+    let ClientAction::ResolveRoots { mut roots } = action else {
+        panic!("expected a clean resolve, got {action:?}");
+    };
+    roots.sort_unstable();
+    let mut expected: Vec<u64> = local_only
+        .iter()
+        .chain(&remote_only)
+        .map(|e| e.h64)
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(roots, expected);
+
+    // Phase 2, per node: the peer returns the identifiers for that node's M.
+    let mut covered = 0;
+    for classified in exchange.classified() {
+        let (depth, prefix) = classified.node();
+        let request = BucketRequest::new(depth, prefix, 8);
+        let returned: Vec<[u8; 32]> = remote_only
+            .iter()
+            .filter(|e| classified.m_roots().contains(&e.h64))
+            .map(|e| digest_of(*e))
+            .collect();
+        covered += returned.len();
+        assert_eq!(verify_follow_up(classified, &request, &returned), Ok(()));
+    }
+    assert_eq!(covered, remote_only.len());
+}
+
+/// A shared element whose `h64` collides with a remote-only one (mocked, since
+/// no real event ID can be ground to this). The root survives the sketch on
+/// the wrong side, the node fails its count identity, and the exchange never
+/// admits it: it splits down to the collision and ends at the baseline.
+#[test]
+fn colliding_h64_is_never_resolved_by_the_verified_exchange() {
+    let mut generator = Xorshift128::new(12);
+    let shared: Vec<ElementHash> = (0..200).map(|_| generator.hash()).collect();
+    let collided = shared[17];
+    let twin = ElementHash {
+        h128: collided.h128 ^ 0xdead_beef,
+        h64: collided.h64,
+    };
+    let extra = generator.hash();
+    let local = Side::new(shared.clone());
+    let remote = Side::new([shared, vec![twin, extra]].concat());
+
+    let (action, exchange) = run_verified(&local, &remote);
+    assert_eq!(action, ClientAction::ExtremityDiff);
+    assert!(
+        exchange
+            .classified()
+            .iter()
+            .all(|c| !c.l_roots().contains(&collided.h64) && !c.m_roots().contains(&collided.h64)),
+        "the colliding root must never be admitted"
+    );
 }

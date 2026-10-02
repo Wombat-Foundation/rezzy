@@ -7,9 +7,10 @@
 
 use super::resident::{ResidentKernel, STRATA_COUNT, STRATUM_CAPACITY};
 use super::triage::{
-    bucket_range_start, BucketDecodeBatch, BucketRequest, MAX_BUCKETED_SKETCH_CAPACITY,
-    MAX_BUCKET_SKETCH_CAPACITY, SATURATED_DELTA_ESTIMATE,
+    bucket_range_start, BucketDecodeBatch, BucketRequest, NodeSummary,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY, SATURATED_DELTA_ESTIMATE,
 };
+use super::verify::Classified;
 use super::{AlgebraicError, ElementHash, SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY};
 use alloc::collections::VecDeque;
 
@@ -157,6 +158,8 @@ pub struct BucketExchange {
     /// narrows (its sibling succeeds) or any bucket resolves a root.
     /// See `advance`'s doc comment.
     no_progress_rounds: usize,
+    /// Nodes that passed phase-1 verification via [`Self::advance_verified`].
+    classified: alloc::vec::Vec<Classified>,
 }
 
 impl BucketExchange {
@@ -177,7 +180,44 @@ impl BucketExchange {
             max_aggregate_capacity,
             max_pending_requests: max_rounds.saturating_mul(max_buckets_per_round),
             no_progress_rounds: 0,
+            classified: alloc::vec::Vec::new(),
         }
+    }
+
+    /// Nodes admitted so far by [`Self::advance_verified`], each carrying the
+    /// roots the caller must still fetch (`M`) for phase 2.
+    #[must_use]
+    pub fn classified(&self) -> &[Classified] {
+        &self.classified
+    }
+
+    /// Like [`Self::advance`], but verifies each decoded node first.
+    ///
+    /// `requests`, `local` and `remote` are the round's requests and the two
+    /// sides' per-node summaries, index-aligned. A node that fails phase 1 is
+    /// treated as a failed bucket, so it is retried or split on its own while
+    /// its siblings are admitted. `local_candidates` is the multi-valued
+    /// `h64 -> h128` map over the local population.
+    ///
+    /// # Errors
+    /// Returns an error if the inputs are misaligned or a decoded node was
+    /// never requested.
+    pub fn advance_verified<F>(
+        &mut self,
+        batch: BucketDecodeBatch,
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+        global_estimate: Option<u64>,
+        local_candidates: F,
+    ) -> Result<ClientAction, AlgebraicError>
+    where
+        F: FnMut(u64) -> alloc::vec::Vec<u128>,
+    {
+        let (batch, verified) =
+            crate::verify::verify_batch(batch, requests, local, remote, local_candidates)?;
+        self.classified.extend(verified);
+        Ok(self.advance(batch, requests, global_estimate))
     }
 
     /// Returns the accumulated roots carried through the exchange so far.

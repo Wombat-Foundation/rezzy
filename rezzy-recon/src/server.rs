@@ -14,8 +14,9 @@ use alloc::{
 use crate::EventId;
 
 use super::{
-    algebraic::SyndromeSketch, triage::BucketRequest, AlgebraicError, ElementHash, EventIdFormat,
-    RoomAccumulator, H64_TRIE_WIDTH,
+    algebraic::SyndromeSketch,
+    triage::{BucketRequest, NodeSummary},
+    AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator, H64_TRIE_WIDTH,
 };
 
 /// Read-only helper over a pre-sorted `h64` index.
@@ -34,7 +35,7 @@ impl<'a> H64Index<'a> {
         Self { sorted_h64 }
     }
 
-    fn bounds_unchecked(request: &BucketRequest) -> core::ops::Range<u128> {
+    pub(crate) fn bounds_unchecked(request: &BucketRequest) -> core::ops::Range<u128> {
         let depth = u32::from(request.depth);
         let shift = u32::from(H64_TRIE_WIDTH).saturating_sub(depth);
 
@@ -280,6 +281,38 @@ pub fn build_bucket_sketches(
     }
 
     Ok(sketches)
+}
+
+/// Like [`build_bucket_sketches`], but also returns each node's
+/// [`NodeSummary`] (count and `h128` XOR), computed over the same slice that
+/// is toggled into the sketch.
+///
+/// `sorted_h128[i]` MUST belong to the element whose `h64` is `sorted_h64[i]`.
+///
+/// # Errors
+/// Returns an error if the slices differ in length, a sketch exceeds capacity
+/// limits, or the requests are invalid.
+pub fn build_bucket_nodes(
+    sorted_h64: &[u64],
+    sorted_h128: &[u128],
+    requests: &[BucketRequest],
+) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
+    if sorted_h64.len() != sorted_h128.len() {
+        return Err(AlgebraicError::InvalidSketchLength);
+    }
+    crate::triage::validate_bucket_requests(requests)?;
+    let index = H64Index::new(sorted_h64);
+
+    let mut nodes = Vec::with_capacity(requests.len());
+    for request in requests {
+        let range = index.bucket_range_unchecked(request);
+        let mut sketch = SyndromeSketch::new(request.capacity)?;
+        for &h64 in &sorted_h64[range.clone()] {
+            sketch.toggle(h64)?;
+        }
+        nodes.push((sketch, NodeSummary::from_h128s(&sorted_h128[range])?));
+    }
+    Ok(nodes)
 }
 
 // =========================================================================

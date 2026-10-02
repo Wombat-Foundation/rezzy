@@ -49,14 +49,16 @@ pub use resident::{
     STRATUM_CAPACITY,
 };
 pub use server::{
-    build_bucket_sketches, compute_frame_digest, ForwardGraph, H64Index, ReconciliationContext,
+    build_bucket_nodes, build_bucket_sketches, compute_frame_digest, ForwardGraph, H64Index,
+    ReconciliationContext,
 };
 pub use triage::{
     decode_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,
-    BucketDecodeSuccess, BucketRequest, StrataEstimate, MAX_BATCH_FACTOR_WORK,
+    BucketDecodeSuccess, BucketRequest, NodeSummary, StrataEstimate, MAX_BATCH_FACTOR_WORK,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY, MAX_STRATA_FACTOR_WORK,
+    NODE_SUMMARY_LEN,
 };
-pub use verify::{verify_decode, verify_follow_up, Classified};
+pub use verify::{verify_batch, verify_decode, verify_follow_up, Classified};
 
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(MAX_SKETCH_CAPACITY == 32);
