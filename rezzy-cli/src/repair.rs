@@ -465,11 +465,12 @@ mod tests {
     }
 
     #[test]
-    fn bare_relative_output_resolves_against_current_directory() {
+    fn bare_relative_output_is_accepted() {
         let dir = scratch("bare");
         let input = dir.join("in.jsonl");
         std::fs::write(&input, "").unwrap();
-        // Bare name resolves to the cwd, which is not the scratch dir.
+        // Smoke test only: a nonexistent bare name must not error or be
+        // mistaken for the input.
         assert!(
             ensure_distinct_paths(&input, std::path::Path::new("out-does-not-exist.jsonl")).is_ok()
         );

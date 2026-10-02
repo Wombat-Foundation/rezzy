@@ -87,7 +87,7 @@ pub struct Args {
     /// Validate input only; suppress state output and exit.
     pub check: bool,
 
-    /// Server name used as the origin when signing federation requests.
+    /// Server name embedded as the origin in `-f federation` output.
     pub origin: String,
 
     /// Ordering for `-f timeline`.

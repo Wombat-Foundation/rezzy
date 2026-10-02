@@ -45,7 +45,7 @@ const EVENT_HASH_ENCODED_LEN: usize = 43;
 pub enum AlgebraicError {
     /// The event ID is not a valid reference-hash ID.
     InvalidEventId,
-    /// The text is not valid unpadded base64url.
+    /// The text is not valid unpadded base64 or base64url.
     InvalidBase64,
     /// A digest did not decode to the expected length.
     InvalidDigestLength,

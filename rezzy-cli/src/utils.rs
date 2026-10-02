@@ -64,11 +64,17 @@ pub fn detect_version(
     for ev in events {
         if ev.get(FIELD_TYPE).and_then(|t| t.as_str()) == Some(M_ROOM_CREATE) {
             saw_create_event = true;
-            if let Some(ver) = ev
+            if let Some(raw) = ev
                 .get(FIELD_CONTENT)
                 .and_then(|c| c.get(FIELD_ROOM_VERSION))
-                .and_then(|v| v.as_str())
             {
+                // Only an absent field defaults to v1; a present non-string is malformed.
+                let Some(ver) = raw.as_str() else {
+                    bail_code!(
+                        ErrorCode::UnsupportedVersion,
+                        "m.room.create content.room_version must be a string"
+                    );
+                };
                 if debug {
                     eprintln!("[DEBUG] Found m.room.create with version: {ver}");
                 }
