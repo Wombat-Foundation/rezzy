@@ -1,6 +1,5 @@
 use rezzy_recon::{
-    build_bucket_sketches, ElementHash, EventIdFormat, ReconciliationClient, RemoteDigest,
-    ResidentKernel,
+    build_bucket_sketches, ElementHash, ReconciliationClient, RemoteDigest, ResidentKernel,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader};
