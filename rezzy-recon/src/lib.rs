@@ -30,7 +30,10 @@ pub trait EventId: Clone + Ord + core::fmt::Display {}
 impl<T: Clone + Ord + core::fmt::Display> EventId for T {}
 
 /// Maximum depth of an `h64` bucket request.
-pub const MAX_DEPTH: u8 = 64;
+///
+/// MSC4521 caps `depth` at 32, so a prefix is at most 32 bits wide. Requests
+/// deeper than this MUST be rejected, whoever sends them.
+pub const MAX_DEPTH: u8 = 32;
 
 /// Internal bit width of the `h64` trie used to materialize bucket ranges.
 pub const H64_TRIE_WIDTH: u8 = 64;

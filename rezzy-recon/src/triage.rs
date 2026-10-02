@@ -484,7 +484,7 @@ fn validate_bucket_requests_with_limit(
             return Err(AlgebraicError::InvalidBucketIndex);
         }
 
-        if request.depth < MAX_DEPTH && request.prefix >= (1_u64 << request.depth) {
+        if request.prefix >= (1_u64 << request.depth) {
             return Err(AlgebraicError::InvalidBucketIndex);
         }
 
@@ -563,7 +563,21 @@ mod tests {
 
     #[test]
     fn test_validate_bucket_requests_accepts_full_h64_depth() {
-        assert!(validate_bucket_requests(&[BucketRequest::new(MAX_DEPTH, u64::MAX, 4)]).is_ok());
+        assert!(validate_bucket_requests(&[BucketRequest::new(
+            MAX_DEPTH,
+            (1_u64 << MAX_DEPTH) - 1,
+            4
+        )])
+        .is_ok());
+        // One bit past the cap, and one level past it, are both rejected.
+        assert_eq!(
+            validate_bucket_requests(&[BucketRequest::new(MAX_DEPTH, 1_u64 << MAX_DEPTH, 4)]),
+            Err(AlgebraicError::InvalidBucketIndex)
+        );
+        assert_eq!(
+            validate_bucket_requests(&[BucketRequest::new(MAX_DEPTH + 1, 0, 4)]),
+            Err(AlgebraicError::InvalidBucketIndex)
+        );
     }
 
     #[test]
