@@ -552,6 +552,19 @@ mod tests {
         );
     }
 
+    /// Pins the MSC4521 "Node summary" test vector.
+    #[test]
+    fn node_summary_matches_the_spec_vector() {
+        let summary = NodeSummary {
+            count: 3,
+            digest: 1,
+        };
+        let mut expected = [0_u8; 24];
+        expected[15] = 1;
+        expected[23] = 3;
+        assert_eq!(summary.to_bytes(), expected);
+    }
+
     #[test]
     fn node_summary_round_trips_and_rejects_bad_length() {
         let summary = NodeSummary::from_h128s(&[0x1, 0x2, 0x4]).unwrap();
