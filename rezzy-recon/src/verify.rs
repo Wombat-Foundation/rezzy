@@ -22,6 +22,9 @@ use super::client::{ReconciliationClient, RemoteDigest};
 use super::{AlgebraicError, ElementHash};
 
 /// Decoded roots classified by local `h64` presence.
+///
+/// Bound to one exchange only: it carries nothing tying it to a frame, so the
+/// caller must not apply it to another exchange's follow-up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classified {
     l_roots: Vec<u64>,
@@ -66,6 +69,13 @@ pub fn verify_decode<F>(
 where
     F: FnMut(u64) -> Vec<u128>,
 {
+    // The decoder yields distinct roots; reject a caller that does not, since
+    // a repeated root would be masked by the length check in phase 2.
+    let mut distinct = roots.to_vec();
+    distinct.sort_unstable();
+    if distinct.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AlgebraicError::DecodeFailure);
+    }
     let mut l_roots = Vec::new();
     let mut m_roots = Vec::new();
     let mut local_accumulated = 0_u128;
@@ -82,12 +92,12 @@ where
     }
     m_roots.sort_unstable();
 
-    // Widened to i128 so neither side can overflow; the checks are
-    // belt-and-braces for the arithmetic lint.
+    // Widened to i128, so these subtractions cannot overflow; `checked_sub`
+    // only satisfies the arithmetic lint and the `else` arm is dead code.
     let lhs = i128::from(local_count).checked_sub(i128::from(remote.known_event_count));
     let rhs = (l_roots.len() as i128).checked_sub(m_roots.len() as i128);
     let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
-        return Err(AlgebraicError::CountOverflow);
+        return Err(AlgebraicError::DecodeFailure);
     };
     if lhs != rhs {
         return Err(AlgebraicError::DecodeFailure);
@@ -107,8 +117,9 @@ where
 
 /// Phase 2: check the identifiers the peer returned for `M`.
 ///
-/// `returned` holds the element hashes re-derived from the returned IDs. Each
-/// must re-derive to a root in `M`, each root in `M` must be covered exactly
+/// `returned` holds the canonical 32-byte digests `D(e)` computed locally from
+/// the returned identifiers. This function derives `h64` and `h128` itself, so
+/// peer-supplied hashes can never be passed in. Each must re-derive to a root in `M`, each root in `M` must be covered exactly
 /// once, and the full residual `D_A xor D_B = A(L) xor A(M)` must hold. A
 /// root with several local candidates is resolved here by that residual, or
 /// the result is discarded.
@@ -118,13 +129,17 @@ where
 /// the result and fall back.
 pub fn verify_follow_up(
     classified: &Classified,
-    returned: &[ElementHash],
+    returned: &[[u8; 32]],
 ) -> Result<(), AlgebraicError> {
     if returned.len() != classified.m_roots.len() {
         return Err(AlgebraicError::DecodeFailure);
     }
     let mut covered = alloc::vec![false; classified.m_roots.len()];
-    for element in returned {
+    let returned: Vec<ElementHash> = returned
+        .iter()
+        .map(|digest| ElementHash::from_digest32(*digest))
+        .collect();
+    for element in &returned {
         let slot = classified
             .m_roots
             .binary_search(&element.h64)
@@ -152,6 +167,20 @@ mod tests {
 
     fn el(h128: u128, h64: u64) -> ElementHash {
         ElementHash { h128, h64 }
+    }
+
+    /// A digest whose derived `h64`/`h128` are exactly the given values
+    /// (`h64` must be non-zero).
+    fn dig(e: ElementHash) -> [u8; 32] {
+        let mut d = [0_u8; 32];
+        d[..8].copy_from_slice(&e.h64.to_be_bytes());
+        d[16..].copy_from_slice(&e.h128.to_be_bytes());
+        d
+    }
+
+    fn fu(c: &Classified, returned: &[ElementHash]) -> Result<(), AlgebraicError> {
+        let digests: Vec<[u8; 32]> = returned.iter().map(|e| dig(*e)).collect();
+        verify_follow_up(c, &digests)
     }
 
     fn remote(digest: u128, count: u64) -> RemoteDigest {
@@ -196,7 +225,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.l_roots(), &[2]);
         assert_eq!(c.m_roots(), &[3]);
-        assert_eq!(verify_follow_up(&c, &[m]), Ok(()));
+        assert_eq!(fu(&c, &[m]), Ok(()));
     }
 
     #[test]
@@ -251,7 +280,7 @@ mod tests {
     fn l_root_substituted_into_the_follow_up_is_rejected() {
         let (c, m1, _) = honest();
         assert_eq!(
-            verify_follow_up(&c, &[m1, el(0x20, 2)]),
+            fu(&c, &[m1, el(0x20, 2)]),
             Err(AlgebraicError::DecodeFailure)
         );
     }
@@ -259,17 +288,14 @@ mod tests {
     #[test]
     fn root_covered_twice_is_rejected() {
         let (c, m1, _) = honest();
-        assert_eq!(
-            verify_follow_up(&c, &[m1, m1]),
-            Err(AlgebraicError::DecodeFailure)
-        );
+        assert_eq!(fu(&c, &[m1, m1]), Err(AlgebraicError::DecodeFailure));
     }
 
     #[test]
     fn extra_returned_id_is_rejected() {
         let (c, m1, m2) = honest();
         assert_eq!(
-            verify_follow_up(&c, &[m1, m2, el(0x1, 3)]),
+            fu(&c, &[m1, m2, el(0x1, 3)]),
             Err(AlgebraicError::DecodeFailure)
         );
     }
@@ -277,17 +303,14 @@ mod tests {
     #[test]
     fn missing_m_root_is_rejected() {
         let (c, m1, _) = honest();
-        assert_eq!(
-            verify_follow_up(&c, &[m1]),
-            Err(AlgebraicError::DecodeFailure)
-        );
+        assert_eq!(fu(&c, &[m1]), Err(AlgebraicError::DecodeFailure));
     }
 
     #[test]
     fn right_roots_wrong_h128_fails_the_residual() {
         let (c, _, m2) = honest();
         assert_eq!(
-            verify_follow_up(&c, &[el(0x41, 3), m2]),
+            fu(&c, &[el(0x41, 3), m2]),
             Err(AlgebraicError::DecodeFailure)
         );
     }
@@ -311,9 +334,13 @@ mod tests {
         )
         .expect("phase 1 defers an ambiguous root");
         assert_eq!(c.l_roots(), &[5]);
-        assert_eq!(
-            verify_follow_up(&c, &[]),
-            Err(AlgebraicError::DecodeFailure)
-        );
+        assert_eq!(fu(&c, &[]), Err(AlgebraicError::DecodeFailure));
+    }
+
+    #[test]
+    fn duplicate_roots_are_rejected() {
+        let l = el(0x20, 2);
+        let r = verify_decode(0x20, 1, &remote(0, 0), &[2, 2], lookup(&[l]));
+        assert_eq!(r, Err(AlgebraicError::DecodeFailure));
     }
 }
