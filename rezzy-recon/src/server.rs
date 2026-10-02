@@ -410,7 +410,11 @@ mod tests {
         }
 
         fn event_format(&self, _id: &MockId) -> EventIdFormat {
-            EventIdFormat::Legacy
+            EventIdFormat::V4Plus
+        }
+
+        fn event_hash(&self, id: &MockId) -> Result<ElementHash, AlgebraicError> {
+            Ok(ElementHash::from_opaque_bytes(id.0.as_bytes()))
         }
     }
 
@@ -419,11 +423,11 @@ mod tests {
     }
 
     fn hash1() -> ElementHash {
-        ElementHash::from_matrix_event_id("$1", EventIdFormat::Legacy).unwrap()
+        ElementHash::from_opaque_bytes(b"$1")
     }
 
     fn hash2() -> ElementHash {
-        ElementHash::from_matrix_event_id("$2", EventIdFormat::Legacy).unwrap()
+        ElementHash::from_opaque_bytes(b"$2")
     }
 
     fn four_entry_index() -> [u64; 4] {
@@ -486,7 +490,11 @@ mod tests {
             }
 
             fn event_format(&self, _id: &MockId) -> EventIdFormat {
-                EventIdFormat::Legacy
+                EventIdFormat::V4Plus
+            }
+
+            fn event_hash(&self, id: &MockId) -> Result<ElementHash, AlgebraicError> {
+                Ok(ElementHash::from_opaque_bytes(id.0.as_bytes()))
             }
         }
 
@@ -495,10 +503,7 @@ mod tests {
         assert_eq!(StringIdGraph.children(&event_id).next(), None);
 
         let hash = StringIdGraph.event_hash(&event_id).unwrap();
-        assert_eq!(
-            hash,
-            ElementHash::from_matrix_event_id("$anchor", EventIdFormat::Legacy).unwrap()
-        );
+        assert_eq!(hash, ElementHash::from_opaque_bytes(b"$anchor"));
     }
 
     #[test]
@@ -523,10 +528,9 @@ mod tests {
                 // Deliberately distinct from the default legacy hash of `id.0`
                 // (which would hash "$child") so the assertion below can only
                 // pass if traversal actually dispatches through this override.
-                ElementHash::from_matrix_event_id(
-                    &alloc::format!("$custom-{}", id.0),
-                    EventIdFormat::Legacy,
-                )
+                Ok(ElementHash::from_opaque_bytes(
+                    alloc::format!("$custom-{}", id.0).as_bytes(),
+                ))
             }
         }
 
@@ -536,16 +540,14 @@ mod tests {
 
         assert_eq!(
             custom_graph.event_format(&id("$anchor")),
-            EventIdFormat::Legacy
+            EventIdFormat::V4Plus
         );
 
         let digest = compute_frame_digest(&custom_graph, &[id("$anchor")]).unwrap();
 
         let mut expected = RoomAccumulator::new();
         expected
-            .insert(
-                ElementHash::from_matrix_event_id("$custom-$child", EventIdFormat::Legacy).unwrap(),
-            )
+            .insert(ElementHash::from_opaque_bytes(b"$custom-$child"))
             .unwrap();
 
         assert_eq!(digest.digest(), expected.digest());
@@ -568,15 +570,13 @@ mod tests {
 
         let mut expected = RoomAccumulator::new();
         expected
-            .insert(ElementHash::from_matrix_event_id("$child1", EventIdFormat::Legacy).unwrap())
+            .insert(ElementHash::from_opaque_bytes(b"$child1"))
             .unwrap();
         expected
-            .insert(ElementHash::from_matrix_event_id("$child2", EventIdFormat::Legacy).unwrap())
+            .insert(ElementHash::from_opaque_bytes(b"$child2"))
             .unwrap();
         expected
-            .insert(
-                ElementHash::from_matrix_event_id("$grandchild", EventIdFormat::Legacy).unwrap(),
-            )
+            .insert(ElementHash::from_opaque_bytes(b"$grandchild"))
             .unwrap();
 
         assert_eq!(digest.digest(), expected.digest());
@@ -595,7 +595,7 @@ mod tests {
 
         let mut expected = RoomAccumulator::new();
         expected
-            .insert(ElementHash::from_matrix_event_id("$child", EventIdFormat::Legacy).unwrap())
+            .insert(ElementHash::from_opaque_bytes(b"$child"))
             .unwrap();
 
         assert_eq!(digest.digest(), expected.digest());
@@ -682,9 +682,8 @@ mod tests {
         graph.add_edge("$anchor", "$child");
         graph.add_edge("$child", "$grandchild");
 
-        let child = ElementHash::from_matrix_event_id("$child", EventIdFormat::Legacy).unwrap();
-        let grandchild =
-            ElementHash::from_matrix_event_id("$grandchild", EventIdFormat::Legacy).unwrap();
+        let child = ElementHash::from_opaque_bytes(b"$child");
+        let grandchild = ElementHash::from_opaque_bytes(b"$grandchild");
         let mut sorted_h64 = vec![grandchild.h64, child.h64];
         sorted_h64.sort_unstable();
         let anchors = [id("$anchor")];

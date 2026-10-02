@@ -50,8 +50,7 @@ fn legacy_ids_use_the_full_sha256_digest() {
         0xb4, 0x39, 0xe4, 0x51, 0x7c, 0x1a, 0x05, 0xf0, 0x8f, 0x47, 0x17, 0x54, 0xd4, 0x63, 0x0d,
         0x70, 0xc8,
     ];
-    let hash =
-        ElementHash::from_matrix_event_id("$opaque:example.org", EventIdFormat::Legacy).unwrap();
+    let hash = ElementHash::from_opaque_bytes(b"$opaque:example.org");
     assert_eq!(hash, ElementHash::from_digest32(digest));
 }
 

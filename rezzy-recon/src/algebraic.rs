@@ -70,8 +70,6 @@ pub enum AlgebraicError {
 /// Encoding used to derive a Matrix event ID's canonical 32-byte digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventIdFormat {
-    /// Room versions 1 and 2 hash the complete event ID.
-    Legacy,
     /// Room version 3 uses unpadded standard Base64.
     V3,
     /// Room versions 4 and later use unpadded URL-safe Base64.
@@ -174,9 +172,20 @@ impl ElementHash {
         }
     }
 
+    /// Derives an element hash from opaque bytes as `SHA-256` of a canonical
+    /// encoding chosen by the caller.
+    ///
+    /// This is for non-event populations (for example notary key IDs). It is
+    /// not the event-ID binding: room versions 1 and 2 are out of scope for
+    /// `algebraic_v1` because their sender-chosen IDs make `h64` collisions free.
+    #[must_use]
+    pub fn from_opaque_bytes(canonical: &[u8]) -> Self {
+        Self::from_digest32(Sha256::digest(canonical).into())
+    }
+
     /// Derives an element hash from a Matrix event ID.
     ///
-    /// This is the MSC4521 Matrix event-ID binding. The algebraic kernel itself
+    /// This is the MSC4521 Matrix event-ID binding (`event_ids`). The algebraic kernel itself
     /// is generic over canonical 32-byte element digests.
     ///
     /// # Errors
@@ -201,11 +210,10 @@ impl ElementHash {
         let encoded = event_id
             .strip_prefix('$')
             .ok_or(AlgebraicError::InvalidEventId)?;
-        if format != EventIdFormat::Legacy && encoded.len() > EVENT_HASH_ENCODED_LEN {
+        if encoded.len() > EVENT_HASH_ENCODED_LEN {
             return Err(AlgebraicError::InvalidBase64);
         }
         let digest = match format {
-            EventIdFormat::Legacy => Sha256::digest(event_id.as_bytes()).to_vec(),
             EventIdFormat::V3 => STANDARD_NO_PAD
                 .decode(encoded)
                 .map_err(|_| AlgebraicError::InvalidBase64)?,
