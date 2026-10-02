@@ -166,7 +166,7 @@ unsafe fn gf64_mul_x4_avx512(a: __m512i, b: __m512i) -> __m512i {
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
-/// x86_64 evaluator; currently delegates to [`ScalarEvaluator`], whose multiply is already PCLMULQDQ-accelerated.
+/// `x86_64` evaluator; currently delegates to [`ScalarEvaluator`], whose multiply is already PCLMULQDQ-accelerated.
 pub struct SseEvaluator;
 
 #[cfg(target_arch = "x86_64")]
@@ -185,7 +185,7 @@ pub enum EvaluatorBackend {
     /// Portable scalar evaluator.
     Scalar,
     #[cfg(target_arch = "x86_64")]
-    /// x86_64 evaluator.
+    /// `x86_64` evaluator.
     Sse,
     #[cfg(all(target_arch = "x86_64", has_avx512_support))]
     Avx512,

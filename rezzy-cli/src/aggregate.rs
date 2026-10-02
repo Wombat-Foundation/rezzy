@@ -395,13 +395,15 @@ fn sort_events(events: &mut [rezzy::JsonValue]) -> Result<(), AppError> {
                         .iter()
                         .filter_map(|value| {
                             // Handle both legacy [event_id, hashes] format and new string format
-                            if let Some(s) = value.as_str() {
-                                Some(s.to_owned())
-                            } else if let Some(arr) = value.as_array() {
-                                arr.first().and_then(|v| v.as_str()).map(str::to_owned)
-                            } else {
-                                None
-                            }
+                            value
+                                .as_str()
+                                .or_else(|| {
+                                    value
+                                        .as_array()
+                                        .and_then(|pair| pair.first())
+                                        .and_then(|v| v.as_str())
+                                })
+                                .map(str::to_owned)
                         })
                         .collect()
                 })

@@ -85,11 +85,15 @@ struct Plan {
 impl Plan {
     /// The number of elements that will be summed into the lattice.
     fn element_count(&self) -> usize {
-        self.state.len() + self.events.len() + self.fields.len() + self.raw.len()
+        self.state
+            .len()
+            .saturating_add(self.events.len())
+            .saturating_add(self.fields.len())
+            .saturating_add(self.raw.len())
     }
 
     /// Whether the run requested any work at all.
-    const fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.state.is_empty()
             && self.events.is_empty()
             && self.fields.is_empty()
@@ -387,9 +391,9 @@ fn decode_hex(spec: &str) -> Result<Vec<u8>, AppError> {
 
 fn hex_digit(byte: u8) -> Result<u8, AppError> {
     match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a').map(|v| v + 10),
-        b'A'..=b'F' => Ok(byte - b'A').map(|v| v + 10),
+        b'0'..=b'9' => Ok(byte.wrapping_sub(b'0')),
+        b'a'..=b'f' => Ok(byte.wrapping_sub(b'a').wrapping_add(10)),
+        b'A'..=b'F' => Ok(byte.wrapping_sub(b'A').wrapping_add(10)),
         other => Err(AppError::new(
             ErrorCode::UnrecognisedStructure,
             format!("{} is not a hex digit", char::from(other)),
@@ -452,13 +456,19 @@ fn read_batch(path: &Path) -> Result<Vec<Element>, AppError> {
         let state_key = parts.next().ok_or_else(|| {
             AppError::new(
                 ErrorCode::UnrecognisedStructure,
-                format!("batch line {} needs type, state_key, event_id", index + 1),
+                format!(
+                    "batch line {} needs type, state_key, event_id",
+                    index.saturating_add(1)
+                ),
             )
         })?;
         let event_id = parts.next().ok_or_else(|| {
             AppError::new(
                 ErrorCode::UnrecognisedStructure,
-                format!("batch line {} needs type, state_key, event_id", index + 1),
+                format!(
+                    "batch line {} needs type, state_key, event_id",
+                    index.saturating_add(1)
+                ),
             )
         })?;
         if parts.next().is_some() {
@@ -466,14 +476,17 @@ fn read_batch(path: &Path) -> Result<Vec<Element>, AppError> {
                 ErrorCode::UnrecognisedStructure,
                 format!(
                     "batch line {} has more than type, state_key, event_id",
-                    index + 1
+                    index.saturating_add(1)
                 ),
             ));
         }
         if event_type.is_empty() {
             return Err(AppError::new(
                 ErrorCode::EmptyEventType,
-                format!("batch line {} has an empty event type", index + 1),
+                format!(
+                    "batch line {} has an empty event type",
+                    index.saturating_add(1)
+                ),
             ));
         }
         out.push(Element {

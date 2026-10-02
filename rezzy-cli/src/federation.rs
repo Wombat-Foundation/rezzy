@@ -377,7 +377,7 @@ fn canonical_request(
 ) -> Result<Vec<u8>, AppError> {
     let method_upper = method.to_ascii_uppercase();
     let mut value = rezzy::json!({
-        "method": method_upper,
+        "method": &method_upper,
         "uri": uri,
         "origin": origin,
         "destination": destination
@@ -784,7 +784,6 @@ fn write_dag_event(
 enum DagBatch {
     Events(JsonValue, Vec<String>), // value, returned_ids
     Stop,
-    Skip,
 }
 
 /// Fetch each of `ids` with a single-event request, returning the PDUs found.
@@ -862,11 +861,7 @@ fn fetch_dag_batch(
     let returned_ids: Vec<String> = value
         .get("pdus")
         .and_then(JsonValue::as_array)
-        .map(|pdus| {
-            pdus.iter()
-                .filter_map(|pdu| crate::repair::event_id_of(pdu))
-                .collect()
-        })
+        .map(|pdus| pdus.iter().filter_map(crate::repair::event_id_of).collect())
         .unwrap_or_default();
     // Any requested ID not in returned_ids is unresolved.
     for id in ids {
@@ -900,7 +895,6 @@ pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppErro
         let (value, _returned_ids) = match fetch_dag_batch(dag_request, &ids, &mut state)? {
             DagBatch::Events(value, returned_ids) => (value, returned_ids),
             DagBatch::Stop => break,
-            DagBatch::Skip => continue,
         };
         let Some(pdus) = value.get("pdus").and_then(JsonValue::as_array) else {
             continue;
