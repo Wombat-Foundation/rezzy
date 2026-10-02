@@ -97,6 +97,23 @@ fn leaves_json(leaves: &[StateLeaf]) -> Vec<rezzy::JsonValue> {
         .collect()
 }
 
+fn decoded_node_json(node_hash: &StructuralHash, encoded: &[u8]) -> Option<rezzy::JsonValue> {
+    let decoded =
+        PersistedInternalNode::<(EventType, String), String>::decode_v1_unverified(encoded).ok()?;
+    let children = decoded
+        .child_hashes
+        .iter()
+        .map(format_structural_hash)
+        .collect::<Vec<_>>();
+    Some(rezzy::json!({
+        "hash": format_structural_hash(node_hash),
+        "datamap": decoded.datamap,
+        "nodemap": decoded.nodemap,
+        "leaves": leaves_json(&decoded.leaves),
+        "children": children,
+    }))
+}
+
 fn hamt_to_state_map(root: &StateHamt) -> SharedStateMap {
     let mut map = imbl::OrdMap::new();
     let mut no_resolver: HamtResolver = |_h| unreachable!();
@@ -313,25 +330,10 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext<'_>) -> HamtLiveWalkOutput {
                         if need_nodes {
                             for (node_hash, encoded_bytes) in created {
                                 if seen_node_hashes.insert(node_hash) {
-                                    if let Ok(decoded) = PersistedInternalNode::<
-                                        (EventType, String),
-                                        String,
-                                    >::decode_v1_unverified(
-                                        &encoded_bytes
-                                    ) {
-                                        let leaves = leaves_json(&decoded.leaves);
-                                        let children = decoded
-                                            .child_hashes
-                                            .into_iter()
-                                            .map(|h| format_structural_hash(&h))
-                                            .collect::<Vec<_>>();
-                                        unique_nodes.push(rezzy::json!({
-                                            "hash": format_structural_hash(&node_hash),
-                                            "datamap": decoded.datamap,
-                                            "nodemap": decoded.nodemap,
-                                            "leaves": leaves,
-                                            "children": children,
-                                        }));
+                                    if let Some(node) =
+                                        decoded_node_json(&node_hash, &encoded_bytes)
+                                    {
+                                        unique_nodes.push(node);
                                     }
                                 }
                             }
@@ -369,24 +371,8 @@ pub fn run_hamt_live_walk(ctx: &FormattingContext<'_>) -> HamtLiveWalkOutput {
             if need_nodes {
                 for (node_hash, encoded_bytes) in created {
                     if seen_node_hashes.insert(node_hash) {
-                        if let Ok(decoded) =
-                            PersistedInternalNode::<(EventType, String), String>::decode_v1_unverified(
-                                &encoded_bytes,
-                            )
-                        {
-                            let leaves = leaves_json(&decoded.leaves);
-                            let children = decoded
-                                .child_hashes
-                                .into_iter()
-                                .map(|h| format_structural_hash(&h))
-                                .collect::<Vec<_>>();
-                            unique_nodes.push(rezzy::json!({
-                                "hash": format_structural_hash(&node_hash),
-                                "datamap": decoded.datamap,
-                                "nodemap": decoded.nodemap,
-                                "leaves": leaves,
-                                "children": children,
-                            }));
+                        if let Some(node) = decoded_node_json(&node_hash, &encoded_bytes) {
+                            unique_nodes.push(node);
                         }
                     }
                 }

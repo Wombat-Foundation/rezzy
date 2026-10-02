@@ -483,12 +483,32 @@ pub fn key(value: &str) -> String {
     value.to_string()
 }
 
+/// Appends `value` to `out` as a quoted, escaped JSON string.
+fn write_string(out: &mut String, value: &str) -> fmt::Result {
+    use fmt::Write as _;
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c <= '\u{1f}' => write!(out, "\\u{:04x}", c as u32)?,
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Ok(())
+}
+
 /// Writes `value` as compact canonical JSON.
 ///
 /// # Errors
 /// Returns [`fmt::Error`] if writing to the output string fails.
 pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
-    use fmt::Write as _;
     fn write_value(out: &mut String, value: &Value) -> fmt::Result {
         match value {
             Value::Null => out.push_str("null"),
@@ -520,24 +540,6 @@ pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
         }
         Ok(())
     }
-    fn write_string(out: &mut String, value: &str) -> fmt::Result {
-        out.push('"');
-        for ch in value.chars() {
-            match ch {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\u{8}' => out.push_str("\\b"),
-                '\u{c}' => out.push_str("\\f"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if c <= '\u{1f}' => write!(out, "\\u{:04x}", c as u32)?,
-                c => out.push(c),
-            }
-        }
-        out.push('"');
-        Ok(())
-    }
     let mut out = String::new();
     write_value(&mut out, value)?;
     Ok(out)
@@ -556,8 +558,6 @@ pub fn write_string_value_filtered<F>(value: &Value, mut exclude: F) -> Result<S
 where
     F: FnMut(&str) -> bool,
 {
-    use fmt::Write as _;
-
     fn write_value<F>(out: &mut String, value: &Value, exclude: &mut F) -> fmt::Result
     where
         F: FnMut(&str) -> bool,
@@ -592,25 +592,6 @@ where
             }
             _ => out.push_str(&write_string_value(value)?),
         }
-        Ok(())
-    }
-
-    fn write_string(out: &mut String, value: &str) -> fmt::Result {
-        out.push('"');
-        for ch in value.chars() {
-            match ch {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\u{8}' => out.push_str("\\b"),
-                '\u{c}' => out.push_str("\\f"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if c <= '\u{1f}' => write!(out, "\\u{:04x}", c as u32)?,
-                c => out.push(c),
-            }
-        }
-        out.push('"');
         Ok(())
     }
 

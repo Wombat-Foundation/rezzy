@@ -195,20 +195,9 @@ fn infer_room_version(path: &Path) -> Result<String, AppError> {
             )
         })?;
     // Require a non-alphanumeric delimiter after the digit run (matching aggregation).
-    let marker = name.rmatch_indices("-v").find_map(|(offset, _)| {
-        let rest = &name[offset..];
-        let after_marker = &rest[2..];
-        let digits: String = after_marker
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        let next = after_marker.chars().nth(digits.chars().count());
-        if !digits.is_empty() && !next.is_some_and(|c| c.is_ascii_alphanumeric()) {
-            Some(digits)
-        } else {
-            None
-        }
-    });
+    let marker = name
+        .rmatch_indices("-v")
+        .find_map(|(offset, _)| crate::aggregate::delimited_version_digits(&name[offset..]));
     marker.ok_or_else(|| {
         AppError::new(
             ErrorCode::UnsupportedVersion,

@@ -177,22 +177,24 @@ fn filename_version(path: &Path) -> Option<String> {
     version_token(&path.file_stem()?.to_string_lossy())
 }
 
+/// Digit run following the `-v` at the start of `from_marker`, when it is
+/// non-empty and not immediately followed by an alphanumeric character.
+pub(crate) fn delimited_version_digits(from_marker: &str) -> Option<String> {
+    let after_marker = &from_marker[2..];
+    let digits: String = after_marker
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let next = after_marker.chars().nth(digits.chars().count());
+    (!digits.is_empty() && !next.is_some_and(|character| character.is_ascii_alphanumeric()))
+        .then_some(digits)
+}
+
 /// First delimited `-v<digits>` token in `name`: the byte offset of its
 /// leading `-`, plus the digit run (without the `-v`).
 fn version_token_at(name: &str) -> Option<(usize, String)> {
-    for (start, _) in name.match_indices("-v") {
-        let rest = &name[start..];
-        let after_marker = &rest[2..];
-        let digits: String = after_marker
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        let next = after_marker.chars().nth(digits.chars().count());
-        if !digits.is_empty() && !next.is_some_and(|character| character.is_ascii_alphanumeric()) {
-            return Some((start, digits));
-        }
-    }
-    None
+    name.match_indices("-v")
+        .find_map(|(start, _)| delimited_version_digits(&name[start..]).map(|d| (start, d)))
 }
 
 fn version_token(name: &str) -> Option<String> {

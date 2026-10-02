@@ -72,6 +72,15 @@ fn federation_agent() -> &'static ureq::Agent {
 
 #[must_use]
 /// Builds the federation subcommand-line interface.
+/// The `--signing-key` path and `--signing-key-keyring` account, when given.
+fn signing_key_args(m: &ArgMatches) -> (Option<&Path>, Option<&str>) {
+    (
+        m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
+        m.get_one::<String>("signing-key-keyring")
+            .map(String::as_str),
+    )
+}
+
 pub fn command() -> Command {
     Command::new("federation")
         .about("Make signed Matrix server-server requests")
@@ -198,12 +207,7 @@ fn signing_key_args() -> [Arg; 2] {
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
         let origin = m.get_one::<String>("origin").expect("default");
-        load_signing_key(
-            origin,
-            m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-            m.get_one::<String>("signing-key-keyring")
-                .map(String::as_str),
-        )?;
+        load_signing_key(origin, signing_key_args(m).0, signing_key_args(m).1)?;
     }
     match matches.subcommand() {
         Some(("request", m)) => {
@@ -218,9 +222,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 m.get_one::<String>("method").expect("default"),
                 m.get_one::<String>("path").expect("required"),
                 &body,
-                m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-                m.get_one::<String>("signing-key-keyring")
-                    .map(String::as_str),
+                signing_key_args(m).0,
+                signing_key_args(m).1,
             )
         }
         Some(("get-remote-dag", m)) => {
@@ -241,10 +244,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 room_version: m.get_one::<String>("room-version").expect("default"),
                 limit: *m.get_one::<i64>("limit").expect("default"),
                 output: m.get_one::<PathBuf>("output").expect("default"),
-                key_path: m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-                keyring_account: m
-                    .get_one::<String>("signing-key-keyring")
-                    .map(String::as_str),
+                key_path: signing_key_args(m).0,
+                keyring_account: signing_key_args(m).1,
                 no_fallback: m.get_flag("no-fallback"),
                 emit_missing: m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
             })
@@ -263,10 +264,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 room_version: m.get_one::<String>("room-version").expect("default"),
                 rounds: *m.get_one::<u32>("rounds").expect("default"),
                 output_dir: m.get_one::<PathBuf>("output-dir").expect("required"),
-                key_path: m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-                keyring_account: m
-                    .get_one::<String>("signing-key-keyring")
-                    .map(String::as_str),
+                key_path: signing_key_args(m).0,
+                keyring_account: signing_key_args(m).1,
                 no_fallback: m.get_flag("no-fallback"),
             })
         }
