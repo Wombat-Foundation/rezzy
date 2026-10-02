@@ -1206,7 +1206,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 Ok(Some(Token::Comma))
             }
-            b'-' | b'0'..=b'9' => Ok(Some(Token::Number(self.number()))),
+            b'-' | b'0'..=b'9' => Ok(Some(Token::Number(self.number()?))),
             _ => Err(TokenizerError::InvalidToken),
         }
     }
@@ -1242,7 +1242,7 @@ impl<'a> Tokenizer<'a> {
             }
             b'[' => self.skip_array()?,
             b'{' => self.skip_object()?,
-            b'-' | b'0'..=b'9' => self.skip_number(),
+            b'-' | b'0'..=b'9' => self.skip_number()?,
             _ => return Err(TokenizerError::InvalidToken),
         }
         Ok(&self.input[start..self.pos])
@@ -1321,6 +1321,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Parses a string without unescaping, returning the raw content slice.
+    /// Validates escape sequences per JSON spec.
     fn string_raw(&mut self) -> Result<&'a [u8], TokenizerError> {
         self.pos = self.pos.saturating_add(1); // skip opening quote
         let start = self.pos;
@@ -1337,11 +1338,31 @@ impl<'a> Tokenizer<'a> {
                 }
                 b'\\' => {
                     self.pos = self.pos.saturating_add(1);
-                    let _ = self
+                    let esc = *self
                         .input
                         .get(self.pos)
                         .ok_or(TokenizerError::UnexpectedEnd)?;
-                    self.pos = self.pos.saturating_add(1);
+                    // Validate escape sequence per RFC 8259
+                    match esc {
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                            self.pos = self.pos.saturating_add(1);
+                        }
+                        b'u' => {
+                            self.pos = self.pos.saturating_add(1);
+                            // Validate 4 hex digits
+                            for _ in 0..4 {
+                                let hex_digit = *self
+                                    .input
+                                    .get(self.pos)
+                                    .ok_or(TokenizerError::UnexpectedEnd)?;
+                                if !hex_digit.is_ascii_hexdigit() {
+                                    return Err(TokenizerError::InvalidEscape);
+                                }
+                                self.pos = self.pos.saturating_add(1);
+                            }
+                        }
+                        _ => return Err(TokenizerError::InvalidEscape),
+                    }
                 }
                 0..=0x1f => return Err(TokenizerError::InvalidString),
                 _ => self.pos = self.pos.saturating_add(1),
@@ -1354,20 +1375,79 @@ impl<'a> Tokenizer<'a> {
         self.string_raw()
     }
 
-    fn skip_number(&mut self) {
-        while self
-            .input
-            .get(self.pos)
-            .is_some_and(|b| matches!(b, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9'))
-        {
+    fn skip_number(&mut self) -> Result<(), TokenizerError> {
+        let start = self.pos;
+        let mut saw_digit = false;
+
+        // Optional minus sign
+        if self.input.get(self.pos) == Some(&b'-') {
             self.pos = self.pos.saturating_add(1);
         }
+
+        // Integer part (must have at least one digit)
+        while let Some(b) = self.input.get(self.pos) {
+            if b.is_ascii_digit() {
+                saw_digit = true;
+                self.pos = self.pos.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+        if !saw_digit {
+            return Err(TokenizerError::InvalidNumber);
+        }
+
+        // Fractional part
+        if self.input.get(self.pos) == Some(&b'.') {
+            self.pos = self.pos.saturating_add(1);
+            let mut frac_digits = false;
+            while let Some(b) = self.input.get(self.pos) {
+                if b.is_ascii_digit() {
+                    frac_digits = true;
+                    self.pos = self.pos.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+            if !frac_digits {
+                return Err(TokenizerError::InvalidNumber);
+            }
+        }
+
+        // Exponent part
+        if let Some(b) = self.input.get(self.pos) {
+            if matches!(b, b'e' | b'E') {
+                self.pos = self.pos.saturating_add(1);
+                // Optional sign
+                if matches!(self.input.get(self.pos), Some(b'+' | b'-')) {
+                    self.pos = self.pos.saturating_add(1);
+                }
+                let mut exp_digits = false;
+                while let Some(b) = self.input.get(self.pos) {
+                    if b.is_ascii_digit() {
+                        exp_digits = true;
+                        self.pos = self.pos.saturating_add(1);
+                    } else {
+                        break;
+                    }
+                }
+                if !exp_digits {
+                    return Err(TokenizerError::InvalidNumber);
+                }
+            }
+        }
+
+        // Ensure we consumed something that looks like a number
+        if self.pos == start {
+            return Err(TokenizerError::InvalidNumber);
+        }
+        Ok(())
     }
 
-    fn number(&mut self) -> &'a [u8] {
+    fn number(&mut self) -> Result<&'a [u8], TokenizerError> {
         let start = self.pos;
-        self.skip_number();
-        &self.input[start..self.pos]
+        self.skip_number()?;
+        Ok(&self.input[start..self.pos])
     }
 
     fn word(&mut self, expected: &[u8]) -> Result<(), TokenizerError> {
@@ -1570,7 +1650,7 @@ impl<'a> ValueRef<'a> {
             b'[' => Self::parse_masked_array(tokenizer, mask, segments),
             b'{' => Self::parse_masked_object(tokenizer, mask, segments),
             b'-' | b'0'..=b'9' => {
-                let n = tokenizer.number();
+                let n = tokenizer.number()?;
                 let n = core::str::from_utf8(n).map_err(|_| TokenizerError::InvalidNumber)?;
                 Ok(Self::Number(n))
             }
@@ -1583,11 +1663,16 @@ impl<'a> ValueRef<'a> {
         mask: &FieldMask<'_>,
         segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
+        if tokenizer.depth >= Tokenizer::MAX_DEPTH {
+            return Err(TokenizerError::DepthLimitExceeded);
+        }
+        tokenizer.depth = tokenizer.depth.saturating_add(1);
         tokenizer.pos = tokenizer.pos.saturating_add(1);
         tokenizer.ws();
         let mut items = Vec::new();
         if tokenizer.input.get(tokenizer.pos) == Some(&b']') {
             tokenizer.pos = tokenizer.pos.saturating_add(1);
+            tokenizer.depth = tokenizer.depth.saturating_sub(1);
             return Ok(Self::Array(items));
         }
         loop {
@@ -1597,6 +1682,7 @@ impl<'a> ValueRef<'a> {
                 Some(b',') => tokenizer.pos = tokenizer.pos.saturating_add(1),
                 Some(b']') => {
                     tokenizer.pos = tokenizer.pos.saturating_add(1);
+                    tokenizer.depth = tokenizer.depth.saturating_sub(1);
                     break;
                 }
                 _ => return Err(TokenizerError::InvalidToken),
@@ -1610,11 +1696,16 @@ impl<'a> ValueRef<'a> {
         mask: &FieldMask<'_>,
         segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
+        if tokenizer.depth >= Tokenizer::MAX_DEPTH {
+            return Err(TokenizerError::DepthLimitExceeded);
+        }
+        tokenizer.depth = tokenizer.depth.saturating_add(1);
         tokenizer.pos = tokenizer.pos.saturating_add(1);
         tokenizer.ws();
         let mut fields = Vec::new();
         if tokenizer.input.get(tokenizer.pos) == Some(&b'}') {
             tokenizer.pos = tokenizer.pos.saturating_add(1);
+            tokenizer.depth = tokenizer.depth.saturating_sub(1);
             return Ok(Self::Object(fields));
         }
         loop {
@@ -1647,6 +1738,7 @@ impl<'a> ValueRef<'a> {
                 Some(b',') => tokenizer.pos = tokenizer.pos.saturating_add(1),
                 Some(b'}') => {
                     tokenizer.pos = tokenizer.pos.saturating_add(1);
+                    tokenizer.depth = tokenizer.depth.saturating_sub(1);
                     break;
                 }
                 _ => return Err(TokenizerError::InvalidToken),

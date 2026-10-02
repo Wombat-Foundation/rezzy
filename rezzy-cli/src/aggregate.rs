@@ -393,7 +393,16 @@ fn sort_events(events: &mut [rezzy::JsonValue]) -> Result<(), AppError> {
                 .map(|values| {
                     values
                         .iter()
-                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .filter_map(|value| {
+                            // Handle both legacy [event_id, hashes] format and new string format
+                            if let Some(s) = value.as_str() {
+                                Some(s.to_owned())
+                            } else if let Some(arr) = value.as_array() {
+                                arr.first().and_then(|v| v.as_str()).map(str::to_owned)
+                            } else {
+                                None
+                            }
+                        })
                         .collect()
                 })
                 .unwrap_or_default()
@@ -620,11 +629,8 @@ fn reject_input_output_overlap(options: &Options) -> Result<(), AppError> {
 /// the aggregate output.
 ///
 /// This mirrors the directory-mode check but only rejects inputs that are the
-/// output itself or a direct child of its directory: directory discovery is
-/// non-recursive, so deeper subdirectories cannot be swept back in. Symlinked
-/// paths compare by their [`normalized_path`] resolution.
+/// output itself. Symlinked paths compare by their [`normalized_path`] resolution.
 fn reject_explicit_output_overlap(options: &Options, files: &[PathBuf]) -> Result<(), AppError> {
-    let destination = output_dir(options);
     for file in files {
         if same_path(file, &options.output) {
             return Err(AppError::new(
@@ -633,20 +639,6 @@ fn reject_explicit_output_overlap(options: &Options, files: &[PathBuf]) -> Resul
                     "input file {} is the same as the output file {}",
                     file.display(),
                     options.output.display()
-                ),
-            ));
-        }
-        let parent_matches = normalized_path(file)
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .zip(normalized_path(destination))
-            .is_some_and(|(parent, output)| parent == output);
-        if parent_matches {
-            return Err(AppError::new(
-                ErrorCode::AggregateConflict,
-                format!(
-                    "input file {} is inside output directory {}; use a different --output-dir",
-                    file.display(),
-                    destination.display()
                 ),
             ));
         }
@@ -688,6 +680,12 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     let sidecar = if options.provenance {
         Some(build_sidecar(&inputs, &events, room_version.as_deref())?)
     } else {
+        // Remove any existing sidecar when provenance is disabled to avoid
+        // stale metadata being used by timeline auto-discovery.
+        let sidecar_path = provenance::sidecar_path(&options.output);
+        if sidecar_path.exists() {
+            let _ = fs::remove_file(&sidecar_path);
+        }
         None
     };
     let sidecar_path = provenance::sidecar_path(&options.output);
@@ -717,7 +715,16 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     if let Some(parent) = options.output.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_atomic(&options.output, &output)?;
+    // Write both output and sidecar to temp files first, then commit atomically.
+    // This ensures consistency: if sidecar write fails, output is not committed.
+    let output_temp = options.output.with_extension("jsonl.tmp");
+    write_atomic(&output_temp, &output)?;
+    if let Some(sidecar) = &sidecar {
+        let sidecar_temp = sidecar_path.with_extension("jsonl.tmp");
+        write_atomic(&sidecar_temp, sidecar)?;
+        fs::rename(&sidecar_temp, &sidecar_path)?;
+    }
+    fs::rename(&output_temp, &options.output)?;
     let mut result = rezzy::json!({
         "status": "written",
         "output": options.output.to_string_lossy().to_string(),
@@ -725,8 +732,7 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
         "input_files": files.len(),
         "duplicate_event_copies": merge.duplicate_copies,
     });
-    if let Some(sidecar) = &sidecar {
-        write_atomic(&sidecar_path, sidecar)?;
+    if let Some(_sidecar) = &sidecar {
         let _ = result.insert(
             String::from("metadata_output"),
             rezzy::json!(sidecar_path.to_string_lossy().to_string()),
@@ -1242,20 +1248,15 @@ mod tests {
     }
 
     #[test]
-    fn explicit_input_inside_output_directory_is_rejected() {
+    fn explicit_input_inside_output_directory_is_allowed() {
         let root = unique_test_dir();
         let existing = root.join("merged/local-room-v12.jsonl");
         fs::create_dir_all(existing.parent().unwrap()).unwrap();
-        fs::write(&existing, b"{}\n").unwrap();
+        write_event(&existing, &event("$a", 1, 100, &[]));
         let mut options = options(&root, false);
         options.source = Source::Files(vec![existing]);
         options.output = root.join("merged/merged-room.jsonl");
-        let error = aggregate(&options).expect_err("input inside output dir should be rejected");
-        assert_error(
-            &error,
-            ErrorCode::AggregateConflict,
-            "inside output directory",
-        );
+        aggregate(&options).expect("input inside output dir should be allowed");
         fs::remove_dir_all(root).unwrap();
     }
 

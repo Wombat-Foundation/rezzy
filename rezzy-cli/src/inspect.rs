@@ -3,6 +3,7 @@
 use crate::error::{AppError, ErrorCode};
 use crate::repair::{input_arg, output_arg, read_jsonl_events, scan_gaps, write_event_ids};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[must_use]
@@ -51,6 +52,25 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<(), AppError> {
 }
 
 fn run_gaps(input: &Path, output: Option<&Path>, json: bool) -> Result<(), AppError> {
+    if let Some(output_path) = output {
+        let input_identity = fs::canonicalize(input)?;
+        let output_identity =
+            if output_path.exists() {
+                fs::canonicalize(output_path)?
+            } else {
+                let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+                fs::canonicalize(parent)?.join(output_path.file_name().ok_or_else(|| {
+                    AppError::new(ErrorCode::IoError, "output path has no file name")
+                })?)
+            };
+        if input_identity == output_identity {
+            return Err(AppError::new(
+                ErrorCode::IoError,
+                "--input and --output must be different files",
+            ));
+        }
+    }
+
     let events = read_jsonl_events(input)?;
     let report = scan_gaps(&events);
     if json {

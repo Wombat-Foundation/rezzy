@@ -368,7 +368,7 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
     let mut compatibility_mxids: BTreeMap<(&'static str, String), usize> = BTreeMap::new();
 
     for val in raw_events {
-        match LeanEvent::from_value(&val, None) {
+        match LeanEvent::from_value(&val, Some(syntactic_room_version.as_str())) {
             Ok(ev) => {
                 // A syntactically-invalid-but-parseable event (e.g. a
                 // malformed sender MXID a lenient origin server already

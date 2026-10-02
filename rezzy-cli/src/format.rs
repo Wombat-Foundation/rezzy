@@ -20,7 +20,7 @@ use crate::timeline_order::{
 };
 use crate::utils::{epoch_days_to_ymd, resolve_parent_states, ResolvedState, SharedStateMap};
 use crate::{Args, OutputFormat};
-use rezzy::auth::{apply_authorized_redactions, RedactionReport, RoomState};
+use rezzy::auth::{apply_authorized_redactions_with_state_at, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
@@ -1004,8 +1004,7 @@ fn render_timeline_chronological(ctx: &FormattingContext<'_>) -> String {
 /// Collect events and apply only authorized redactions.
 fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
     // Owned copy of the events so the authorized redaction pass can mutate the
-    // in-set targets in place. The resolved room state below is what the
-    // redaction pass needs to authorize each redaction.
+    // in-set targets in place.
     let mut sorted_events: Vec<LeanEvent> = ctx.events_map.values().cloned().collect();
 
     // Prefer the resolved `m.room.create` event's own `room_version` field
@@ -1020,28 +1019,54 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
         .and_then(|v| v.as_str());
     let room_version = create_room_version.or(ctx.room_version).unwrap_or("1");
 
-    // Resolved room state (event type + state_key -> event), used to check the
-    // `redact` power level and each redaction sender's own power level.
-    // NOTE: This uses final resolved state, not per-redaction event-time state.
-    // The spec requires per-redaction state, but reconstructing it requires
-    // proper topological state resolution at each redaction's prev_events —
-    // depth-based ordering is insufficient because depth is untrusted and does
-    // not guarantee parent-before-child processing. A future fix should use
-    // apply_authorized_redactions_with_state_at with proper state resolution.
-    let mut room_state: RoomState<String, rezzy::JsonValue, String> = RoomState::new();
-    for ((typ, sk), eid) in ctx.final_state_map {
-        if let Some(ev) = ctx.events_map.get(eid) {
-            room_state.insert((typ.as_str().to_string(), sk.clone()), ev.clone());
+    // Sort events by depth to ensure parent-before-child ordering for
+    // incremental state building.
+    sorted_events.sort_by(|a, b| a.cmp_by_depth(b));
+
+    // Build per-event room state by replaying state events in depth order.
+    // This gives us the state at each event's `prev_events` for proper
+    // redaction authorization per the Matrix spec.
+    let mut state_at_event: HashMap<String, RoomState<String, rezzy::JsonValue, String>> =
+        HashMap::new();
+    let mut current_state: RoomState<String, rezzy::JsonValue, String> = RoomState::new();
+
+    // Initialize with the create event state if available
+    if let Some(create_eid) = ctx
+        .final_state_map
+        .get(&(EventType::from("m.room.create"), String::new()))
+    {
+        if let Some(create_ev) = ctx.events_map.get(create_eid) {
+            current_state.insert(
+                (
+                    create_ev.event_type.clone(),
+                    create_ev.state_key.clone().unwrap_or_default(),
+                ),
+                create_ev.clone(),
+            );
         }
     }
 
-    // Apply redactions resolvable within the input set, but only when the
-    // sender is authorized: the target's own sender, a sender holding the
-    // `redact` power level, or (room v1/v2) a same-domain sender. An
-    // unauthorized redaction leaves the target untouched. The returned report
-    // drives the --debug diagnostics below.
+    for ev in &sorted_events {
+        // Record state at this event's prev_events (before applying this event)
+        state_at_event.insert(ev.event_id.clone(), current_state.clone());
+
+        // Apply state events to current state
+        if ev.state_key.is_some() {
+            current_state.insert(
+                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
+                ev.clone(),
+            );
+        }
+    }
+
+    // Apply redactions using per-redaction state at each redaction's prev_events.
     let redaction_report = if sorted_events.iter().any(LeanEvent::is_redaction) {
-        apply_authorized_redactions(&mut sorted_events, &room_state, ctx.version, room_version)
+        apply_authorized_redactions_with_state_at(
+            &mut sorted_events,
+            |redaction_id| state_at_event.get(redaction_id),
+            ctx.version,
+            room_version,
+        )
     } else {
         RedactionReport::default()
     };

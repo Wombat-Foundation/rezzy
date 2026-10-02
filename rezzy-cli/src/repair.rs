@@ -70,7 +70,9 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
 
     let reader = BufReader::new(File::open(input)?);
     if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
     }
     let mut writer = BufWriter::new(File::create(output)?);
     let mut total = 0_usize;
@@ -114,12 +116,17 @@ pub fn fill_missing_event_id(
     room_version: &str,
     label: &str,
 ) -> Result<usize, AppError> {
-    if event
+    let has_valid_event_id = event
         .get("event_id")
         .and_then(JsonValue::as_str)
-        .is_some_and(|id| !id.is_empty())
-    {
+        .is_some_and(|id| !id.is_empty());
+    if has_valid_event_id {
         return Ok(0);
+    }
+    // Remove invalid or empty event_id before hashing so the hash
+    // identifies the repaired event correctly.
+    if let Some(obj) = event.as_object_mut() {
+        obj.remove("event_id");
     }
     let hash = rezzy::reference_hash(event, room_version).map_err(|e| {
         AppError::new(
@@ -169,12 +176,20 @@ fn infer_room_version(path: &Path) -> Result<String, AppError> {
                 "cannot infer room version from filename",
             )
         })?;
+    // Require a non-alphanumeric delimiter after the digit run (matching aggregation).
     let marker = name.rmatch_indices("-v").find_map(|(offset, _)| {
-        let digits: String = name[offset.saturating_add(2)..]
+        let rest = &name[offset..];
+        let after_marker = &rest[2..];
+        let digits: String = after_marker
             .chars()
             .take_while(char::is_ascii_digit)
             .collect();
-        (!digits.is_empty()).then_some(digits)
+        let next = after_marker.chars().nth(digits.chars().count());
+        if !digits.is_empty() && !next.is_some_and(|c| c.is_ascii_alphanumeric()) {
+            Some(digits)
+        } else {
+            None
+        }
     });
     marker.ok_or_else(|| {
         AppError::new(
@@ -229,6 +244,10 @@ pub fn read_event_ids(path: &Path) -> Result<Vec<String>, AppError> {
     let mut seen = BTreeSet::new();
     let mut ids = Vec::new();
     for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         for token in event_id_tokens(line) {
             if seen.insert(token.clone()) {
                 ids.push(token);

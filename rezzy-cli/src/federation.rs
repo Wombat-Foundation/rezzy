@@ -375,10 +375,14 @@ fn canonical_request(
     destination: &str,
     body: &JsonValue,
 ) -> Result<Vec<u8>, AppError> {
-    let mut value =
-        rezzy::json!({"method": method, "uri": uri, "origin": origin, "destination": destination});
-    if !(method.eq_ignore_ascii_case("GET") && matches!(body, JsonValue::Object(o) if o.is_empty()))
-    {
+    let method_upper = method.to_ascii_uppercase();
+    let mut value = rezzy::json!({
+        "method": method_upper,
+        "uri": uri,
+        "origin": origin,
+        "destination": destination
+    });
+    if !(method_upper == "GET" && matches!(body, JsonValue::Object(o) if o.is_empty())) {
         let _ = value.insert("content".to_owned(), body.clone());
     }
     rezzy::json::write_string_value(&value)
@@ -529,7 +533,8 @@ pub fn request(
         ));
     }
     let agent = federation_agent();
-    let mut req = match method.to_ascii_uppercase().as_str() {
+    let method_upper = method.to_ascii_uppercase();
+    let mut req = match method_upper.as_str() {
         "GET" => agent.get(&url),
         "POST" => agent.post(&url),
         "PUT" => agent.put(&url),
@@ -545,9 +550,7 @@ pub fn request(
         .set("Authorization", &auth)
         .set("User-Agent", crate::USER_AGENT)
         .set("Content-Type", "application/json");
-    let result = if method.eq_ignore_ascii_case("GET")
-        && matches!(body, JsonValue::Object(o) if o.is_empty())
-    {
+    let result = if method_upper == "GET" && matches!(body, JsonValue::Object(o) if o.is_empty()) {
         req.call()
     } else {
         let body_text = rezzy::json::write_string_value(body)
@@ -774,7 +777,7 @@ fn write_dag_event(
 }
 
 enum DagBatch {
-    Events(JsonValue),
+    Events(JsonValue, Vec<String>), // value, returned_ids
     Stop,
     Skip,
 }
@@ -866,7 +869,23 @@ fn fetch_dag_batch(
             }
         }
     }
-    Ok(DagBatch::Events(value))
+    // Track which requested IDs were actually returned in the response.
+    let returned_ids: Vec<String> = value
+        .get("pdus")
+        .and_then(JsonValue::as_array)
+        .map(|pdus| {
+            pdus.iter()
+                .filter_map(|pdu| crate::repair::event_id_of(pdu))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Any requested ID not in returned_ids is unresolved.
+    for id in ids {
+        if !returned_ids.contains(id) {
+            state.unresolved.push(id.clone());
+        }
+    }
+    Ok(DagBatch::Events(value, returned_ids))
 }
 
 ///
@@ -889,8 +908,8 @@ pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppErro
         if ids.is_empty() {
             continue;
         }
-        let value = match fetch_dag_batch(dag_request, &ids, &mut state)? {
-            DagBatch::Events(value) => value,
+        let (value, _returned_ids) = match fetch_dag_batch(dag_request, &ids, &mut state)? {
+            DagBatch::Events(value, returned_ids) => (value, returned_ids),
             DagBatch::Stop => break,
             DagBatch::Skip => continue,
         };
@@ -1160,6 +1179,9 @@ fn fetch_auth_batches(
         ) {
             Ok(value) => value,
             Err(error) => {
+                if is_unreachable(&error) {
+                    return Err(error);
+                }
                 failures.record(&error);
                 continue;
             }
