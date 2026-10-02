@@ -709,12 +709,13 @@ impl ReconciliationClient {
         }
     }
 
-    /// Verifies the global 128-bit residual after roots are resolved to hashes.
+    /// Final step of [`crate::verify::verify_follow_up`]: checks the global
+    /// 128-bit residual once roots are resolved to hashes.
     ///
     /// # Errors
     /// Returns [`AlgebraicError::DecodeFailure`] when the supplied roots do not
     /// reproduce the residual.
-    pub fn verify_global_residual(
+    pub(crate) fn verify_global_residual(
         expected_residual: u128,
         local_roots: &[u128],
         remote_roots: &[u128],

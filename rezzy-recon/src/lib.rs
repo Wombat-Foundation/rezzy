@@ -18,6 +18,7 @@ mod pinsketch;
 pub mod resident;
 pub mod server;
 pub mod triage;
+pub mod verify;
 
 /// Identifier contract required by reconciliation graph traversal.
 ///
@@ -55,6 +56,7 @@ pub use triage::{
     BucketDecodeSuccess, BucketRequest, StrataEstimate, MAX_BATCH_FACTOR_WORK,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY, MAX_STRATA_FACTOR_WORK,
 };
+pub use verify::{verify_decode, verify_follow_up, Classified};
 
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(MAX_SKETCH_CAPACITY == 32);
