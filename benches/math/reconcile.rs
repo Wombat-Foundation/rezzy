@@ -240,7 +240,7 @@ fn run_exchange_loop(
                 resolved_roots = accumulated_roots.len();
                 current_requests = requests;
             }
-            ClientAction::ResolveRoots { roots } => {
+            ClientAction::ResolveRoots { roots, .. } => {
                 resolved_roots = roots.len();
                 black_box(roots);
                 break;

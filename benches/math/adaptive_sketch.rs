@@ -245,7 +245,7 @@ fn simulate_strategy(
                 requests: next_requests,
                 accumulated_roots: _,
             } => requests = next_requests,
-            ClientAction::ResolveRoots { roots } => {
+            ClientAction::ResolveRoots { roots, .. } => {
                 assert_eq!(
                     BTreeSet::from_iter(roots),
                     expected,

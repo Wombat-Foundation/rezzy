@@ -150,7 +150,7 @@ fn run_round_trip(
             requests,
             accumulated_roots,
         } => (requests, accumulated_roots),
-        ClientAction::ResolveRoots { roots } => return (1, roots, "ResolveRoots"),
+        ClientAction::ResolveRoots { roots, .. } => return (1, roots, "ResolveRoots"),
     };
 
     let estimated_delta = estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK)
@@ -173,7 +173,7 @@ fn run_round_trip(
                 current_requests = requests;
                 round_trips = round_trips.saturating_add(1);
             }
-            ClientAction::ResolveRoots { roots } => {
+            ClientAction::ResolveRoots { roots, .. } => {
                 return (round_trips, roots, "ResolveRoots");
             }
             ClientAction::ExtremityDiff => return (round_trips, Vec::new(), "ExtremityDiff"),
@@ -412,7 +412,7 @@ fn verified_exchange_resolves_and_passes_phase_two() {
     let remote = Side::new([shared, remote_only.clone()].concat());
 
     let (action, exchange) = run_verified(&local, &remote);
-    let ClientAction::ResolveRoots { mut roots } = action else {
+    let ClientAction::ResolveRoots { mut roots, .. } = action else {
         panic!("expected a clean resolve, got {action:?}");
     };
     roots.sort_unstable();
@@ -442,10 +442,12 @@ fn verified_exchange_resolves_and_passes_phase_two() {
 
 /// A shared element whose `h64` collides with a remote-only one (mocked, since
 /// no real event ID can be ground to this). The root survives the sketch on
-/// the wrong side, the node fails its count identity, and the exchange never
-/// admits it: it splits down to the collision and ends at the baseline.
+/// the wrong side and the node fails its count identity. The same restricted
+/// root set comes back under a bigger capacity, so the exchange classifies a
+/// collision after two attempts, never admits the node, and reports the prefix
+/// as ladder-failed instead of climbing every step to the baseline.
 #[test]
-fn colliding_h64_is_never_resolved_by_the_verified_exchange() {
+fn colliding_h64_is_ladder_failed_after_two_attempts() {
     let mut generator = Xorshift128::new(12);
     let shared: Vec<ElementHash> = (0..200).map(|_| generator.hash()).collect();
     let collided = shared[17];
@@ -458,14 +460,67 @@ fn colliding_h64_is_never_resolved_by_the_verified_exchange() {
     let remote = Side::new([shared, vec![twin, extra]].concat());
 
     let (action, exchange) = run_verified(&local, &remote);
-    assert_eq!(action, ClientAction::ExtremityDiff);
+    let ClientAction::ResolveRoots {
+        roots,
+        ladder_failed,
+    } = action
+    else {
+        panic!("expected a partial resolve, got {action:?}");
+    };
     assert!(
-        exchange
-            .classified()
-            .iter()
-            .all(|c| !c.l_roots().contains(&collided.h64) && !c.m_roots().contains(&collided.h64)),
-        "the colliding root must never be admitted"
+        roots.is_empty(),
+        "the failed node's roots must not be admitted"
     );
+    assert_eq!(ladder_failed, vec![(0, 0)]);
+    assert_eq!(exchange.ladder_failed(), ladder_failed.as_slice());
+    assert!(exchange.classified().is_empty());
+    assert!(
+        exchange.rounds_emitted() <= 2,
+        "two attempts, not the whole ladder: {}",
+        exchange.rounds_emitted()
+    );
+}
+
+/// With several buckets, only the bucket holding the collision is given up on;
+/// every sibling still resolves and verifies.
+#[test]
+fn collision_in_one_bucket_leaves_siblings_resolved() {
+    let mut generator = Xorshift128::new(14);
+    let shared: Vec<ElementHash> = (0..200).map(|_| generator.hash()).collect();
+    let local_extra: Vec<ElementHash> = (0..22).map(|_| generator.hash()).collect();
+    let remote_extra: Vec<ElementHash> = (0..22).map(|_| generator.hash()).collect();
+    let collided = shared[3];
+    let twin = ElementHash {
+        h128: collided.h128 ^ 0xdead_beef,
+        h64: collided.h64,
+    };
+    let local = Side::new([shared.clone(), local_extra.clone()].concat());
+    let remote = Side::new([shared, remote_extra.clone(), vec![twin]].concat());
+
+    let (action, exchange) = run_verified(&local, &remote);
+    let ClientAction::ResolveRoots {
+        roots,
+        ladder_failed,
+    } = action
+    else {
+        panic!("expected a partial resolve, got {action:?}");
+    };
+    assert_eq!(ladder_failed.len(), 1);
+    assert!(in_node(collided.h64, ladder_failed[0]));
+
+    // Every honest root outside the failed prefix was resolved.
+    let honest: Vec<u64> = local_extra
+        .iter()
+        .chain(&remote_extra)
+        .map(|e| e.h64)
+        .filter(|&h| !in_node(h, ladder_failed[0]))
+        .collect();
+    assert!(!honest.is_empty(), "siblings must hold honest roots");
+    for root in &honest {
+        assert!(roots.contains(root), "sibling root {root:#x} lost");
+    }
+    assert!(roots.iter().all(|&r| !in_node(r, ladder_failed[0])));
+    assert!(!exchange.classified().is_empty());
 }
 
 /// Whether `h64` falls in the node `(depth, prefix)`.
@@ -504,7 +559,7 @@ fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
     let remote = Side::new([shared, remote_extra.clone(), vec![y]].concat());
 
     let (action, exchange) = run_verified(&local, &remote);
-    let ClientAction::ResolveRoots { roots } = action else {
+    let ClientAction::ResolveRoots { roots, .. } = action else {
         panic!("phase 1 must admit the split pair, got {action:?}");
     };
     assert!(

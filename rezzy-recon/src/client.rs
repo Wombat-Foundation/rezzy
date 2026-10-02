@@ -131,6 +131,12 @@ pub enum ClientAction {
     ResolveRoots {
         /// Roots resolved by the reconciliation exchange.
         roots: alloc::vec::Vec<u64>,
+        /// Nodes `(depth, prefix)` the exchange gave up on, classified as a
+        /// collision or responder inconsistency that no retry can fix. The
+        /// result is **partial**: the caller MUST apply its per-prefix
+        /// fallback (with a bounded TTL) for each of these. Empty when the
+        /// result is complete.
+        ladder_failed: alloc::vec::Vec<(u8, u64)>,
     },
 }
 
@@ -160,6 +166,47 @@ pub struct BucketExchange {
     no_progress_rounds: usize,
     /// Nodes that passed phase-1 verification via [`Self::advance_verified`].
     classified: alloc::vec::Vec<Classified>,
+    /// Phase-1 verification failures seen so far, for collision detection.
+    failures: alloc::vec::Vec<Phase1Failure>,
+    /// Prefixes given up on as collisions or responder inconsistency.
+    ladder_failed: alloc::vec::Vec<(u8, u64)>,
+    /// Responder summaries of failed nodes that may yet be split, kept until
+    /// both children have arrived (possibly in different rounds).
+    parents: alloc::vec::Vec<(u8, u64, NodeSummary)>,
+    /// Responder summaries of children still waiting for their sibling.
+    awaiting: alloc::vec::Vec<(u8, u64, NodeSummary)>,
+}
+
+/// One phase-1 verification failure, recorded for collision detection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Phase1Failure {
+    depth: u8,
+    prefix: u64,
+    capacity: usize,
+    roots: alloc::vec::Vec<u64>,
+}
+
+/// Whether `ancestor` is `node` or one of its ancestors.
+fn covers(ancestor: (u8, u64), node: (u8, u64)) -> bool {
+    let Some(shift) = node.0.checked_sub(ancestor.0) else {
+        return false;
+    };
+    u128::from(node.1).checked_shr(u32::from(shift)) == Some(u128::from(ancestor.1))
+}
+
+/// Whether `h64` falls inside `node`.
+fn in_node(h64: u64, node: (u8, u64)) -> bool {
+    crate::server::H64Index::bounds_unchecked(&BucketRequest::new(node.0, node.1, 1))
+        .contains(&u128::from(h64))
+}
+
+/// The roots of `roots` (sorted) that fall inside `node`.
+fn restrict(roots: &[u64], node: (u8, u64)) -> alloc::vec::Vec<u64> {
+    roots
+        .iter()
+        .copied()
+        .filter(|&root| in_node(root, node))
+        .collect()
 }
 
 impl BucketExchange {
@@ -181,7 +228,107 @@ impl BucketExchange {
             max_pending_requests: max_rounds.saturating_mul(max_buckets_per_round),
             no_progress_rounds: 0,
             classified: alloc::vec::Vec::new(),
+            failures: alloc::vec::Vec::new(),
+            ladder_failed: alloc::vec::Vec::new(),
+            parents: alloc::vec::Vec::new(),
+            awaiting: alloc::vec::Vec::new(),
         }
+    }
+
+    /// Prefixes the exchange gave up on. The same list is returned in
+    /// [`ClientAction::ResolveRoots`], where the type forces the caller to
+    /// handle it; this accessor is for inspection.
+    #[must_use]
+    pub fn ladder_failed(&self) -> &[(u8, u64)] {
+        &self.ladder_failed
+    }
+
+    /// Gives up on `region`: no retry or split can fix it, so it is removed
+    /// from every piece of exchange state and recorded as ladder-failed.
+    fn ladder_fail(&mut self, region: (u8, u64), batch: &mut BucketDecodeBatch) {
+        if !self.ladder_failed.contains(&region) {
+            self.ladder_failed.push(region);
+        }
+        let inside = |depth: u8, prefix: u64| covers(region, (depth, prefix));
+        self.classified.retain(|c| !covers(region, c.node()));
+        self.accumulated_roots
+            .retain(|&root| !in_node(root, region));
+        self.pending
+            .retain(|request| !inside(request.depth, request.prefix));
+        self.failures.retain(|f| !inside(f.depth, f.prefix));
+        self.parents.retain(|&(d, p, _)| !inside(d, p));
+        self.awaiting.retain(|&(d, p, _)| !inside(d, p));
+        batch
+            .successful_buckets
+            .retain(|s| !inside(s.depth, s.prefix));
+        batch.failed_buckets.retain(|&(d, p)| !inside(d, p));
+    }
+
+    /// Checks that each split's two children, as reported by the responder,
+    /// XOR and sum to the parent's summary. The children may arrive in
+    /// different rounds, so the parent's summary is kept until both are in.
+    /// A violation is responder inconsistency, which no capacity bump or split
+    /// can fix, so the parent goes straight to ladder-failed.
+    fn check_split_consistency(
+        &mut self,
+        requests: &[BucketRequest],
+        remote: &[NodeSummary],
+        batch: &mut BucketDecodeBatch,
+    ) {
+        for (request, &summary) in requests.iter().zip(remote) {
+            let (depth, prefix) = (request.depth, request.prefix);
+            let Some(parent_depth) = depth.checked_sub(1) else {
+                continue;
+            };
+            let parent = (parent_depth, prefix >> 1);
+            let Some(slot) = self.parents.iter().position(|&(d, p, _)| (d, p) == parent) else {
+                continue;
+            };
+            let sibling = (depth, prefix ^ 1);
+            let from_round = requests
+                .iter()
+                .zip(remote)
+                .find(|(r, _)| (r.depth, r.prefix) == sibling)
+                .map(|(_, &s)| s);
+            let from_earlier = self
+                .awaiting
+                .iter()
+                .position(|&(d, p, _)| (d, p) == sibling);
+            let sibling_summary = from_round.or_else(|| from_earlier.map(|i| self.awaiting[i].2));
+            let Some(sibling_summary) = sibling_summary else {
+                if !self
+                    .awaiting
+                    .iter()
+                    .any(|&(d, p, _)| (d, p) == (depth, prefix))
+                {
+                    self.awaiting.push((depth, prefix, summary));
+                }
+                continue;
+            };
+            let (_, _, parent_summary) = self.parents.remove(slot);
+            self.awaiting
+                .retain(|&(d, p, _)| (d, p) != sibling && (d, p) != (depth, prefix));
+            let consistent = parent_summary.digest == summary.digest ^ sibling_summary.digest
+                && summary.count.checked_add(sibling_summary.count) == Some(parent_summary.count);
+            if !consistent {
+                self.ladder_fail(parent, batch);
+            }
+        }
+    }
+
+    /// Whether a phase-1 failure of `node` repeats an earlier one: same
+    /// restricted root set, from an ancestor-or-equal node, under a different
+    /// sketch (`(depth, capacity)` differs). Decoding the same sketch twice is
+    /// deterministic and proves nothing; a spurious decode does not survive a
+    /// capacity bump or a narrower node, but a collision does. Empty root sets
+    /// count: an opposite-sided pair with `M` empty repeats `[]`.
+    fn repeats_earlier_failure(&self, node: (u8, u64), capacity: usize, roots: &[u64]) -> bool {
+        let here = restrict(roots, node);
+        self.failures.iter().any(|f| {
+            covers((f.depth, f.prefix), node)
+                && (f.depth, f.capacity) != (node.0, capacity)
+                && restrict(&f.roots, node) == here
+        })
     }
 
     /// Nodes admitted so far by [`Self::advance_verified`], each carrying the
@@ -222,8 +369,66 @@ impl BucketExchange {
     where
         F: FnMut(u64) -> alloc::vec::Vec<u128>,
     {
-        let (batch, verified) =
+        let (mut batch, verified, rejected) =
             crate::verify::verify_batch(batch, requests, local, remote, local_candidates)?;
+
+        // Responder inconsistency first: it invalidates whole regions.
+        self.check_split_consistency(requests, remote, &mut batch);
+
+        // A node whose phase-1 failure repeats under a different sketch is a
+        // collision: stop climbing the ladder for it, keep its siblings going.
+        for (depth, prefix, roots) in rejected {
+            let node = (depth, prefix);
+            if self
+                .ladder_failed
+                .iter()
+                .any(|&region| covers(region, node))
+            {
+                continue;
+            }
+            let Some(request) = requests.iter().find(|r| (r.depth, r.prefix) == node) else {
+                continue;
+            };
+            if self.repeats_earlier_failure(node, request.capacity, &roots) {
+                self.ladder_fail(node, &mut batch);
+            } else {
+                self.failures.push(Phase1Failure {
+                    depth,
+                    prefix,
+                    capacity: request.capacity,
+                    roots,
+                });
+            }
+        }
+
+        // Remember surviving failed nodes' responder summaries: they may be
+        // split next, and their children are checked against them.
+        for &(depth, prefix) in &batch.failed_buckets {
+            let summary = requests
+                .iter()
+                .zip(remote)
+                .find(|(r, _)| (r.depth, r.prefix) == (depth, prefix))
+                .map(|(_, &s)| s);
+            if let Some(summary) = summary {
+                if !self
+                    .parents
+                    .iter()
+                    .any(|&(d, p, _)| (d, p) == (depth, prefix))
+                {
+                    self.parents.push((depth, prefix, summary));
+                }
+            }
+        }
+
+        let verified: alloc::vec::Vec<Classified> = verified
+            .into_iter()
+            .filter(|c| {
+                !self
+                    .ladder_failed
+                    .iter()
+                    .any(|&region| covers(region, c.node()))
+            })
+            .collect();
         self.classified.extend(verified);
         Ok(self.advance(batch, requests, global_estimate))
     }
@@ -376,6 +581,7 @@ impl BucketExchange {
         if !had_failures && self.pending.is_empty() {
             return ClientAction::ResolveRoots {
                 roots: self.accumulated_roots.clone(),
+                ladder_failed: self.ladder_failed.clone(),
             };
         }
 
@@ -718,6 +924,7 @@ impl ReconciliationClient {
         if batch.failed_buckets.is_empty() {
             return ClientAction::ResolveRoots {
                 roots: accumulated_roots,
+                ladder_failed: alloc::vec::Vec::new(),
             };
         }
 
@@ -1085,7 +1292,8 @@ mod tests {
         assert_eq!(
             ReconciliationClient::transition_bucket_batch(batch, &[], vec![99], None, 4096),
             ClientAction::ResolveRoots {
-                roots: vec![99, 42]
+                roots: vec![99, 42],
+                ladder_failed: vec![],
             }
         );
     }
@@ -1248,7 +1456,8 @@ mod tests {
         assert_eq!(
             final_action,
             ClientAction::ResolveRoots {
-                roots: vec![99, 42]
+                roots: vec![99, 42],
+                ladder_failed: vec![],
             }
         );
     }
@@ -1488,6 +1697,175 @@ mod tests {
             ),
             Ok(())
         );
+    }
+
+    fn fresh_exchange() -> BucketExchange {
+        BucketExchange::new(
+            vec![],
+            MAX_RECONCILIATION_ROUNDS,
+            MAX_BUCKETS_PER_ROUND,
+            MAX_BUCKETED_SKETCH_CAPACITY,
+        )
+    }
+
+    fn summary(count: u64, digest: u128) -> NodeSummary {
+        NodeSummary { count, digest }
+    }
+
+    fn success(depth: u8, prefix: u64, roots: &[u64]) -> BucketDecodeBatch {
+        BucketDecodeBatch {
+            successful_buckets: vec![crate::triage::BucketDecodeSuccess {
+                depth,
+                prefix,
+                roots: roots.to_vec(),
+            }],
+            failed_buckets: vec![],
+        }
+    }
+
+    fn undecodable(depth: u8, prefix: u64) -> BucketDecodeBatch {
+        BucketDecodeBatch {
+            successful_buckets: vec![],
+            failed_buckets: vec![(depth, prefix)],
+        }
+    }
+
+    /// Decoding the same sketch twice is deterministic, so a repeat of the
+    /// same `(depth, capacity)` proves nothing; only a different sketch
+    /// returning the same restricted roots identifies a collision.
+    #[test]
+    fn same_sketch_repeat_is_not_a_collision_but_a_different_sketch_is() {
+        let mut exchange = fresh_exchange();
+        let remote = [summary(0, 0)];
+        let local = [summary(0, 0)];
+        // Root 5 is remote-only but the counts say nothing differs: phase 1
+        // rejects it.
+        let attempt = |exchange: &mut BucketExchange, capacity: usize| {
+            exchange
+                .advance_verified(
+                    success(0, 0, &[5]),
+                    &[BucketRequest::new(0, 0, capacity)],
+                    &local,
+                    &remote,
+                    None,
+                    |_| vec![],
+                )
+                .unwrap()
+        };
+        let _ = attempt(&mut exchange, 8);
+        let _ = attempt(&mut exchange, 8);
+        assert!(
+            exchange.ladder_failed().is_empty(),
+            "same sketch twice must not classify a collision"
+        );
+        let _ = attempt(&mut exchange, 16);
+        assert_eq!(exchange.ladder_failed(), &[(0, 0)]);
+    }
+
+    /// Different roots under a different sketch is a spurious decode, not a
+    /// collision, and keeps escalating normally.
+    #[test]
+    fn different_roots_under_a_new_sketch_are_not_a_collision() {
+        let mut exchange = fresh_exchange();
+        let remote = [summary(0, 0)];
+        let local = [summary(0, 0)];
+        for (capacity, root) in [(8, 5_u64), (16, 9)] {
+            let _ = exchange
+                .advance_verified(
+                    success(0, 0, &[root]),
+                    &[BucketRequest::new(0, 0, capacity)],
+                    &local,
+                    &remote,
+                    None,
+                    |_| vec![],
+                )
+                .unwrap();
+        }
+        assert!(exchange.ladder_failed().is_empty());
+    }
+
+    /// The children of a split may arrive in different rounds. When they do not
+    /// add up to the parent the responder is inconsistent, which no capacity
+    /// bump or split can fix: the parent goes straight to ladder-failed, and
+    /// the child already admitted is withdrawn.
+    #[test]
+    fn inconsistent_split_children_across_rounds_ladder_fail_the_parent() {
+        let mut exchange = fresh_exchange();
+        let max = MAX_BUCKET_SKETCH_CAPACITY;
+        // Round 1: the parent cannot be decoded; remember its summary.
+        let _ = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &[BucketRequest::new(0, 0, max)],
+                &[summary(4, 0xF)],
+                &[summary(4, 0xF)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        // Round 2: one child verifies and is admitted.
+        let _ = exchange
+            .advance_verified(
+                success(1, 0, &[]),
+                &[BucketRequest::new(1, 0, 8)],
+                &[summary(2, 0x3)],
+                &[summary(2, 0x3)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        assert_eq!(exchange.classified().len(), 1);
+        assert!(exchange.ladder_failed().is_empty());
+        // Round 3: the sibling arrives and the pair no longer sums to the parent.
+        let action = exchange
+            .advance_verified(
+                success(1, 1, &[]),
+                &[BucketRequest::new(1, 1, 8)],
+                &[summary(3, 0xC)],
+                &[summary(3, 0xC)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        assert_eq!(exchange.ladder_failed(), &[(0, 0)]);
+        assert!(exchange.classified().is_empty(), "admitted child withdrawn");
+        assert_eq!(
+            action,
+            ClientAction::ResolveRoots {
+                roots: vec![],
+                ladder_failed: vec![(0, 0)],
+            }
+        );
+    }
+
+    #[test]
+    fn consistent_split_children_across_rounds_are_admitted() {
+        let mut exchange = fresh_exchange();
+        let max = MAX_BUCKET_SKETCH_CAPACITY;
+        let _ = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &[BucketRequest::new(0, 0, max)],
+                &[summary(4, 0xF)],
+                &[summary(4, 0xF)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        for (prefix, count, digest) in [(0_u64, 2_u64, 0x3_u128), (1, 2, 0xC)] {
+            let _ = exchange
+                .advance_verified(
+                    success(1, prefix, &[]),
+                    &[BucketRequest::new(1, prefix, 8)],
+                    &[summary(count, digest)],
+                    &[summary(count, digest)],
+                    None,
+                    |_| vec![],
+                )
+                .unwrap();
+        }
+        assert!(exchange.ladder_failed().is_empty());
+        assert_eq!(exchange.classified().len(), 2);
     }
 
     #[test]

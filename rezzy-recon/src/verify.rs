@@ -146,8 +146,9 @@ where
 /// `requests`, `local` and `remote` are index-aligned. Each successfully
 /// decoded node is verified; a node that fails verification is moved into
 /// `failed_buckets`, so the exchange splits or retries it while its siblings
-/// are admitted. Returns the batch to feed the exchange and the classified
-/// nodes that passed.
+/// are admitted. Returns the batch to feed the exchange, the classified nodes
+/// that passed, and each phase-1-rejected node as `(depth, prefix, roots)` so
+/// the exchange can tell a repeated collision from a spurious decode.
 ///
 /// # Errors
 /// [`AlgebraicError::InvalidSketchLength`] if the slices are not aligned, and
@@ -159,7 +160,7 @@ pub fn verify_batch<F>(
     local: &[NodeSummary],
     remote: &[NodeSummary],
     mut local_candidates: F,
-) -> Result<(BucketDecodeBatch, Vec<Classified>), AlgebraicError>
+) -> Result<VerifiedBatch, AlgebraicError>
 where
     F: FnMut(u64) -> Vec<u128>,
 {
@@ -172,6 +173,7 @@ where
     } = batch;
     let mut admitted = Vec::with_capacity(successful_buckets.len());
     let mut verified = Vec::with_capacity(successful_buckets.len());
+    let mut rejected = Vec::new();
     for success in successful_buckets {
         let slot = requests
             .iter()
@@ -189,6 +191,9 @@ where
             }
             Err(AlgebraicError::DecodeFailure) => {
                 failed_buckets.push((success.depth, success.prefix));
+                let mut roots = success.roots;
+                roots.sort_unstable();
+                rejected.push((success.depth, success.prefix, roots));
             }
             Err(error) => return Err(error),
         }
@@ -199,8 +204,13 @@ where
             failed_buckets,
         },
         verified,
+        rejected,
     ))
 }
+
+/// Result of [`verify_batch`]: the batch to feed the exchange, the nodes that
+/// passed phase 1, and the nodes rejected by it with their decoded roots.
+pub type VerifiedBatch = (BucketDecodeBatch, Vec<Classified>, Vec<(u8, u64, Vec<u64>)>);
 
 /// Phase 2 for one node: check the identifiers the peer returned for `M`.
 ///
@@ -521,11 +531,12 @@ mod tests {
             ],
             failed_buckets: Vec::new(),
         };
-        let (batch, classified) =
+        let (batch, classified, rejected) =
             verify_batch(batch, &requests, &local, &far, |_| Vec::new()).unwrap();
         assert_eq!(batch.successful_buckets.len(), 1);
         assert_eq!(batch.successful_buckets[0].prefix, 0);
         assert_eq!(batch.failed_buckets, vec![(1, 1)]);
+        assert_eq!(rejected, vec![(1, 1, vec![high | 5])]);
         assert_eq!(classified.len(), 1);
         assert_eq!(classified[0].node(), (1, 0));
     }

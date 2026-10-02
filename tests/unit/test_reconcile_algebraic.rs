@@ -292,6 +292,7 @@ fn multi_round_bucket_transition_flow() {
         final_action,
         ClientAction::ResolveRoots {
             roots: vec![10, 20, 30, 40],
+            ladder_failed: vec![],
         }
     );
 }
