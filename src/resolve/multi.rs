@@ -170,6 +170,39 @@ struct Occurrence<'a, Id> {
     conflicts: Option<(Vec<&'a Id>, FastSet<&'a Id>)>,
 }
 
+/// Shared body of the public `resolve_state_maps*` entry points: resolves with
+/// an optional shared reachability index and optional reusable caches.
+fn resolve_with<Id, C, S>(
+    state_maps: &[SharedState<Id>],
+    event_context: &HashMap<Id, LeanEvent<Id, C>, S>,
+    version: StateResVersion,
+    reachability: Option<&crate::resolve::reachability::RangePrefilterReachability<Id>>,
+    caches: Option<&mut ForkResolveCaches<Id, C>>,
+) -> SharedState<Id>
+where
+    Id: EventId,
+    C: EventContent + Clone,
+    S: core::hash::BuildHasher,
+{
+    let (auth_cache, mainline_cache) = match caches {
+        Some(caches) => (
+            Some(&mut caches.auth_cache),
+            Some(&mut caches.mainline_cache),
+        ),
+        None => (None, None),
+    };
+    resolve_state_maps_generic(
+        state_maps,
+        event_context,
+        version,
+        &alloc::string::String::new(),
+        reachability,
+        auth_cache,
+        mainline_cache,
+    )
+    .0
+}
+
 /// Resolves N parent state maps into a single deterministic state map.
 ///
 /// This is the high-level entry point for multi-fork state resolution.
@@ -215,16 +248,7 @@ where
     C: EventContent + Clone,
     S: core::hash::BuildHasher,
 {
-    resolve_state_maps_generic(
-        state_maps,
-        event_context,
-        version,
-        &alloc::string::String::new(),
-        None,
-        None,
-        None,
-    )
-    .0
+    resolve_with(state_maps, event_context, version, None, None)
 }
 
 /// Like [`resolve_state_maps`], but reuses a caller-supplied MSC4297
@@ -247,16 +271,7 @@ where
     C: EventContent + Clone,
     S: core::hash::BuildHasher,
 {
-    resolve_state_maps_generic(
-        state_maps,
-        event_context,
-        version,
-        &alloc::string::String::new(),
-        Some(reachability),
-        None,
-        None,
-    )
-    .0
+    resolve_with(state_maps, event_context, version, Some(reachability), None)
 }
 
 /// Reusable caches for repeated fork resolution against the same room.
@@ -297,16 +312,13 @@ where
     C: EventContent + Clone,
     S: core::hash::BuildHasher,
 {
-    resolve_state_maps_generic(
+    resolve_with(
         state_maps,
         event_context,
         version,
-        &alloc::string::String::new(),
         Some(reachability),
-        Some(&mut caches.auth_cache),
-        Some(&mut caches.mainline_cache),
+        Some(caches),
     )
-    .0
 }
 
 fn resolve_state_maps_generic<Id, C, S, K>(
