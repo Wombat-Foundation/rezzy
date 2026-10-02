@@ -82,7 +82,7 @@ rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.0" }
 rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.0" }
 
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
-blake2 = { version = "0.10", default-features = false }
+blake3 = { version = "1.5", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "3.0", default-features = false }
 roaring = { version = "0.10", default-features = false }
@@ -179,7 +179,7 @@ unstable-refcount-gc = []
 rezzy-json.workspace = true
 
 base64.workspace = true
-blake2.workspace = true
+blake3.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
 roaring.workspace = true

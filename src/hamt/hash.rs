@@ -1,8 +1,8 @@
 //! Structural hashing and state-group identity for HAMT nodes.
 
-use blake2::{
+use blake3::{
     digest::{consts::U32, Digest},
-    Blake2b,
+    Blake3b,
 };
 use core::hash::Hasher;
 
