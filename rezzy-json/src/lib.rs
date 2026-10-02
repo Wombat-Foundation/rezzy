@@ -19,16 +19,16 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-/// Brief public API.
+/// A JSON object, keyed in sorted order.
 pub type Object = BTreeMap<String, Value>;
 
-/// Brief public API.
+/// Largest integer a JSON number may carry per Matrix canonical JSON (2^53 - 1).
 pub const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
-/// Brief public API.
+/// Smallest integer a JSON number may carry per Matrix canonical JSON (-(2^53 - 1)).
 pub const MIN_SAFE_INTEGER: i64 = -((1_i64 << 53) - 1);
 
 #[must_use]
-/// Brief public API.
+/// Returns `true` if the value is `canonical_integer_str`.
 pub fn is_canonical_integer_str(value: &str) -> bool {
     let digits = value.strip_prefix('-').unwrap_or(value);
     if digits.is_empty()
@@ -46,20 +46,20 @@ pub fn is_canonical_integer_str(value: &str) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-/// Brief public API.
+/// An owned JSON value.
 pub enum Value {
     #[default]
-    /// Brief public API.
+    /// JSON `null`.
     Null,
-    /// Brief public API.
+    /// A JSON boolean.
     Bool(bool),
-    /// Brief public API.
+    /// A JSON number.
     Number(Number),
-    /// Brief public API.
+    /// A JSON string.
     String(String),
-    /// Brief public API.
+    /// A JSON array.
     Array(Vec<Self>),
-    /// Brief public API.
+    /// A JSON object.
     Object(Object),
 }
 
@@ -70,7 +70,7 @@ impl PartialEq<&str> for Value {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// A JSON number, kept as its validated source spelling.
 pub struct Number(String);
 
 impl Number {
@@ -94,7 +94,7 @@ impl Number {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Builds a number from a float, or `None` if it is not finite.
     pub fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
@@ -104,31 +104,31 @@ impl Number {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `i64`, or `None` if it is not that type.
     pub fn as_i64(&self) -> Option<i64> {
         self.0.parse().ok()
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `u64`, or `None` if it is not that type.
     pub fn as_u64(&self) -> Option<u64> {
         self.0.parse().ok()
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `f64`, or `None` if it is not that type.
     pub fn as_f64(&self) -> Option<f64> {
-        self.0.parse().ok()
+        self.0.parse().ok().filter(|value: &f64| value.is_finite())
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `str`, or `None` if it is not that type.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `canonical_integer`.
     pub fn is_canonical_integer(&self) -> bool {
         is_canonical_integer_str(self.as_str())
     }
@@ -164,14 +164,14 @@ impl fmt::Display for Number {
 
 impl Value {
     #[must_use]
-    /// Brief public API.
+    /// Returns the member named `key` if this is an object that has one.
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Object(obj) => obj.get(key),
             _ => None,
         }
     }
-    /// Brief public API.
+    /// Mutable variant of [`Self::get`].
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Self> {
         match self {
             Self::Object(obj) => obj.get_mut(key),
@@ -179,14 +179,14 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `object`, or `None` if it is not that type.
     pub const fn as_object(&self) -> Option<&Object> {
         match self {
             Self::Object(obj) => Some(obj),
             _ => None,
         }
     }
-    /// Brief public API.
+    /// Returns the value as `object_mut`, or `None` if it is not that type.
     pub fn as_object_mut(&mut self) -> Option<&mut Object> {
         match self {
             Self::Object(obj) => Some(obj),
@@ -194,7 +194,7 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `array`, or `None` if it is not that type.
     pub const fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
@@ -202,7 +202,7 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `str`, or `None` if it is not that type.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s),
@@ -210,7 +210,7 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `bool`, or `None` if it is not that type.
     pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
@@ -218,7 +218,7 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `i64`, or `None` if it is not that type.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Number(n) => n.as_i64(),
@@ -226,7 +226,7 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `u64`, or `None` if it is not that type.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Number(n) => n.as_u64(),
@@ -234,7 +234,7 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `f64`, or `None` if it is not that type.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Self::Number(n) => n.as_f64(),
@@ -242,31 +242,31 @@ impl Value {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `null`.
     pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `array`.
     pub const fn is_array(&self) -> bool {
         matches!(self, Self::Array(_))
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `object`.
     pub const fn is_object(&self) -> bool {
         matches!(self, Self::Object(_))
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `i64`.
     pub fn is_i64(&self) -> bool {
         self.as_i64().is_some()
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `u64`.
     pub fn is_u64(&self) -> bool {
         self.as_u64().is_some()
     }
-    /// Brief public API.
+    /// Sets an object member and returns the previous value; `None` if this is not an object.
     pub fn insert(&mut self, key: String, value: Self) -> Option<Self> {
         self.as_object_mut()?.insert(key, value)
     }
@@ -409,7 +409,7 @@ impl From<f64> for Value {
 }
 
 #[macro_export]
-/// Brief public API.
+/// Builds a [`Value`] from JSON-like literal syntax.
 macro_rules! json {
     (null) => { $crate::Value::Null };
     ([ $($values:tt)* ]) => {{
@@ -463,22 +463,22 @@ macro_rules! json {
     ($value:expr) => { $crate::to_value($value) };
 }
 
-/// Brief public API.
+/// Converts anything convertible into a [`Value`].
 pub fn to_value(value: impl Into<Value>) -> Value {
     value.into()
 }
 #[must_use]
-/// Brief public API.
+/// An empty array body.
 pub const fn empty_array() -> Vec<Value> {
     Vec::new()
 }
 #[must_use]
-/// Brief public API.
+/// An empty object body.
 pub const fn empty_object() -> Object {
     Object::new()
 }
 #[must_use]
-/// Brief public API.
+/// Owns a string for use as an object key.
 pub fn key(value: &str) -> String {
     value.to_string()
 }
@@ -845,74 +845,74 @@ pub struct Tokenizer<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// One lexical token of a JSON document.
 pub enum Token<'a> {
-    /// Brief public API.
+    /// JSON `null`.
     Null,
-    /// Brief public API.
+    /// A JSON boolean.
     Bool(bool),
-    /// Brief public API.
+    /// A JSON number.
     Number(&'a [u8]),
-    /// Brief public API.
+    /// A JSON string.
     String(&'a [u8]),
-    /// Brief public API.
+    /// `[`.
     ArrayStart,
-    /// Brief public API.
+    /// `]`.
     ArrayEnd,
-    /// Brief public API.
+    /// `{`.
     ObjectStart,
-    /// Brief public API.
+    /// `}`.
     ObjectEnd,
-    /// Brief public API.
+    /// An object key; the raw, still-escaped bytes.
     Key(&'a [u8]),
-    /// Brief public API.
+    /// `:`.
     Colon,
-    /// Brief public API.
+    /// `,`.
     Comma,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// Why the tokenizer rejected its input.
 pub enum TokenizerError {
-    /// Brief public API.
+    /// Input ended inside a value.
     UnexpectedEnd,
-    /// Brief public API.
+    /// A byte that cannot start or continue a JSON token here.
     InvalidToken,
-    /// Brief public API.
+    /// A malformed number literal.
     InvalidNumber,
-    /// Brief public API.
+    /// A string with a raw control character or invalid UTF-8.
     InvalidString,
-    /// Brief public API.
+    /// A string escape that JSON does not define.
     InvalidEscape,
-    /// Brief public API.
+    /// Nesting went deeper than `MAX_DEPTH`.
     DepthLimitExceeded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// The JSON type of a value, without its contents.
 pub enum ValueType {
-    /// Brief public API.
+    /// JSON `null`.
     Null,
-    /// Brief public API.
+    /// A JSON boolean.
     Bool,
-    /// Brief public API.
+    /// A JSON number.
     Number,
-    /// Brief public API.
+    /// A JSON string.
     String,
-    /// Brief public API.
+    /// A JSON array.
     Array,
-    /// Brief public API.
+    /// A JSON object.
     Object,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// One object member located in the source bytes.
 pub struct MemberSpan<'a> {
-    /// Brief public API.
+    /// The member name, unescaped.
     pub key: Cow<'a, str>,
-    /// Brief public API.
+    /// The member's value exactly as written in the input.
     pub raw_value: &'a [u8],
-    /// Brief public API.
+    /// The JSON type of `raw_value`.
     pub value_type: ValueType,
 }
 
@@ -923,11 +923,11 @@ impl fmt::Display for TokenizerError {
 }
 
 impl<'a> Tokenizer<'a> {
-    /// Brief public API.
+    /// Maximum container nesting accepted.
     pub const MAX_DEPTH: usize = 128;
 
     #[must_use]
-    /// Brief public API.
+    /// Starts tokenizing at the beginning of `input`.
     pub const fn new(input: &'a [u8]) -> Self {
         Self {
             input,
@@ -939,13 +939,13 @@ impl<'a> Tokenizer<'a> {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Byte offset of the next unread input.
     pub const fn position(&self) -> usize {
         self.pos
     }
 
     #[must_use]
-    /// Brief public API.
+    /// The input not yet consumed.
     pub fn remaining(&self) -> &'a [u8] {
         &self.input[self.pos..]
     }
@@ -1384,6 +1384,16 @@ impl<'a> Tokenizer<'a> {
             self.pos = self.pos.saturating_add(1);
         }
 
+        // JSON forbids leading zeros: `0` may only be followed by `.`, `e`/`E`, or the end.
+        if self.input.get(self.pos) == Some(&b'0')
+            && self
+                .input
+                .get(self.pos.saturating_add(1))
+                .is_some_and(u8::is_ascii_digit)
+        {
+            return Err(TokenizerError::InvalidNumber);
+        }
+
         // Integer part (must have at least one digit)
         while let Some(b) = self.input.get(self.pos) {
             if b.is_ascii_digit() {
@@ -1544,13 +1554,13 @@ pub fn unescape_raw_string(input: &[u8], out: &mut String) -> Result<(), Tokeniz
 /// A field mask for selective parsing - specifies which JSON paths to extract.
 #[derive(Clone, Debug, Default)]
 pub struct FieldMask<'a> {
-    /// Brief public API.
+    /// Dot-separated paths to keep; an empty list selects everything.
     pub paths: &'a [&'a str],
 }
 
 impl FieldMask<'_> {
     #[must_use]
-    /// Brief public API.
+    /// Whether `prefix` is, or lies on the way to, a selected path.
     pub fn allows_prefix(&self, prefix: &str) -> bool {
         if self.paths.is_empty() {
             return true;
@@ -1566,7 +1576,7 @@ impl FieldMask<'_> {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Whether the path made of `segments` is selected.
     pub fn matches_segments(&self, segments: &[&str]) -> bool {
         if self.paths.is_empty() || segments.is_empty() {
             return true;
@@ -1586,17 +1596,17 @@ impl FieldMask<'_> {
 /// input slice. Unselected fields are skipped entirely without allocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ValueRef<'a> {
-    /// Brief public API.
+    /// JSON `null`.
     Null,
-    /// Brief public API.
+    /// A JSON boolean.
     Bool(bool),
-    /// Brief public API.
+    /// A JSON number.
     Number(&'a str),
-    /// Brief public API.
+    /// A JSON string.
     String(&'a str),
-    /// Brief public API.
+    /// A JSON array.
     Array(Vec<Self>),
-    /// Brief public API.
+    /// A JSON object.
     Object(Vec<(&'a str, Self)>),
 }
 
@@ -1750,15 +1760,15 @@ impl<'a> ValueRef<'a> {
 
 impl<'a> ValueRef<'a> {
     #[must_use]
-    /// Brief public API.
+    /// Returns the member named `key` if this is an object that has one.
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
-            Self::Object(obj) => obj.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
+            Self::Object(obj) => obj.iter().rev().find(|(k, _)| *k == key).map(|(_, v)| v),
             _ => None,
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `array`, or `None` if it is not that type.
     pub const fn as_array(&self) -> Option<&Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
@@ -1766,7 +1776,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `number`, or `None` if it is not that type.
     pub const fn as_number(&self) -> Option<&'a str> {
         match self {
             Self::Number(n) => Some(n),
@@ -1774,7 +1784,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `str`, or `None` if it is not that type.
     pub const fn as_str(&self) -> Option<&'a str> {
         match self {
             Self::String(s) => Some(s),
@@ -1782,7 +1792,7 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns the value as `bool`, or `None` if it is not that type.
     pub const fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(v) => Some(*v),
@@ -1790,28 +1800,28 @@ impl<'a> ValueRef<'a> {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// Returns `true` if the value is `null`.
     pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// Why parsing a JSON document failed.
 pub enum Error {
-    /// Brief public API.
+    /// Input ended inside a value.
     UnexpectedEnd,
-    /// Brief public API.
+    /// A byte that cannot start or continue a JSON token here.
     InvalidToken,
-    /// Brief public API.
+    /// A malformed number literal.
     InvalidNumber,
-    /// Brief public API.
+    /// A string with a raw control character or invalid UTF-8.
     InvalidString,
-    /// Brief public API.
+    /// A string escape that JSON does not define.
     InvalidEscape,
-    /// Brief public API.
+    /// Non-whitespace input followed the top-level value.
     TrailingCharacters,
-    /// Brief public API.
+    /// Nesting went deeper than `MAX_DEPTH`.
     DepthLimitExceeded,
 }
 
@@ -1834,7 +1844,7 @@ impl From<TokenizerError> for Error {
     }
 }
 
-/// Brief public API.
+/// Maximum container nesting accepted.
 pub const MAX_DEPTH: usize = 128;
 
 // Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each
@@ -2105,6 +2115,7 @@ mod tests {
         write_raw_canonical_filtered, write_raw_canonical_filtered_strict, write_string_pretty,
         write_string_value, write_string_value_filtered, Error, Value,
     };
+    use crate::{FieldMask, ValueRef};
     use alloc::string::String;
 
     #[test]
@@ -2432,5 +2443,28 @@ mod tests {
             }
         }
         assert!(hit_depth_limit);
+    }
+
+    #[test]
+    fn masked_parse_rejects_leading_zero_numbers() {
+        let mask = FieldMask::default();
+        for bad in ["01", "-01", "[00]", "{\"a\":01}"] {
+            assert!(
+                ValueRef::parse_masked(bad.as_bytes(), &mask).is_err(),
+                "{bad}"
+            );
+        }
+        for good in ["0", "-0", "0.5", "0e1", "10"] {
+            assert!(
+                ValueRef::parse_masked(good.as_bytes(), &mask).is_ok(),
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn number_as_f64_is_finite_only() {
+        let value = Value::parse("1e400").unwrap();
+        assert_eq!(value.as_f64(), None);
     }
 }

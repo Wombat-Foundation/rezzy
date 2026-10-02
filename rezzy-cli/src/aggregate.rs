@@ -35,7 +35,7 @@ struct Options {
 }
 
 #[must_use]
-/// Brief public API.
+/// Builds the `aggregate` subcommand.
 pub fn command() -> Command {
     Command::new("aggregate")
         .about("Aggregate canonical Matrix event JSONL files without changing inputs")
@@ -581,7 +581,10 @@ fn describe_source(label: &str) -> (String, Option<String>) {
     (kind, server_hint)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+/// Write `bytes` to a uniquely named, exclusively created sibling of `path`
+/// and return its location. The name embeds the pid and a nonce, so it cannot
+/// collide with a selected input; the caller renames it into place.
+fn stage_file(path: &Path, bytes: &[u8]) -> Result<PathBuf, AppError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -600,15 +603,27 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
             .create_new(true)
             .open(&temp)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
-        Ok::<(), std::io::Error>(())
+        file.sync_all()
     })();
-    if result.is_err() {
+    if let Err(error) = result {
         let _ = fs::remove_file(&temp);
+        return Err(error.into());
     }
-    result.map_err(AppError::from)
+    Ok(temp)
+}
+
+/// Rename a staged file over `path` and sync the parent directory.
+fn commit_staged(temp: &Path, path: &Path) -> Result<(), AppError> {
+    if let Err(error) = fs::rename(temp, path) {
+        let _ = fs::remove_file(temp);
+        return Err(error.into());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
+    Ok(())
 }
 
 fn reject_input_output_overlap(options: &Options) -> Result<(), AppError> {
@@ -680,12 +695,6 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     let sidecar = if options.provenance {
         Some(build_sidecar(&inputs, &events, room_version.as_deref())?)
     } else {
-        // Remove any existing sidecar when provenance is disabled to avoid
-        // stale metadata being used by timeline auto-discovery.
-        let sidecar_path = provenance::sidecar_path(&options.output);
-        if sidecar_path.exists() {
-            let _ = fs::remove_file(&sidecar_path);
-        }
         None
     };
     let sidecar_path = provenance::sidecar_path(&options.output);
@@ -715,16 +724,34 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     if let Some(parent) = options.output.parent() {
         fs::create_dir_all(parent)?;
     }
-    // Write both output and sidecar to temp files first, then commit atomically.
-    // This ensures consistency: if sidecar write fails, output is not committed.
-    let output_temp = options.output.with_extension("jsonl.tmp");
-    write_atomic(&output_temp, &output)?;
-    if let Some(sidecar) = &sidecar {
-        let sidecar_temp = sidecar_path.with_extension("jsonl.tmp");
-        write_atomic(&sidecar_temp, sidecar)?;
-        fs::rename(&sidecar_temp, &sidecar_path)?;
+    // Stage both files under unique names first, so a failed write never touches
+    // the published pair, then commit. A failure between the two renames leaves
+    // a stale sidecar, which `--check` reports and a rerun repairs.
+    let output_temp = stage_file(&options.output, &output)?;
+    let sidecar_temp = match &sidecar {
+        Some(sidecar) => match stage_file(&sidecar_path, sidecar) {
+            Ok(temp) => Some(temp),
+            Err(error) => {
+                let _ = fs::remove_file(&output_temp);
+                return Err(error);
+            }
+        },
+        None => None,
+    };
+    commit_staged(&output_temp, &options.output).inspect_err(|_| {
+        if let Some(temp) = &sidecar_temp {
+            let _ = fs::remove_file(temp);
+        }
+    })?;
+    if let Some(temp) = &sidecar_temp {
+        commit_staged(temp, &sidecar_path)?;
+    } else if let Err(error) = fs::remove_file(&sidecar_path) {
+        // With provenance disabled, drop a sidecar left by an earlier run so
+        // timeline auto-discovery cannot apply stale stream metadata.
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
     }
-    fs::rename(&output_temp, &options.output)?;
     let mut result = rezzy::json!({
         "status": "written",
         "output": options.output.to_string_lossy().to_string(),
@@ -1160,7 +1187,7 @@ mod tests {
     #[test]
     fn atomic_write_rejects_missing_parent_without_target() {
         let root = unique_test_dir();
-        let error = write_atomic(&root.join("missing/aggregate.jsonl"), b"test").unwrap_err();
+        let error = stage_file(&root.join("missing/aggregate.jsonl"), b"test").unwrap_err();
         assert_eq!(error.code(), ErrorCode::IoError);
         assert!(!root.join("missing/aggregate.jsonl").exists());
     }

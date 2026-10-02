@@ -252,6 +252,7 @@ fn run_lthash(matches: &ArgMatches) -> Result<rezzy::JsonValue, AppError> {
 fn report<const LANES: usize>(hash: &LtLattice<LANES>, plan: &Plan) -> rezzy::JsonValue {
     let mut out = rezzy::json!({
         "dst": String::from_utf8_lossy(&plan.dst).into_owned(),
+        "dst_hex": hex(&plan.dst),
         "lanes": LANES,
         "byte_len": LANES.wrapping_mul(2),
         "elements": plan.element_count(),
@@ -460,6 +461,15 @@ fn read_batch(path: &Path) -> Result<Vec<Element>, AppError> {
                 format!("batch line {} needs type, state_key, event_id", index + 1),
             )
         })?;
+        if parts.next().is_some() {
+            return Err(AppError::new(
+                ErrorCode::UnrecognisedStructure,
+                format!(
+                    "batch line {} has more than type, state_key, event_id",
+                    index + 1
+                ),
+            ));
+        }
         if event_type.is_empty() {
             return Err(AppError::new(
                 ErrorCode::EmptyEventType,
@@ -489,7 +499,7 @@ fn parse_state(text: &str) -> Result<Vec<Element>, AppError> {
         rezzy::JsonValue::Array(items) => items.clone(),
         rezzy::JsonValue::Object(obj) => match obj.get("resolved_state") {
             Some(rezzy::JsonValue::Array(items)) => items.clone(),
-            _ => return Ok(nested_state_map(&value)),
+            _ => return nested_state_map(&value),
         },
         other => {
             return Err(AppError::new(
@@ -543,24 +553,41 @@ fn entry_to_element(entry: &rezzy::JsonValue, index: usize) -> Result<Element, A
     })
 }
 
-/// Reads the `{"type": {"state_key": "$event"}}` shape.
-fn nested_state_map(value: &rezzy::JsonValue) -> Vec<Element> {
+/// Reads the `{"type": {"state_key": "$event"}}` shape, rejecting any entry
+/// that does not fit it rather than hashing a partial state.
+fn nested_state_map(value: &rezzy::JsonValue) -> Result<Vec<Element>, AppError> {
     let mut out = Vec::new();
     let rezzy::JsonValue::Object(map) = value else {
-        return out;
+        return Ok(out);
     };
     for (event_type, inner) in map {
+        if event_type.is_empty() {
+            return Err(AppError::new(
+                ErrorCode::EmptyEventType,
+                "state input has an empty event type",
+            ));
+        }
         let rezzy::JsonValue::Object(entries) = inner else {
-            continue;
+            return Err(AppError::new(
+                ErrorCode::UnrecognisedStructure,
+                format!(
+                    "state input \"{event_type}\" must map state keys to event IDs, got {}",
+                    kind(inner)
+                ),
+            ));
         };
         for (state_key, event_id) in entries {
-            if let Some(event_id) = event_id.as_str() {
-                out.push(Element {
-                    event_type: event_type.clone(),
-                    state_key: state_key.clone(),
-                    event_id: event_id.to_owned(),
-                });
-            }
+            let Some(event_id) = event_id.as_str() else {
+                return Err(AppError::new(
+                    ErrorCode::UnrecognisedStructure,
+                    format!("state input \"{event_type}\"/\"{state_key}\" needs a string event ID"),
+                ));
+            };
+            out.push(Element {
+                event_type: event_type.clone(),
+                state_key: state_key.clone(),
+                event_id: event_id.to_owned(),
+            });
         }
     }
     // `OrdMap` is `BTreeMap`-ordered, so this is already deterministic; the
@@ -570,7 +597,7 @@ fn nested_state_map(value: &rezzy::JsonValue) -> Vec<Element> {
             .cmp(&b.event_type)
             .then_with(|| a.state_key.cmp(&b.state_key))
     });
-    out
+    Ok(out)
 }
 
 /// The JSON type name of a value, for error messages.

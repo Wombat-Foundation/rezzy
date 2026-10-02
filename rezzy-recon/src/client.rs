@@ -99,11 +99,11 @@ pub struct ReconciliationClient {
 /// Information learned from the responder's room digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteDigest {
-    /// Brief public API.
+    /// The responder's frame digest.
     pub digest: u128,
-    /// Brief public API.
+    /// Number of events the responder reports.
     pub known_event_count: u64,
-    /// Brief public API.
+    /// The responder's per-stratum sketch coordinates.
     pub strata: [[u64; STRATUM_CAPACITY]; STRATA_COUNT],
     /// Whether both digests cover the same frame anchors.
     pub frame_matches: bool,
@@ -121,13 +121,12 @@ pub enum ClientAction {
 
     /// Retry independently decoded bucket sketches.
     BucketSketches {
-        /// Brief public API.
+        /// Buckets to request next.
         requests: alloc::vec::Vec<BucketRequest>,
-        /// Brief public API.
+        /// Roots already recovered from earlier rounds.
         accumulated_roots: alloc::vec::Vec<u64>,
     },
     /// All requested buckets decoded and are ready for host-side resolution.
-    /// Brief public API.
     ResolveRoots {
         /// Roots resolved by the reconciliation exchange.
         roots: alloc::vec::Vec<u64>,

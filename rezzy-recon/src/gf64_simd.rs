@@ -24,7 +24,7 @@ pub trait Gf64Evaluator {
 }
 
 #[derive(Clone, Copy)]
-/// Brief public API.
+/// Portable evaluator using scalar GF(2^64) multiplication.
 pub struct ScalarEvaluator;
 
 impl Gf64Evaluator for ScalarEvaluator {
@@ -166,7 +166,7 @@ unsafe fn gf64_mul_x4_avx512(a: __m512i, b: __m512i) -> __m512i {
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
-/// Brief public API.
+/// x86_64 evaluator; currently delegates to [`ScalarEvaluator`], whose multiply is already PCLMULQDQ-accelerated.
 pub struct SseEvaluator;
 
 #[cfg(target_arch = "x86_64")]
@@ -180,12 +180,12 @@ impl Gf64Evaluator for SseEvaluator {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Brief public API.
+/// The evaluator implementation selected for this CPU.
 pub enum EvaluatorBackend {
-    /// Brief public API.
+    /// Portable scalar evaluator.
     Scalar,
     #[cfg(target_arch = "x86_64")]
-    /// Brief public API.
+    /// x86_64 evaluator.
     Sse,
     #[cfg(all(target_arch = "x86_64", has_avx512_support))]
     Avx512,
@@ -221,7 +221,7 @@ fn get_evaluator_with_cache(cache: &core::sync::atomic::AtomicU8) -> EvaluatorBa
 
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 #[must_use]
-/// Brief public API.
+/// Detects, and caches, the best evaluator backend for this CPU.
 pub fn get_evaluator() -> EvaluatorBackend {
     get_evaluator_with_cache(&BACKEND)
 }

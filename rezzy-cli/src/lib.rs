@@ -20,20 +20,20 @@ pub mod error;
 pub mod aggregate;
 #[cfg(feature = "tls")]
 pub mod federation;
-/// Brief public API.
+/// Output formats for resolved state, events, HAMT data, and timelines.
 pub mod format;
-/// Brief public API.
+/// The `hash` subcommand: direct LtHash accumulator inspection.
 pub mod hash;
 pub mod inspect;
-/// Brief public API.
+/// Merging several JSONL event files into one deduplicated set.
 pub mod jsonl_merge;
-/// Brief public API.
+/// Fetching room state from a homeserver.
 pub mod network;
 pub mod provenance;
 pub mod repair;
-/// Brief public API.
+/// Timeline orderings and the Kahn topological sort behind them.
 pub mod timeline_order;
-/// Brief public API.
+/// Shared helpers for loading events and resolving state.
 pub mod utils;
 
 /// HTTP client identity sent by Rezzy's outbound requests.
@@ -55,39 +55,39 @@ use utils::{
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
-/// Brief public API.
+/// Parsed command-line arguments for the default state-resolution command.
 pub struct Args {
-    /// Brief public API.
+    /// JSONL event files to read.
     pub input: Vec<PathBuf>,
 
-    /// Brief public API.
+    /// Room to fetch from `--homeserver`.
     pub room: Option<String>,
 
-    /// Brief public API.
+    /// Homeserver to fetch room events from instead of reading files.
     pub homeserver: Option<String>,
 
     /// Matrix access token. Falls back to per-domain env var (e.g. `MTOKEN_MATRIX_UNREDACTED_ORG`)
     pub token: Option<String>,
 
-    /// Brief public API.
+    /// File to write output to instead of stdout.
     pub output: Option<PathBuf>,
 
-    /// Brief public API.
+    /// State resolution version; inferred from the room version when unset.
     pub state_res: Option<StateResVersion>,
 
-    /// Brief public API.
+    /// Output format.
     pub format: OutputFormat,
 
-    /// Brief public API.
+    /// Print diagnostic detail.
     pub debug: bool,
 
-    /// Brief public API.
+    /// Suppress informational and warning messages.
     pub quiet: bool,
 
     /// Validate input only; suppress state output and exit.
     pub check: bool,
 
-    /// Brief public API.
+    /// Server name used as the origin when signing federation requests.
     pub origin: String,
 
     /// Ordering for `-f timeline`.

@@ -43,27 +43,27 @@ const EVENT_HASH_ENCODED_LEN: usize = 43;
 /// An invalid event identifier, wire digest, or sketch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlgebraicError {
-    /// Brief public API.
+    /// The event ID is not a valid reference-hash ID.
     InvalidEventId,
-    /// Brief public API.
+    /// The text is not valid unpadded base64url.
     InvalidBase64,
-    /// Brief public API.
+    /// A digest did not decode to the expected length.
     InvalidDigestLength,
-    /// Brief public API.
+    /// The sketch capacity is zero or above the allowed maximum.
     InvalidSketchCapacity,
-    /// Brief public API.
+    /// A sketch's byte length does not match its capacity.
     InvalidSketchLength,
-    /// Brief public API.
+    /// The sketch could not be decoded within its capacity.
     DecodeFailure,
-    /// Brief public API.
+    /// The work budget ran out before decoding finished.
     BudgetExhausted,
-    /// Brief public API.
+    /// An event hashed to the reserved zero short identifier.
     ZeroShortIdentifier,
-    /// Brief public API.
+    /// A bucket depth or prefix is out of range.
     InvalidBucketIndex,
-    /// Brief public API.
+    /// The event count overflowed.
     CountOverflow,
-    /// Brief public API.
+    /// Removing an event would take the count below zero.
     CountUnderflow,
 }
 
@@ -227,7 +227,7 @@ pub struct RoomAccumulator {
 
 impl RoomAccumulator {
     #[must_use]
-    /// Brief public API.
+    /// An empty accumulator: zero digest, zero events.
     pub const fn new() -> Self {
         Self {
             digest: 0,
@@ -235,12 +235,12 @@ impl RoomAccumulator {
         }
     }
     #[must_use]
-    /// Brief public API.
+    /// The accumulated 128-bit digest.
     pub const fn digest(self) -> u128 {
         self.digest
     }
     #[must_use]
-    /// Brief public API.
+    /// The number of events accumulated.
     pub const fn known_event_count(self) -> u64 {
         self.count
     }
@@ -272,7 +272,7 @@ impl RoomAccumulator {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// The digest as unpadded base64url of its big-endian bytes.
     pub fn encode_digest(self) -> String {
         URL_SAFE_NO_PAD.encode(self.digest.to_be_bytes())
     }
@@ -299,7 +299,7 @@ impl RoomAccumulator {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// XOR of the two digests; zero when they agree.
     pub const fn residual(self, other: Self) -> u128 {
         self.digest ^ other.digest
     }
@@ -387,12 +387,12 @@ impl SyndromeSketch {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// Number of coordinates, i.e. the sketch's capacity.
     pub fn capacity(&self) -> usize {
         self.coordinates.len()
     }
     #[must_use]
-    /// Brief public API.
+    /// The sketch coordinates.
     pub fn coordinates(&self) -> &[u64] {
         &self.coordinates
     }
@@ -534,7 +534,7 @@ impl SyndromeSketch {
     }
 
     #[must_use]
-    /// Brief public API.
+    /// The sketch as base64url of its coordinates.
     pub fn encode(&self) -> String {
         let byte_len = self.coordinates.len().checked_mul(8).unwrap_or(0);
         let mut bytes = Vec::with_capacity(byte_len);

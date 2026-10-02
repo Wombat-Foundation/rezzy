@@ -26,33 +26,33 @@ use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Brief public API.
+/// Everything an output formatter needs from one state-resolution run.
 pub struct FormattingContext<'a> {
-    /// Brief public API.
+    /// Parsed command-line arguments.
     pub args: &'a Args,
-    /// Brief public API.
+    /// Every loaded event, by event ID.
     pub events_map: &'a HashMap<String, LeanEvent>,
-    /// Brief public API.
+    /// The original JSON of each event, by event ID.
     pub raw_map: &'a HashMap<String, rezzy::JsonValue>,
-    /// Brief public API.
+    /// Forward extremities of the event DAG.
     pub heads: &'a [String],
-    /// Brief public API.
+    /// Resolved state: `(type, state_key)` to event ID.
     pub final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
-    /// Brief public API.
+    /// Event IDs of the resolved state.
     pub resolved_state_list: &'a [String],
-    /// Brief public API.
+    /// Event IDs in the auth chain of the resolved state.
     pub auth_chain_ids: &'a [String],
-    /// Brief public API.
+    /// Auth-event graph over the loaded events.
     pub auth_graph: &'a rezzy::auth::roaring::AuthGraph,
-    /// Brief public API.
+    /// State resolution algorithm used.
     pub version: StateResVersion,
-    /// Brief public API.
+    /// Room version inferred from the input, if any.
     pub room_version: Option<&'a str>,
-    /// Brief public API.
+    /// Wall-clock time spent resolving.
     pub duration: std::time::Duration,
-    /// Brief public API.
+    /// Number of events loaded.
     pub event_count: usize,
-    /// Brief public API.
+    /// Stream ordering recovered from a provenance sidecar, if one was usable.
     pub stream_order: Option<&'a StreamOrderIndex>,
 }
 
@@ -72,11 +72,11 @@ fn format_structural_hash(hash: &StructuralHash) -> String {
 
 /// Output of a live event walk over the DAG.
 pub struct HamtLiveWalkOutput {
-    /// Brief public API.
+    /// Root handles produced by the walk.
     pub roots: Vec<rezzy::JsonValue>,
-    /// Brief public API.
+    /// HAMT nodes produced by the walk.
     pub nodes: Vec<rezzy::JsonValue>,
-    /// Brief public API.
+    /// Checkpoints recorded during the walk.
     pub checkpoints: Vec<rezzy::JsonValue>,
 }
 
@@ -1050,8 +1050,9 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
         // Record state at this event's prev_events (before applying this event)
         state_at_event.insert(ev.event_id.clone(), current_state.clone());
 
-        // Apply state events to current state
-        if ev.state_key.is_some() {
+        // Apply state events to current state. Rejected events never enter
+        // state; soft-failed ones still do, as in state resolution.
+        if ev.state_key.is_some() && !ev.rejected {
             current_state.insert(
                 (ev.event_type.clone(), ev.state_key.clone().unwrap()),
                 ev.clone(),
@@ -1293,7 +1294,7 @@ pub fn format_timeline_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
 }
 
 #[must_use]
-/// Brief public API.
+/// Prints the timestamp-ordered timeline to stderr and returns its summary as JSON.
 pub fn format_timeline_chronological_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     eprint!("{}", render_timeline_chronological(ctx));
     rezzy::json!({

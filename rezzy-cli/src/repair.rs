@@ -302,9 +302,9 @@ pub fn write_event_ids(path: &Path, ids: &[String]) -> Result<(), AppError> {
 /// Which reference list an event ID came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceKind {
-    /// Brief public API.
+    /// The `prev_events` field.
     PrevEvents,
-    /// Brief public API.
+    /// The `auth_events` field.
     AuthEvents,
 }
 
@@ -324,9 +324,9 @@ impl ReferenceKind {
 pub struct MissingReference {
     /// The referencing event (empty when it has no usable `event_id`).
     pub event_id: String,
-    /// Brief public API.
+    /// Which reference list the missing IDs came from.
     pub kind: ReferenceKind,
-    /// Brief public API.
+    /// Referenced event IDs absent from the scanned events.
     pub missing: Vec<String>,
 }
 

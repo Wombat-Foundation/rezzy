@@ -131,10 +131,21 @@ fn report_highest_shared_depths(per_file_refs: &[FileRefs], merged: &[rezzy::Jso
     );
 }
 
+/// Event ID of a `prev_events`/`auth_events` entry: a plain string, or the
+/// first element of a legacy `[event_id, hashes]` pair.
+fn ref_event_id(value: &rezzy::JsonValue) -> Option<&str> {
+    value.as_str().or_else(|| {
+        value
+            .as_array()
+            .and_then(|pair| pair.first())
+            .and_then(rezzy::JsonValue::as_str)
+    })
+}
+
 fn collect_refs(val: &rezzy::JsonValue, refs: &mut FileRefs, event_id: &str) {
     if let Some(auth) = val.get("auth_events").and_then(|a| a.as_array()) {
         for ae in auth {
-            if let Some(aid) = ae.as_str() {
+            if let Some(aid) = ref_event_id(ae) {
                 refs.auth_refs.insert(aid.to_owned());
             }
         }
@@ -142,7 +153,7 @@ fn collect_refs(val: &rezzy::JsonValue, refs: &mut FileRefs, event_id: &str) {
 
     if let Some(prev) = val.get("prev_events").and_then(|p| p.as_array()) {
         for pe in prev {
-            if let Some(pid) = pe.as_str() {
+            if let Some(pid) = ref_event_id(pe) {
                 refs.prev_refs.insert(pid.to_owned());
             }
         }
