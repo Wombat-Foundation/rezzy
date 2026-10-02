@@ -834,7 +834,7 @@ fn test_iterative_auth_chain() {
     msg.auth_events = vec!["$join".into()];
     let (accepted, rejected) = check_chain(&[create, join, msg]);
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
-    assert!(rejected.is_empty());
+    assert!(rejected.is_empty(), "unexpected rejections: {rejected:?}");
 }
 
 /// Rule 2.5: a citing event's `auth_events` entry pointing at an event with
@@ -1791,7 +1791,7 @@ fn test_auth_types_for_event() {
         StateResVersion::V2_1,
         "11",
     );
-    assert!(types.is_empty());
+    assert!(types.is_empty(), "unexpected types: {types:?}");
 
     let types = auth_types_for_event(
         "m.room.message",

@@ -78,10 +78,11 @@ pub fn detect_version(
     }
 
     if saw_create_event {
-        return Err(AppError::new(
-            ErrorCode::UnsupportedVersion,
-            "m.room.create event is missing content.room_version; the input is not self-describing",
-        ));
+        // Per the spec, a create event without `content.room_version` is room version 1.
+        if debug {
+            eprintln!("[DEBUG] m.room.create has no room_version; defaulting to 1");
+        }
+        return parse_room_version("1");
     }
 
     bail_code!(

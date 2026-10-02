@@ -227,7 +227,7 @@ composes with a resolved-state report:
 
 ```sh
 cargo run --release -p rezzy-cli --bin rezzy -- -f resolve-state \
-  --input-dir unmerged --room c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk \
+  --input unmerged/c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk.jsonl \
   | cargo run --release -p rezzy-cli --bin rezzy -- hash lthash --input -
 ```
 

@@ -129,11 +129,9 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
         // universe of exactly that many distinct items on its last one, even
         // though its highest assigned index (`Idx::MAX`) fits.
         //
-        // Cast to `usize` before adding 1: `Idx::MAX.saturating_add(1)` would
-        // saturate for fixed-width types (e.g. `u32::MAX + 1` wraps to
-        // `u32::MAX`), silently losing one addressable slot. For `Idx = usize`,
-        // the cast is a no-op and `usize::MAX + 1` overflows; saturating keeps
-        // the bound at `usize::MAX`, which no real universe reaches.
+        // `Idx::MAX` is a `usize` for every width, so `saturating_add(1)` gives the
+        // exact slot count (`Idx::MAX + 1`) for `u8`/`u32` indices. Only the `usize`
+        // impl saturates, at `usize::MAX`, which no real universe reaches.
         let bound = Idx::MAX.saturating_add(1);
         Self::try_build_bounded(universe, bound)
     }
