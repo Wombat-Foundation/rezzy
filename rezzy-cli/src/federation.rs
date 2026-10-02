@@ -22,6 +22,39 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Overall timeout for outbound federation requests (connect + transfer).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Environment variable that permits credential-bearing requests over plaintext
+/// `http://`. Meant for local development against a test homeserver only.
+const ALLOW_INSECURE_HTTP_ENV: &str = "REZZY_ALLOW_INSECURE_HTTP";
+
+/// SRV-delegated connection targets, keyed by the `host:port` the request URL
+/// names (`<logical server>:443`) and valued by the `host:port` to dial.
+///
+/// Matrix requires the TLS handshake and `Host` header to keep the *logical*
+/// server name even when SRV points at another machine, so the URL is never
+/// rewritten; only the address the connection is made to is.
+fn srv_targets() -> &'static Mutex<BTreeMap<String, String>> {
+    static TARGETS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    TARGETS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Resolver that dials an SRV target while the URL keeps the logical host.
+struct SrvResolver;
+
+impl ureq::Resolver for SrvResolver {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        use std::net::ToSocketAddrs;
+        let target = srv_targets()
+            .lock()
+            .ok()
+            .and_then(|targets| targets.get(netloc).cloned());
+        target
+            .as_deref()
+            .unwrap_or(netloc)
+            .to_socket_addrs()
+            .map(Iterator::collect)
+    }
+}
+
 /// Process-wide `ureq` agent with the federation timeouts applied.
 ///
 /// Request-level `.timeout_connect()` is ignored by `ureq`'s global agent, so
@@ -30,6 +63,7 @@ fn federation_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
+            .resolver(SrvResolver)
             .timeout_connect(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -437,7 +471,12 @@ fn srv_lookup(destination: &str) -> Option<String> {
     for service in ["_matrix-fed._tcp", "_matrix._tcp"] {
         let name = format!("{service}.{destination}");
         if let Some((target, port)) = dig_srv(&name) {
-            return Some(format!("https://{target}:{port}"));
+            if let Ok(mut targets) = srv_targets().lock() {
+                targets.insert(format!("{destination}:443"), format!("{target}:{port}"));
+            }
+            // Keep the logical name in the URL so `Host` and the certificate
+            // check use it; `SrvResolver` supplies the SRV target's address.
+            return Some(format!("https://{destination}"));
         }
     }
     None
@@ -532,7 +571,16 @@ pub fn request(
     if url.starts_with("https://") {
         return Err(AppError::new(
             ErrorCode::NetworkError,
-            "HTTPS request requires the `tls` feature; rebuild rezzy-cli with `--features tls` or use http://",
+            "HTTPS request requires the `tls` feature; rebuild rezzy-cli with `--features tls` (plaintext http:// also needs REZZY_ALLOW_INSECURE_HTTP=1)",
+        ));
+    }
+    if url.starts_with("http://") && std::env::var(ALLOW_INSECURE_HTTP_ENV).as_deref() != Ok("1") {
+        return Err(AppError::new(
+            ErrorCode::NetworkError,
+            format!(
+                "refusing to send a signed request over plaintext HTTP to {destination}; \
+                 use https, or set {ALLOW_INSECURE_HTTP_ENV}=1 for local development"
+            ),
         ));
     }
     let agent = federation_agent();

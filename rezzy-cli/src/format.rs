@@ -1001,6 +1001,9 @@ fn render_timeline_chronological(ctx: &FormattingContext<'_>) -> String {
     render_timeline_events(ctx, &events, &order)
 }
 
+/// Room state keyed by `(type, state_key)`.
+type State = RoomState<String, rezzy::JsonValue, String>;
+
 /// Collect events and apply only authorized redactions.
 fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
     // Owned copy of the events so the authorized redaction pass can mutate the
@@ -1023,41 +1026,68 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
     // incremental state building.
     sorted_events.sort_by(rezzy::LeanEvent::cmp_by_depth);
 
-    // Build per-event room state by replaying state events in depth order.
-    // This gives us the state at each event's `prev_events` for proper
-    // redaction authorization per the Matrix spec.
-    let mut state_at_event: HashMap<String, RoomState<String, rezzy::JsonValue, String>> =
-        HashMap::new();
-    let mut current_state: RoomState<String, rezzy::JsonValue, String> = RoomState::new();
+    // Build per-event room state along the DAG: an event's state is the merge of
+    // its `prev_events`' post-states, so sibling branches never leak into each
+    // other. Events are visited in depth order, which puts parents first for any
+    // honest `depth`; a parent not yet visited is ignored.
+    let mut state_at_event: HashMap<String, State> = HashMap::new();
+    let mut state_after_event: HashMap<String, State> = HashMap::new();
 
-    // Initialize with the create event state if available
-    if let Some(create_eid) = ctx
+    // Starting state for events with no known parent: the resolved create event.
+    let mut base_state: State = RoomState::new();
+    if let Some(create_ev) = ctx
         .final_state_map
         .get(&(EventType::from("m.room.create"), String::new()))
+        .and_then(|create_eid| ctx.events_map.get(create_eid))
     {
-        if let Some(create_ev) = ctx.events_map.get(create_eid) {
-            current_state.insert(
-                (
-                    create_ev.event_type.clone(),
-                    create_ev.state_key.clone().unwrap_or_default(),
-                ),
-                create_ev.clone(),
-            );
-        }
+        base_state.insert(
+            (
+                create_ev.event_type.clone(),
+                create_ev.state_key.clone().unwrap_or_default(),
+            ),
+            create_ev.clone(),
+        );
     }
 
+    let rank = |ev: &LeanEvent| (ev.depth, ev.origin_server_ts, ev.event_id.clone());
     for ev in &sorted_events {
-        // Record state at this event's prev_events (before applying this event)
-        state_at_event.insert(ev.event_id.clone(), current_state.clone());
+        let mut parents: Vec<&LeanEvent> = ev
+            .prev_events
+            .iter()
+            .filter(|id| state_after_event.contains_key(*id))
+            .filter_map(|id| ctx.events_map.get(id))
+            .collect();
+        parents.sort_by_key(|parent| rank(parent));
+        let mut before: State = match parents.as_slice() {
+            [] => base_state.clone(),
+            [only] => state_after_event[&only.event_id].clone(),
+            many => {
+                // Several parents: for each key keep the highest-ranked event
+                // (depth, then timestamp, then ID) as a deterministic stand-in
+                // for full resolution.
+                let mut merged: State = RoomState::new();
+                for parent in many {
+                    for (key, candidate) in &state_after_event[&parent.event_id] {
+                        let wins = merged
+                            .get(key)
+                            .map_or(true, |existing| rank(existing) < rank(candidate));
+                        if wins {
+                            merged.insert(key.clone(), candidate.clone());
+                        }
+                    }
+                }
+                merged
+            }
+        };
+        // Record state at this event's prev_events (before applying this event).
+        state_at_event.insert(ev.event_id.clone(), before.clone());
 
-        // Apply state events to current state. Rejected events never enter
-        // state; soft-failed ones still do, as in state resolution.
-        if ev.state_key.is_some() && !ev.rejected {
-            current_state.insert(
-                (ev.event_type.clone(), ev.state_key.clone().unwrap()),
-                ev.clone(),
-            );
+        // Rejected events never enter state; soft-failed ones still do, as in
+        // state resolution.
+        if let (Some(state_key), false) = (&ev.state_key, ev.rejected) {
+            before.insert((ev.event_type.clone(), state_key.clone()), ev.clone());
         }
+        state_after_event.insert(ev.event_id.clone(), before);
     }
 
     // Apply redactions using per-redaction state at each redaction's prev_events.
