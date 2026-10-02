@@ -898,6 +898,7 @@ mod tests {
     use super::*;
     use alloc::string::String;
     use alloc::vec::Vec;
+    use std::println;
 
     type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
 
