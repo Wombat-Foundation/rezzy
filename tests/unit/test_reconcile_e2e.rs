@@ -470,7 +470,7 @@ fn colliding_h64_is_never_resolved_by_the_verified_exchange() {
 
 /// Whether `h64` falls in the node `(depth, prefix)`.
 fn in_node(h64: u64, (depth, prefix): (u8, u64)) -> bool {
-    depth == 0 || h64 >> (64 - u32::from(depth)) == prefix
+    depth == 0 || h64.checked_shr(64_u32.saturating_sub(u32::from(depth))) == Some(prefix)
 }
 
 /// The opposite-sides collision: X is held only locally, Y only remotely, and
