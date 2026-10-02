@@ -483,6 +483,21 @@ pub fn key(value: &str) -> String {
     value.to_string()
 }
 
+/// Character for a single-letter JSON escape (`\n`, `\"`, ...), excluding `\u`.
+const fn simple_escape(escape: u8) -> Option<char> {
+    Some(match escape {
+        b'"' => '"',
+        b'\\' => '\\',
+        b'/' => '/',
+        b'b' => '\u{8}',
+        b'f' => '\u{c}',
+        b'n' => '\n',
+        b'r' => '\r',
+        b't' => '\t',
+        _ => return None,
+    })
+}
+
 /// Appends `value` to `out` as a quoted, escaped JSON string.
 fn write_string(out: &mut String, value: &str) -> fmt::Result {
     use fmt::Write as _;
@@ -1471,19 +1486,11 @@ pub fn unescape_raw_string(input: &[u8], out: &mut String) -> Result<(), Tokeniz
             let esc = *input.get(pos).ok_or(TokenizerError::UnexpectedEnd)?;
             pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
             match esc {
-                b'"' => out.push('"'),
-                b'\\' => out.push('\\'),
-                b'/' => out.push('/'),
-                b'b' => out.push('\u{8}'),
-                b'f' => out.push('\u{c}'),
-                b'n' => out.push('\n'),
-                b'r' => out.push('\r'),
-                b't' => out.push('\t'),
                 b'u' => {
                     let c = decode_unicode_escape(input, &mut pos)?;
                     out.push(c);
                 }
-                _ => return Err(TokenizerError::InvalidEscape),
+                _ => out.push(simple_escape(esc).ok_or(TokenizerError::InvalidEscape)?),
             }
             start = pos;
         } else {
@@ -1893,16 +1900,8 @@ impl Parser<'_> {
                     let escaped = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
                     self.pos += 1;
                     match escaped {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{8}'),
-                        b'f' => out.push('\u{c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
                         b'u' => out.push(self.unicode_escape()?),
-                        _ => return Err(Error::InvalidEscape),
+                        _ => out.push(simple_escape(escaped).ok_or(Error::InvalidEscape)?),
                     }
                     start = self.pos;
                 }
