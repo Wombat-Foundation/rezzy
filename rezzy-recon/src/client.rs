@@ -266,9 +266,12 @@ impl BucketExchange {
 
     /// Starts an exchange that re-runs only the children of `nodes`, for
     /// example nodes whose phase 2 failed, so a loss is narrowed the way a
-    /// phase-1 failure is. Each node comes with the responder summary it was
-    /// verified against, which seeds the split-consistency check on its
-    /// children. Returns the exchange (one round already counted) and the
+    /// phase-1 failure is. Each [`Classified`] carries the responder summary it
+    /// was verified against, which seeds the split-consistency check on its
+    /// children.
+    ///
+    /// `max_rounds` should be the caller's remaining budget, shared across
+    /// passes: subtract [`Self::rounds_emitted`] from it after each pass. Returns the exchange (one round already counted) and the
     /// first round's requests; children that do not fit the per-round caps are
     /// queued in the pending frontier, as in a normal exchange.
     ///
@@ -279,13 +282,14 @@ impl BucketExchange {
     /// Returns an error if a node cannot be split (already at the depth cap),
     /// the nodes are not an antichain, or a single request exceeds the caps.
     pub fn narrow(
-        nodes: &[((u8, u64), NodeSummary)],
+        nodes: &[Classified],
         max_rounds: usize,
         max_buckets_per_round: usize,
         max_aggregate_capacity: usize,
     ) -> Result<(Self, alloc::vec::Vec<BucketRequest>), AlgebraicError> {
         let mut all = alloc::vec::Vec::new();
-        for &((depth, prefix), _) in nodes {
+        for node in nodes {
+            let (depth, prefix) = node.node();
             let parent = BucketRequest::new(depth, prefix, MAX_BUCKET_SKETCH_CAPACITY);
             let children = retry_or_split_bucket(&parent, 0, true)
                 .map_err(|_| AlgebraicError::InvalidBucketIndex)?;
@@ -301,7 +305,7 @@ impl BucketExchange {
         );
         exchange.parents = nodes
             .iter()
-            .map(|&((depth, prefix), summary)| (depth, prefix, summary))
+            .map(|c| (c.node().0, c.node().1, c.remote_summary()))
             .collect();
         exchange.pending = all.into();
         let first = exchange
@@ -1931,11 +1935,17 @@ mod tests {
         assert!(exchange.ladder_failed().is_empty());
     }
 
+    /// A node verified with equal summaries on both sides and no roots.
+    fn classify(depth: u8, prefix: u64, s: NodeSummary) -> Classified {
+        let request = BucketRequest::new(depth, prefix, 8);
+        crate::verify::verify_decode(&request, s, s, &[], |_| vec![]).unwrap()
+    }
+
     /// `narrow` re-runs just the children of the given nodes.
     #[test]
     fn narrow_requests_the_children_of_each_node() {
         let (exchange, requests) = BucketExchange::narrow(
-            &[((2, 1), summary(100, 7))],
+            &[classify(2, 1, summary(100, 7))],
             MAX_RECONCILIATION_ROUNDS,
             MAX_BUCKETS_PER_ROUND,
             MAX_BUCKETED_SKETCH_CAPACITY,
@@ -1952,16 +1962,23 @@ mod tests {
         // A node at the depth cap cannot be narrowed, and overlapping nodes
         // are not an antichain.
         let s = summary(1, 1);
-        assert!(BucketExchange::narrow(&[((crate::MAX_DEPTH, 0), s)], 20, 8, 4096).is_err());
-        assert!(BucketExchange::narrow(&[((1, 0), s), ((2, 0), s)], 20, 8, 4096).is_err());
+        let at_cap = classify(crate::MAX_DEPTH, 0, s);
+        assert!(BucketExchange::narrow(&[at_cap], 20, 8, 4096).is_err());
+        let overlapping = [classify(1, 0, s), classify(2, 0, s)];
+        assert!(BucketExchange::narrow(&overlapping, 20, 8, 4096).is_err());
     }
 
     /// Children beyond the per-round cap are queued, not an error.
     #[test]
     fn narrow_queues_children_beyond_the_round_cap() {
         let s = summary(100, 7);
-        let (exchange, requests) =
-            BucketExchange::narrow(&[((2, 0), s), ((2, 1), s), ((2, 2), s)], 20, 2, 4096).unwrap();
+        let (exchange, requests) = BucketExchange::narrow(
+            &[classify(2, 0, s), classify(2, 1, s), classify(2, 2, s)],
+            20,
+            2,
+            4096,
+        )
+        .unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(exchange.pending_len(), 4);
     }
@@ -1971,7 +1988,7 @@ mod tests {
     #[test]
     fn narrow_checks_split_consistency_of_its_children() {
         let (mut exchange, requests) =
-            BucketExchange::narrow(&[((2, 1), summary(10, 0xff))], 20, 8, 4096).unwrap();
+            BucketExchange::narrow(&[classify(2, 1, summary(10, 0xff))], 20, 8, 4096).unwrap();
         let (a, b) = (summary(5, 1), summary(5, 2));
         let mut batch = success(3, 2, &[]);
         batch
@@ -1986,11 +2003,7 @@ mod tests {
     /// The phase-2 stop rule mirrors phase 1's: large, splittable, budget left.
     #[test]
     fn should_narrow_follows_the_phase_one_limits() {
-        let classify = |depth: u8, count: u64| {
-            let request = BucketRequest::new(depth, 0, 8);
-            let s = summary(count, 0);
-            crate::verify::verify_decode(&request, s, s, &[], |_| vec![]).unwrap()
-        };
+        let classify = |depth: u8, count: u64| classify(depth, 0, summary(count, 0));
         assert!(should_narrow(&classify(2, 1_000), 10));
         assert!(!should_narrow(
             &classify(2, COLLISION_GIVE_UP_POPULATION),

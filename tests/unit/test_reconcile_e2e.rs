@@ -317,11 +317,6 @@ impl Side {
         }
     }
 
-    /// The summary of one node of this side's population.
-    fn node_summary(&self, node: (u8, u64)) -> NodeSummary {
-        build_bucket_nodes(&self.population, &[BucketRequest::new(node.0, node.1, 1)]).unwrap()[0].1
-    }
-
     /// The multi-valued `h64 -> h128` map.
     fn candidates(&self, root: u64) -> Vec<u128> {
         self.population.candidates(root).to_vec()
@@ -656,24 +651,22 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
     let mut pending: Vec<Classified> = failed.into_iter().cloned().collect();
     let mut lost: Vec<(u8, u64)> = Vec::new();
     let mut passes = 0;
+    let mut rounds_left = MAX_RECONCILIATION_ROUNDS;
     while !pending.is_empty() {
         // Same stop rule as phase 1: small or unsplittable nodes go to the
         // caller's per-prefix fallback instead of another pass.
         let (narrowable, fallback): (Vec<_>, Vec<_>) = pending
             .iter()
-            .partition(|c| should_narrow(c, MAX_RECONCILIATION_ROUNDS - passes));
+            .partition(|c| should_narrow(c, rounds_left));
         lost.extend(fallback.iter().map(|c| c.node()));
         if narrowable.is_empty() {
             break;
         }
         passes += 1;
-        let nodes: Vec<((u8, u64), NodeSummary)> = narrowable
-            .iter()
-            .map(|c| (c.node(), remote.node_summary(c.node())))
-            .collect();
+        let nodes: Vec<Classified> = narrowable.into_iter().cloned().collect();
         let (exchange, requests) = BucketExchange::narrow(
             &nodes,
-            MAX_RECONCILIATION_ROUNDS,
+            rounds_left,
             MAX_BUCKETS_PER_ROUND,
             MAX_BUCKETED_SKETCH_CAPACITY,
         )
@@ -683,6 +676,7 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
             panic!("expected a partial resolve, got {action:?}");
         };
         lost.extend(ladder_failed);
+        rounds_left = rounds_left.saturating_sub(exchange.rounds_emitted());
         let (good, failed) = phase_two(&exchange, &remote_extra);
         recovered.extend(good);
         pending = failed.into_iter().cloned().collect();

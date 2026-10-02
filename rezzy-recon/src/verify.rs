@@ -38,20 +38,31 @@ pub struct Classified {
     prefix: u64,
     l_roots: Vec<u64>,
     m_roots: Vec<u64>,
-    /// `D_A xor D_B` for this node.
-    residual: u128,
     /// XOR of every local `h128` candidate under an `L` root.
     local_accumulated: u128,
-    /// Local and remote element counts of the node.
-    local_count: u64,
-    remote_count: u64,
+    /// The summaries this node was verified against. The remote one is what
+    /// the peer claimed, and seeds split consistency if the node is narrowed.
+    local: NodeSummary,
+    remote: NodeSummary,
 }
 
 impl Classified {
+    /// The responder's summary of this node, as claimed in the exchange.
+    #[must_use]
+    pub const fn remote_summary(&self) -> NodeSummary {
+        self.remote
+    }
+
+    /// `D_A xor D_B` for this node.
+    #[must_use]
+    pub const fn residual(&self) -> u128 {
+        self.local.digest ^ self.remote.digest
+    }
+
     /// The larger side's element count for the node.
     #[must_use]
     pub fn population(&self) -> u64 {
-        self.local_count.max(self.remote_count)
+        self.local.count.max(self.remote.count)
     }
 
     /// The node's `(depth, prefix)`.
@@ -145,10 +156,9 @@ where
         prefix: request.prefix,
         l_roots,
         m_roots,
-        residual,
         local_accumulated,
-        local_count: local.count,
-        remote_count: remote.count,
+        local,
+        remote,
     })
 }
 
@@ -262,7 +272,7 @@ pub fn verify_follow_up(
     // Equal lengths plus no repeat means every root is covered exactly once.
     let remote_hashes: Vec<u128> = returned.iter().map(|e| e.h128).collect();
     ReconciliationClient::verify_global_residual(
-        classified.residual,
+        classified.residual(),
         &[classified.local_accumulated],
         &remote_hashes,
     )
