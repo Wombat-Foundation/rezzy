@@ -1568,38 +1568,46 @@ mod tests {
         );
     }
 
+    /// Renders `events` as a timeline against `final_state_map`.
+    fn render_timeline_of(
+        events: &[LeanEvent],
+        final_state_map: &imbl::OrdMap<(EventType, String), String>,
+    ) -> String {
+        let mut events_map = HashMap::new();
+        for ev in events {
+            events_map.insert(ev.event_id.clone(), ev.clone());
+        }
+        let args = test_args(OutputFormat::Timeline);
+        let raw_map = HashMap::new();
+        let heads = Vec::new();
+        let resolved_state_list: Vec<String> = Vec::new();
+        let auth_chain_ids: Vec<String> = Vec::new();
+        let auth_graph = build_auth_graph(&events_map);
+        let ctx = formatting_context(
+            Some("11"),
+            std::time::Duration::from_millis(0),
+            events.len(),
+            &args,
+            &events_map,
+            &raw_map,
+            &heads,
+            final_state_map,
+            &resolved_state_list,
+            &auth_chain_ids,
+            &auth_graph,
+        );
+        render_timeline(&ctx)
+    }
+
     /// The CLI timeline applies a redaction only when it is authorized against
     /// the resolved room state: an unrelated sender with no `redact` power must
     /// not strip the target, while the target's own sender may.
     #[test]
     fn timeline_redaction_requires_authorization() {
         let render = |events: Vec<LeanEvent>| -> String {
-            let mut events_map = HashMap::new();
-            for ev in &events {
-                events_map.insert(ev.event_id.clone(), ev.clone());
-            }
-            let args = test_args(OutputFormat::Timeline);
-            let raw_map = HashMap::new();
-            let heads = Vec::new();
             let mut final_state_map = imbl::OrdMap::new();
             final_state_map.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
-            let resolved_state_list: Vec<String> = Vec::new();
-            let auth_chain_ids: Vec<String> = Vec::new();
-            let auth_graph = build_auth_graph(&events_map);
-            let ctx = formatting_context(
-                Some("11"),
-                std::time::Duration::from_millis(0),
-                events.len(),
-                &args,
-                &events_map,
-                &raw_map,
-                &heads,
-                &final_state_map,
-                &resolved_state_list,
-                &auth_chain_ids,
-                &auth_graph,
-            );
-            render_timeline(&ctx)
+            render_timeline_of(&events, &final_state_map)
         };
 
         let pl: LeanEvent = LeanEvent {
@@ -1742,31 +1750,7 @@ mod tests {
             msg,
             redact,
         ];
-        let mut events_map = HashMap::new();
-        for ev in &events {
-            events_map.insert(ev.event_id.clone(), ev.clone());
-        }
-        let args = test_args(OutputFormat::Timeline);
-        let raw_map = HashMap::new();
-        let heads = Vec::new();
-        let final_state_map = imbl::OrdMap::new();
-        let resolved_state_list: Vec<String> = Vec::new();
-        let auth_chain_ids: Vec<String> = Vec::new();
-        let auth_graph = build_auth_graph(&events_map);
-        let ctx = formatting_context(
-            Some("11"),
-            std::time::Duration::from_millis(0),
-            events.len(),
-            &args,
-            &events_map,
-            &raw_map,
-            &heads,
-            &final_state_map,
-            &resolved_state_list,
-            &auth_chain_ids,
-            &auth_graph,
-        );
-        let out = render_timeline(&ctx);
+        let out = render_timeline_of(&events, &imbl::OrdMap::new());
         assert!(
             !out.contains("secret"),
             "redaction authorized by the resolved power levels must apply; got: {out:?}"
