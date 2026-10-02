@@ -2,7 +2,7 @@
 
 use blake3::{
     digest::{consts::U32, Digest},
-    Blake3b,
+    Blake3,
 };
 use core::hash::Hasher;
 
