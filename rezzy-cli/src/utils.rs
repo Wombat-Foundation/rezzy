@@ -888,6 +888,32 @@ mod tests {
         );
     }
 
+    fn shared_state(entries: &[(&str, &str, &str)]) -> SharedStateMap {
+        std::sync::Arc::new(
+            entries
+                .iter()
+                .map(|(typ, key, id)| (((*typ).into(), (*key).to_string()), (*id).to_string()))
+                .collect(),
+        )
+    }
+
+    fn resolve_indexed(
+        parents: &[SharedStateMap],
+        events: &HashMap<String, LeanEvent>,
+    ) -> SharedStateMap {
+        let reachability =
+            rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(events);
+        let mut caches =
+            rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(StateResVersion::V2_1);
+        resolve_parent_states(
+            parents,
+            events,
+            StateResVersion::V2_1,
+            &reachability,
+            &mut caches,
+        )
+    }
+
     /// Regression guard: resolving a fork through the shared reachability
     /// index must produce exactly the same state as the plain full-context
     /// resolver.
@@ -910,47 +936,19 @@ mod tests {
 {"event_id":"$unrelated","type":"m.room.message","sender":"@a:x","depth":3,"content":{"body":"x"},"prev_events":["$pl_a"],"auth_events":["$create","$pl_a"]}
 "#,
         );
-        let state_a: SharedStateMap = std::sync::Arc::new(
-            [
-                (EventType::from("m.room.create"), String::new(), "$create"),
-                (
-                    EventType::from("m.room.power_levels"),
-                    String::new(),
-                    "$pl_a",
-                ),
-                (EventType::from("m.room.member"), "@a:x".to_string(), "$ma"),
-            ]
-            .into_iter()
-            .map(|(typ, key, id)| ((typ, key), id.to_string()))
-            .collect(),
-        );
-        let state_b: SharedStateMap = std::sync::Arc::new(
-            [
-                (EventType::from("m.room.create"), String::new(), "$create"),
-                (
-                    EventType::from("m.room.power_levels"),
-                    String::new(),
-                    "$pl_b",
-                ),
-                (EventType::from("m.room.member"), "@b:x".to_string(), "$mb"),
-            ]
-            .into_iter()
-            .map(|(typ, key, id)| ((typ, key), id.to_string()))
-            .collect(),
-        );
+        let state_a: SharedStateMap = shared_state(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.power_levels", "", "$pl_a"),
+            ("m.room.member", "@a:x", "$ma"),
+        ]);
+        let state_b: SharedStateMap = shared_state(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.power_levels", "", "$pl_b"),
+            ("m.room.member", "@b:x", "$mb"),
+        ]);
 
         let parents = vec![state_a, state_b];
-        let reachability =
-            rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
-        let mut caches =
-            rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(StateResVersion::V2_1);
-        let indexed = resolve_parent_states(
-            &parents,
-            &events,
-            StateResVersion::V2_1,
-            &reachability,
-            &mut caches,
-        );
+        let indexed = resolve_indexed(&parents, &events);
 
         let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
         let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
@@ -990,53 +988,25 @@ mod tests {
 "#,
         );
 
-        let state_a: SharedStateMap = std::sync::Arc::new(
-            [
-                (EventType::from("m.room.create"), String::new(), "$create"),
-                (
-                    EventType::from("m.room.power_levels"),
-                    String::new(),
-                    "$pl_a",
-                ),
-                (EventType::from("m.room.member"), "@a:x".to_string(), "$ma"),
-                (EventType::from("m.room.topic"), String::new(), "$topic_a"),
-            ]
-            .into_iter()
-            .map(|(typ, key, id)| ((typ, key), id.to_string()))
-            .collect(),
-        );
-        let state_b: SharedStateMap = std::sync::Arc::new(
-            [
-                (EventType::from("m.room.create"), String::new(), "$create"),
-                (
-                    EventType::from("m.room.power_levels"),
-                    String::new(),
-                    "$pl_b",
-                ),
-                (EventType::from("m.room.member"), "@b:x".to_string(), "$mb"),
-                (EventType::from("m.room.topic"), String::new(), "$topic_b"),
-            ]
-            .into_iter()
-            .map(|(typ, key, id)| ((typ, key), id.to_string()))
-            .collect(),
-        );
+        let state_a: SharedStateMap = shared_state(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.power_levels", "", "$pl_a"),
+            ("m.room.member", "@a:x", "$ma"),
+            ("m.room.topic", "", "$topic_a"),
+        ]);
+        let state_b: SharedStateMap = shared_state(&[
+            ("m.room.create", "", "$create"),
+            ("m.room.power_levels", "", "$pl_b"),
+            ("m.room.member", "@b:x", "$mb"),
+            ("m.room.topic", "", "$topic_b"),
+        ]);
 
         let parents = vec![state_a, state_b];
         let bare: Vec<ResolvedState> = parents.iter().map(|s| s.as_ref().clone()).collect();
 
         let full = rezzy::resolve_state_maps(&bare, &events, StateResVersion::V2_1);
 
-        let reachability =
-            rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(&events);
-        let mut caches =
-            rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(StateResVersion::V2_1);
-        let borrowed = resolve_parent_states(
-            &parents,
-            &events,
-            StateResVersion::V2_1,
-            &reachability,
-            &mut caches,
-        );
+        let borrowed = resolve_indexed(&parents, &events);
 
         let filtered_events = auth_closure(&events, &parents);
         assert!(
