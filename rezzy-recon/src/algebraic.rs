@@ -501,7 +501,7 @@ impl SyndromeSketch {
         decoded: Vec<u64>,
         new_check: fn(usize) -> Result<Self, AlgebraicError>,
     ) -> Result<Vec<u64>, AlgebraicError> {
-        if decoded.contains(&0) {
+        if decoded.len() > self.capacity() || decoded.contains(&0) {
             return Err(AlgebraicError::DecodeFailure);
         }
         let mut check = new_check(self.capacity())?;
@@ -832,15 +832,42 @@ mod tests {
         assert_eq!(res, Err(AlgebraicError::BudgetExhausted));
     }
 
+    /// Fast unit test for the capacity-mismatch check itself: a
+    /// capacity-256 sketch must reject a 257-element decode even though
+    /// re-encoding those values would reproduce the sketch exactly
+    /// (`toggle` does not enforce capacity). The end-to-end variant of
+    /// this scenario is [`overflow_257_vs_256_capacity`], which is
+    /// ignored by default because it runs the full degree-256
+    /// factorization.
     #[test]
+    fn overflow_decode_rejects_more_values_than_capacity() {
+        let mut sketch = SyndromeSketch::new_overflow(256).unwrap();
+        for value in (1..=257u64).map(|i| i * 2 + 1) {
+            sketch.toggle(value).unwrap();
+        }
+        let decoded: Vec<u64> = (1..=257u64).map(|i| i * 2 + 1).collect();
+        assert_eq!(
+            sketch.validate_decoded(decoded, SyndromeSketch::new_overflow),
+            Err(AlgebraicError::DecodeFailure),
+            "257 decoded values must not be accepted for capacity 256"
+        );
+    }
+
+    /// End-to-end over-capacity decode (257 differences at capacity 256).
+    ///
+    /// Slow by design: it intentionally performs a full degree-256
+    /// factorization, and the 16M budget (`MAX_FACTOR_WORK`) is needed so
+    /// the run reaches a real `DecodeFailure` instead of exiting early
+    /// with `BudgetExhausted`. That makes it an expensive stress test of
+    /// the factoring path rather than a focused unit test of the
+    /// capacity-mismatch check (covered in microseconds by
+    /// [`overflow_decode_rejects_more_values_than_capacity`]). Note the
+    /// 16M budget covers observed/practical degree-256 inputs, not a
+    /// proven worst case -- see `MAX_FACTOR_WORK`'s comment in
+    /// `pinsketch.rs`. Ignored by default; run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "full degree-256 factorization; run with cargo test -- --ignored"]
     fn overflow_257_vs_256_capacity() {
-        // Budget must be large enough to reach the actual capacity-mismatch
-        // detection, not just exhaust on the factoring ladder -- otherwise
-        // this test can pass vacuously on `BudgetExhausted` without ever
-        // exercising the over-capacity check it claims to test. Measured
-        // cost of a full degree-256 decode is ~9.2-9.4M (see
-        // `MAX_FACTOR_WORK`'s comment); `MAX_FACTOR_WORK` itself is now
-        // comfortably above that, so it doubles as this test's budget.
         let mut sketch = SyndromeSketch::new_overflow(256).unwrap();
         for i in 1..=257u64 {
             sketch.toggle(i * 2 + 1).unwrap();
