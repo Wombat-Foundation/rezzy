@@ -467,3 +467,69 @@ fn colliding_h64_is_never_resolved_by_the_verified_exchange() {
         "the colliding root must never be admitted"
     );
 }
+
+/// Whether `h64` falls in the node `(depth, prefix)`.
+fn in_node(h64: u64, (depth, prefix): (u8, u64)) -> bool {
+    depth == 0 || h64 >> (64 - u32::from(depth)) == prefix
+}
+
+/// The opposite-sides collision: X is held only locally, Y only remotely, and
+/// they share an `h64` (mocked). The pair cancels in the sketch, the counts
+/// balance, and an honest remote-only element in the same node keeps the early
+/// residual check from running, so phase 1 admits the node. Only phase 2 can
+/// catch it -- after the exchange has ended with `ResolveRoots` -- and that
+/// failure is the caller's per-prefix fallback, not something the exchange can
+/// split or retry. Every other node still verifies.
+#[test]
+fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
+    let mut generator = Xorshift128::new(13);
+    let shared: Vec<ElementHash> = (0..200).map(|_| generator.hash()).collect();
+    // Enough honest differences to force several buckets, so siblings exist.
+    let local_extra: Vec<ElementHash> = (0..22).map(|_| generator.hash()).collect();
+    let mut remote_extra: Vec<ElementHash> = (0..22).map(|_| generator.hash()).collect();
+
+    let x = generator.hash();
+    let y = ElementHash {
+        h128: x.h128 ^ 0xfeed_face,
+        h64: x.h64,
+    };
+    // An honest remote-only element in the same node as the colliding pair.
+    let z = ElementHash {
+        h128: generator.hash().h128,
+        h64: x.h64 ^ 1,
+    };
+    remote_extra.push(z);
+
+    let local = Side::new([shared.clone(), local_extra, vec![x]].concat());
+    let remote = Side::new([shared, remote_extra.clone(), vec![y]].concat());
+
+    let (action, exchange) = run_verified(&local, &remote);
+    let ClientAction::ResolveRoots { roots } = action else {
+        panic!("phase 1 must admit the split pair, got {action:?}");
+    };
+    assert!(
+        !roots.contains(&x.h64),
+        "the pair cancelled, so no root may carry its h64"
+    );
+    assert!(exchange.classified().len() > 1, "need sibling nodes");
+
+    let mut rejected = Vec::new();
+    for classified in exchange.classified() {
+        let (depth, prefix) = classified.node();
+        let request = BucketRequest::new(depth, prefix, 8);
+        let returned: Vec<[u8; 32]> = remote_extra
+            .iter()
+            .filter(|e| classified.m_roots().contains(&e.h64))
+            .map(|e| digest_of(*e))
+            .collect();
+        if verify_follow_up(classified, &request, &returned).is_err() {
+            rejected.push(classified.node());
+        }
+    }
+    assert_eq!(
+        rejected.len(),
+        1,
+        "only the colliding node may fail phase 2"
+    );
+    assert!(in_node(x.h64, rejected[0]));
+}

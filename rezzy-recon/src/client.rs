@@ -193,6 +193,14 @@ impl BucketExchange {
 
     /// Like [`Self::advance`], but verifies each decoded node first.
     ///
+    /// This is phase 1 only. Phase 2 ([`crate::verify_follow_up`]) needs the
+    /// identifiers the peer returns for each node's `M`, so it runs *after*
+    /// the exchange ends in [`ClientAction::ResolveRoots`] and the exchange can
+    /// neither split nor retry on it. A phase-2 failure (for example an
+    /// opposite-sided `h64` pair, which cancels in the sketch and balances the
+    /// counts) is the caller's fallback for that node's prefix; the node's
+    /// siblings are unaffected.
+    ///
     /// `requests`, `local` and `remote` are the round's requests and the two
     /// sides' per-node summaries, index-aligned. A node that fails phase 1 is
     /// treated as a failed bucket, so it is retried or split on its own while
