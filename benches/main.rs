@@ -106,6 +106,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "math",
+        name: "lthash_comprehensive",
+        description: "BLAKE3 LtHash single, batch, bulk, and expansion cost breakdown",
+        run_fn: math::lthash_comprehensive::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
         name: "reconcile",
         description: "Set reconciliation (PinSketch/Minisketch) encoding & decoding",
         run_fn: math::reconcile::run,

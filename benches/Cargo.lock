@@ -1127,6 +1127,7 @@ name = "rezzy-benches"
 version = "0.6.0-rc.0"
 dependencies = [
  "base64",
+ "blake3",
  "ed25519-consensus",
  "ed25519-dalek",
  "imbl",

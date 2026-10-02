@@ -22,6 +22,8 @@ pub mod aggregate;
 pub mod federation;
 /// Brief public API.
 pub mod format;
+/// Brief public API.
+pub mod hash;
 pub mod inspect;
 /// Brief public API.
 pub mod jsonl_merge;
@@ -249,6 +251,7 @@ pub fn cli_command() -> clap::Command {
     #[cfg(feature = "tls")]
     let command = command.subcommand(federation::command());
     command
+        .subcommand(hash::command())
         .subcommand(inspect::command())
         .subcommand(repair::command())
         .subcommand(
@@ -687,6 +690,9 @@ pub fn main_entry() {
                 std::process::exit(1);
             }
         }
+    }
+    if let Some(("hash", hash_matches)) = matches.subcommand() {
+        print_json_command_result(hash::run_from_matches(hash_matches));
     }
     if let Some(("repair-ids", repair_matches)) = matches.subcommand() {
         print_json_command_result(repair::run_from_matches(repair_matches));

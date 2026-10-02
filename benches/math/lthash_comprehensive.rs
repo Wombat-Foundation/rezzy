@@ -8,7 +8,7 @@
 //! - Multi operations: batch insert/remove (varying batch sizes)
 //! - Large batch operations: bulk state construction
 //! - Input size variations: small (minimal), medium (typical), large (max event IDs)
-//! - Expansion backends: SHAKE256 (current), BLAKE3 XOF (proposed)
+//! - Expansion cost: the BLAKE3 XOF that seeds a lane, and the BLAKE3 collapse
 //! - SIMD vs scalar lattice arithmetic
 
 #![allow(
@@ -71,7 +71,6 @@ impl InputSize {
 
 /// Generate entries with configurable input size
 fn make_entries_with_size(n: usize, seed: u64, size: InputSize) -> Vec<(StateKey, String)> {
-    let mut rng = Xorshift128::new(seed);
     generate_unique_entries(
         n,
         seed,
@@ -82,12 +81,15 @@ fn make_entries_with_size(n: usize, seed: u64, size: InputSize) -> Vec<(StateKey
                 format!("@user{uid}:example.org"),
             )
         },
-        |rng| size.generate_event_id(rng, rng.next_u64() as usize),
+        |rng| {
+            let index = rng.next_u64() as usize;
+            size.generate_event_id(rng, index)
+        },
     )
 }
 
 /// Benchmark a single operation type
-fn bench_single_op<F>(name: &str, iterations: u32, mut op: F) -> Duration
+fn bench_single_op<F>(iterations: u32, mut op: F) -> Duration
 where
     F: FnMut(),
 {
@@ -115,7 +117,7 @@ fn bench_single_operations(size: InputSize) {
     println!("\n=== Single Operations (input size: {}) ===", size.name());
 
     // Seed generation (the dominant cost)
-    let mut rng = Xorshift128::new(0xSEED1);
+    let mut rng = Xorshift128::new(0x5EED_0001);
     let event_type = "m.room.member";
     let state_key = "@alice:example.org";
     let event_id = size.generate_event_id(&mut rng, 0);
@@ -123,14 +125,14 @@ fn bench_single_operations(size: InputSize) {
     let iterations = 10_000;
 
     // Benchmark seed() - the expansion function
-    let elapsed = bench_single_op("seed", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         black_box(LtHash::seed(event_type, state_key, &event_id));
     });
     println!("  seed()            : {}", format_ns_per_op(elapsed, iterations));
 
     // Benchmark insert (seed + add)
     let mut lt = LtHash::ZERO;
-    let elapsed = bench_single_op("insert", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         lt.insert(event_type, state_key, &event_id);
     });
     println!("  insert()          : {}", format_ns_per_op(elapsed, iterations));
@@ -139,14 +141,14 @@ fn bench_single_operations(size: InputSize) {
     let seed = LtHash::seed(event_type, state_key, &event_id);
     let mut lt = LtHash::ZERO;
     lt.add_seed(&seed);
-    let elapsed = bench_single_op("remove", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         lt.remove(event_type, state_key, &event_id);
     });
     println!("  remove()          : {}", format_ns_per_op(elapsed, iterations));
 
     // Benchmark replace (2 seeds + add + sub)
     let event_id2 = size.generate_event_id(&mut rng, 1);
-    let elapsed = bench_single_op("replace", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         black_box(LtHash::seed(event_type, state_key, &event_id));
         black_box(LtHash::seed(event_type, state_key, &event_id2));
     });
@@ -156,7 +158,7 @@ fn bench_single_operations(size: InputSize) {
     let seed1 = LtHash::seed(event_type, state_key, &event_id);
     let seed2 = LtHash::seed(event_type, state_key, &event_id2);
     let mut lt = LtHash::ZERO;
-    let elapsed = bench_single_op("add_lattice", iterations * 10, || {
+    let elapsed = bench_single_op(iterations * 10, || {
         lt.add_seed(&seed1);
         lt.add_seed(&seed2);
     });
@@ -164,19 +166,19 @@ fn bench_single_operations(size: InputSize) {
 
     // Benchmark lattice sub (just the arithmetic, no expansion)
     let mut lt = seed1;
-    let elapsed = bench_single_op("sub_lattice", iterations * 10, || {
+    let elapsed = bench_single_op(iterations * 10, || {
         lt.sub_seed(&seed2);
         lt.add_seed(&seed2);
     });
     println!("  sub_lattice (x2)  : {}", format_ns_per_op(elapsed, iterations * 10));
 
-    // Benchmark digest (BLAKE2b-256 collapse)
+    // Benchmark digest (BLAKE3 collapse)
     let mut lt = LtHash::ZERO;
     for i in 0..100 {
         let id = size.generate_event_id(&mut rng, i);
         lt.insert(event_type, state_key, &id);
     }
-    let elapsed = bench_single_op("digest", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         black_box(lt.digest());
     });
     println!("  digest()          : {}", format_ns_per_op(elapsed, iterations));
@@ -193,7 +195,7 @@ fn bench_batch_operations(size: InputSize) {
             continue;
         }
 
-        let mut rng = Xorshift128::new(0xBATCH_SEED + batch_size as u64);
+        let mut rng = Xorshift128::new(0xBA7C_0000 + batch_size as u64);
         let event_type = "m.room.member";
         let state_key = "@alice:example.org";
 
@@ -209,7 +211,6 @@ fn bench_batch_operations(size: InputSize) {
         let mut lt = LtHash::ZERO;
 
         let elapsed = bench_single_op(
-            &format!("batch_insert_{batch_size}"),
             iterations,
             || {
                 for seed in &seeds {
@@ -232,7 +233,6 @@ fn bench_batch_operations(size: InputSize) {
         }
 
         let elapsed = bench_single_op(
-            &format!("batch_remove_{batch_size}"),
             iterations,
             || {
                 for seed in &seeds {
@@ -261,12 +261,11 @@ fn bench_bulk_construction(size: InputSize) {
             continue;
         }
 
-        let entries = make_entries_with_size(state_size, 0xBULK_SEED + state_size as u64, size);
+        let entries = make_entries_with_size(state_size, 0xB01C_0000 + state_size as u64, size);
         let iterations = (1000 / (state_size / 16).max(1)) as u32;
 
         // Benchmark from_state (full state hashing)
         let elapsed = bench_single_op(
-            &format!("from_state_{state_size}"),
             iterations,
             || {
                 black_box(LtHash::from_state_map(&entries));
@@ -283,7 +282,6 @@ fn bench_bulk_construction(size: InputSize) {
 
         // Benchmark incremental build (insert one by one)
         let elapsed = bench_single_op(
-            &format!("incremental_build_{state_size}"),
             iterations,
             || {
                 let mut lt = LtHash::ZERO;
@@ -386,7 +384,6 @@ fn bench_incremental_mutations(size: InputSize) {
 fn bench_lattice_arithmetic() {
     println!("\n=== Lattice Arithmetic (SIMD vs Scalar) ===");
 
-    let mut rng = Xorshift128::new(0xLATTICE);
     let event_type = "m.room.member";
     let state_key = "@alice:example.org";
 
@@ -401,7 +398,7 @@ fn bench_lattice_arithmetic() {
 
     // Scalar add (current implementation - 8-lane unrolled)
     let mut lt = LtHash::ZERO;
-    let elapsed = bench_single_op("scalar_add_lattice", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         for seed in &seeds {
             lt.add_seed(seed);
         }
@@ -413,7 +410,7 @@ fn bench_lattice_arithmetic() {
 
     // Scalar sub
     let mut lt = seeds[0];
-    let elapsed = bench_single_op("scalar_sub_lattice", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         for seed in &seeds[1..] {
             lt.sub_seed(seed);
         }
@@ -425,7 +422,7 @@ fn bench_lattice_arithmetic() {
 
     // Scalar add + sub alternating
     let mut lt = LtHash::ZERO;
-    let elapsed = bench_single_op("scalar_add_sub_lattice", iterations, || {
+    let elapsed = bench_single_op(iterations, || {
         for (i, seed) in seeds.iter().enumerate() {
             if i % 2 == 0 {
                 lt.add_seed(seed);
@@ -440,57 +437,48 @@ fn bench_lattice_arithmetic() {
     );
 }
 
-/// Benchmark expansion function directly (SHAKE256 vs alternatives)
+/// Benchmark the two BLAKE3 halves of the engine: XOF expansion and collapse.
+///
+/// Expansion dominates `insert`/`remove`, and collapse dominates `digest`, so
+/// these two numbers explain nearly all of the per-element cost above. The
+/// pre-migration SHAKE256 backend is deliberately absent: it is no longer a
+/// code path, and keeping it here would only measure dead work.
 fn bench_expansion_backends(size: InputSize) {
-    println!("\n=== Expansion Backend Comparison (input size: {}) ===", size.name());
+    println!("\n=== BLAKE3 Expansion and Collapse (input size: {}) ===", size.name());
 
-    use sha3::digest::{ExtendableOutput, Update};
-    use sha3::Shake256;
-
-    let mut rng = Xorshift128::new(0xEXPAND);
+    let mut rng = Xorshift128::new(0x5EED);
     let event_type = "m.room.member";
     let state_key = "@alice:example.org";
     let event_id = size.generate_event_id(&mut rng, 0);
 
     let iterations = 10_000;
 
-    // Current SHAKE256 implementation
-    let elapsed = bench_single_op("SHAKE256 (current)", iterations, || {
-        let (et, type_len) = truncate_to_u16_limit(event_type);
-        let (sk, sk_len) = truncate_to_u16_limit(state_key);
-
-        let mut xof = Shake256::default();
-        xof.update(b"msc4500:lthash16:v1");
-        xof.update(&type_len.to_le_bytes());
-        xof.update(et.as_bytes());
-        xof.update(&sk_len.to_le_bytes());
-        xof.update(sk.as_bytes());
-        xof.update(event_id.as_bytes());
-
+    // The XOF half: hashing one encoded element and squeezing 2 * LANES bytes.
+    let elapsed = bench_single_op(iterations, || {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(LtHash::DST);
+        hasher.update(&(event_type.len() as u16).to_le_bytes());
+        hasher.update(event_type.as_bytes());
+        hasher.update(&(state_key.len() as u16).to_le_bytes());
+        hasher.update(state_key.as_bytes());
+        hasher.update(event_id.as_bytes());
         let mut buf = [0u8; 2048];
-        xof.finalize_xof_into(&mut buf);
+        hasher.finalize_xof().fill(&mut buf);
         black_box(buf);
     });
-    println!("  SHAKE256 (current): {}", format_ns_per_op(elapsed, iterations));
+    println!("  XOF expansion     : {}", format_ns_per_op(elapsed, iterations));
 
-    // Note: BLAKE3 and AES-NI benchmarks would require those crates
-    // For now, we just measure the current implementation
-    println!("  (BLAKE3 XOF and AES-NI benchmarks require additional dependencies)");
-}
-
-/// Helper function for truncating strings (copied from lthash.rs)
-fn truncate_to_u16_limit(s: &str) -> (&str, u16) {
-    let limit = usize::from(u16::MAX);
-    let s_len = s.len();
-    if s_len > limit {
-        let mut end = limit;
-        while !s.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        (&s[..end], u16::try_from(end).unwrap())
-    } else {
-        (s, u16::try_from(s_len).unwrap())
+    // The collapse half: one 2 KiB lattice in, 32 bytes out.
+    let mut lattice = LtHash::ZERO;
+    for i in 0..100 {
+        let id = size.generate_event_id(&mut rng, i);
+        lattice.insert(event_type, state_key, &id);
     }
+    let lattice_bytes = lattice.lattice_bytes();
+    let elapsed = bench_single_op(iterations, || {
+        black_box(blake3::Hasher::new().update(&lattice_bytes).finalize());
+    });
+    println!("  collapse          : {}", format_ns_per_op(elapsed, iterations));
 }
 
 /// Benchmark trait for extension - allows testing custom LtHash implementations

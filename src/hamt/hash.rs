@@ -1,9 +1,5 @@
 //! Structural hashing and state-group identity for HAMT nodes.
 
-use blake3::{
-    digest::{consts::U32, Digest},
-    Blake3,
-};
 use core::hash::Hasher;
 
 /// A 256-bit structural hash for HAMT nodes.
@@ -24,7 +20,7 @@ use core::hash::Hasher;
 /// and known in advance to anyone who can address the room. This is safe for
 /// HAMT routing because:
 ///
-/// - **BLAKE2b-256 is collision-resistant** at 128-bit security. Grinding
+/// - **BLAKE3 is collision-resistant** at 128-bit security. Grinding
 ///   a shallow-prefix collision (k levels of 5-bit agreement) costs
 ///   `2^(5k)` hash evaluations; for k ≤ ~10 this is practical (seconds),
 ///   but only causes O(depth) slowdown — the tree still terminates.
@@ -53,7 +49,7 @@ pub type StructuralHash = [u8; 32];
 /// must not be confused with the local-only `StructuralHash`.
 pub type StateGroupId = [u8; 32];
 
-/// Current codec version (1 = dense format with 32-byte structural hashes).
+/// Current codec version (1 = dense format with 32-byte BLAKE3 structural hashes).
 pub const HAMT_CODEC_VERSION: u8 = 1;
 /// Current routing version (1 = full keyed structural hash routing).
 pub const HAMT_ROUTING_VERSION: u8 = 1;
@@ -115,22 +111,23 @@ impl RootHandle {
     }
 }
 
-/// The parameterized BLAKE2b-256 variant, rather than a truncated BLAKE2b-512
-/// digest, makes the persisted structural-hash width explicit.
-type Blake2b256 = Blake2b<U32>;
-
-pub(crate) struct StructuralHashBuilder(Blake2b256);
+/// The structural-key-prefixed BLAKE3 builder.
+///
+/// BLAKE3's digest is a fixed 32 bytes, which is the width the persisted
+/// structural hash already used, so there is no truncation step and no
+/// parameterized digest type to carry around.
+pub(crate) struct StructuralHashBuilder(blake3::Hasher);
 
 impl StructuralHashBuilder {
     pub(crate) fn new(key: &[u8]) -> Self {
-        let mut hasher = Blake2b256::new();
-        hasher.update((key.len() as u64).to_le_bytes());
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&(key.len() as u64).to_le_bytes());
         hasher.update(key);
         Self(hasher)
     }
 
     pub(crate) fn finalize(self) -> StructuralHash {
-        self.0.finalize().into()
+        *self.0.finalize().as_bytes()
     }
 }
 
@@ -146,7 +143,7 @@ impl Hasher for StructuralHashBuilder {
 
 /// Computes the 32-byte state-group identifier from the full resolved lattice.
 ///
-/// This uses the `LtHash` digest, which is `BLAKE2b-256(lattice)`.
+/// This uses the `LtHash` digest, which is `BLAKE3(lattice)`.
 #[must_use]
 pub fn state_group_id_from_lthash(lattice: &crate::state::LtHash) -> StateGroupId {
     lattice.digest()

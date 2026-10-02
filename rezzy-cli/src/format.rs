@@ -1021,7 +1021,7 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
 
     // Sort events by depth to ensure parent-before-child ordering for
     // incremental state building.
-    sorted_events.sort_by(|a, b| a.cmp_by_depth(b));
+    sorted_events.sort_by(rezzy::LeanEvent::cmp_by_depth);
 
     // Build per-event room state by replaying state events in depth order.
     // This gives us the state at each event's `prev_events` for proper

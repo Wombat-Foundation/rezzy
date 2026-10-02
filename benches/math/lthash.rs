@@ -202,7 +202,7 @@ fn bench_incremental_hash(n: usize, steps: usize) {
         (synapse_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     println!(
-        "  LtHash (O(1), lattice add/sub + BLAKE2b digest) (n={n}): {:.1} ns/op",
+        "  LtHash (O(1), lattice add/sub + BLAKE3 digest) (n={n}): {:.1} ns/op",
         (lt_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     report_speedup("conduwuit-style", conduwuit_elapsed, lt_elapsed);

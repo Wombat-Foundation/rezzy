@@ -167,8 +167,8 @@ fn test_lthash_equal_does_not_mask_different_roots() {
     let root_a = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
     let root_b = rebuild_node(key, 1, 0, vec![(2, 200)], vec![]);
 
-    let lattice_a = LtHash([7u16; 1024]);
-    let lattice_b = LtHash([7u16; 1024]);
+    let lattice_a = LtHash::from_lanes([7u16; 1024]);
+    let lattice_b = LtHash::from_lanes([7u16; 1024]);
     let (added, removed) = isolate_delta(
         &root_a,
         &lattice_a,
@@ -204,7 +204,7 @@ fn test_isolate_delta_resolves_lazy_child() {
         &root_a,
         &LtHash::default(),
         &root_b,
-        &LtHash([1u16; 1024]),
+        &LtHash::from_lanes([1u16; 1024]),
         &mut resolver,
     )
     .expect("delta should resolve lazy child");
@@ -2667,7 +2667,7 @@ fn test_diff_nodes_and_lazy_resolver() {
 
     // Ensure lattice short-circuit does not fire
     let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let lattice_b = LtHash::from_lanes([1u16; 1024]);
 
     let mut resolve_called = false;
     let mut resolver = |hash: &StructuralHash| {
@@ -2791,7 +2791,7 @@ fn isolate_delta_default(root_a: &NodePtr<i32, i32>, root_b: &NodePtr<i32, i32>)
         root_a,
         &LtHash::default(),
         root_b,
-        &LtHash([1u16; 1024]),
+        &LtHash::from_lanes([1u16; 1024]),
         &mut panic_resolver,
     )
     .unwrap();
@@ -3148,7 +3148,7 @@ fn test_diff_nodes_fast_paths() {
     let node2 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
     let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let lattice_b = LtHash::from_lanes([1u16; 1024]);
 
     // -- Arc pointer equality --
     // node1 and node1 are the same Arc allocation.
@@ -3947,7 +3947,7 @@ fn assert_delta_matches_oracle(root_a: &Arc<HamtNode<u32, u32>>, root_b: &Arc<Ha
     let (mut want_added, mut want_removed) = oracle_delta(&leaves_a, &leaves_b);
 
     let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let lattice_b = LtHash::from_lanes([1u16; 1024]);
     let (mut got_added, mut got_removed) =
         isolate_delta(root_a, &lattice_a, root_b, &lattice_b, &mut infallible)
             .expect("isolate_delta should succeed against lazy-free fixtures");
@@ -4079,7 +4079,7 @@ fn test_isolate_delta_order_invariant_randomized() {
 
         let (mut want_added, mut want_removed) = oracle_delta(&map_a, &map_b);
         let lattice_a = LtHash::default();
-        let lattice_b = LtHash([1u16; 1024]);
+        let lattice_b = LtHash::from_lanes([1u16; 1024]);
         let (mut got_added, mut got_removed) =
             isolate_delta(&root_a, &lattice_a, &root_b, &lattice_b, &mut infallible)
                 .expect("isolate_delta should succeed against lazy-free random fixtures");

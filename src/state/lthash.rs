@@ -35,11 +35,23 @@
 //!
 //! The original draft expanded elements with SHAKE256 (FIPS 202). Squeezing
 //! 2048 bytes costs 16 `Keccak-f1600` permutations, and no mainstream CPU has
-//! a Keccak instruction, so expansion dominated every insert at roughly
-//! 99% of the per-element cost. BLAKE3 replaces it with an ARX construction
-//! that maps to the same SIMD paths on every target (AVX2/AVX-512 on x86,
-//! NEON on ARM, `simd128` on wasm), is constant-time by construction, and
-//! produces the same 2048 bytes in about 220ns instead of 5500ns.
+//! a Keccak instruction, so expansion dominated every insert. BLAKE3 replaces
+//! it with an ARX construction that maps to the same SIMD paths on every
+//! target (AVX2/AVX-512 on x86, NEON on ARM, `simd128` on wasm) and is
+//! constant-time by construction.
+//!
+//! The win is real but it is a constant factor, not an order of magnitude: on a
+//! 3.6 GHz Skylake-derived core this module squeezes 2048 bytes in roughly
+//! 1.8 us against roughly 5.5 us for the SHAKE256 path it replaces, so expect
+//! single-digit microseconds per seed rather than nanoseconds. Reproduce with
+//! `cargo bench --manifest-path benches/Cargo.toml -- lthash_comprehensive`,
+//! whose expansion section measures the XOF and the collapse separately.
+//!
+//! Note that the pinned `blake3` dependency keeps `default-features = false`,
+//! so expansion uses the portable backend. Enabling blake3's `std` feature
+//! turns on runtime SIMD detection; the digest is fixed by the BLAKE3 spec, so
+//! both backends agree byte for byte, and it was not measurably faster for the
+//! XOF path when measured here.
 //!
 //! The domain-separation tags are versioned `...:blake3:v1` so a digest
 //! produced by this module can never be confused with a SHAKE256
@@ -287,6 +299,16 @@ impl<const LANES: usize> LtLattice<LANES> {
     /// The identity element (empty state).
     pub const ZERO: Self = Self([0u16; LANES]);
 
+    /// Builds an accumulator directly from raw lanes.
+    ///
+    /// [`LtHash`] is a type alias for one instantiation of this type, and Rust does not
+    /// allow a type alias to be used as a tuple-struct constructor, so this is the
+    /// supported way to spell `LtHash([..])`.
+    #[must_use]
+    pub const fn from_lanes(lanes: [u16; LANES]) -> Self {
+        Self(lanes)
+    }
+
     /// Domain separation tag for the primary state accumulator.
     pub const DST: &'static [u8] = b"msc4500:lthash16:blake3:v1";
 
@@ -325,7 +347,7 @@ impl<const LANES: usize> LtLattice<LANES> {
 
     /// Compute the lane expansion for an opaque byte string under an explicit tag.
     ///
-    /// See [`seed_bytes_lattice`] for the encoding contract.
+    /// See the internal `seed_bytes_lattice` implementation for the encoding contract.
     #[must_use]
     pub fn seed_bytes(dst: &[u8], bytes: &[u8]) -> Self {
         Self(seed_bytes_lattice(dst, bytes))
@@ -333,7 +355,7 @@ impl<const LANES: usize> LtLattice<LANES> {
 
     /// Compute the lane expansion for one key-value field under an explicit tag.
     ///
-    /// See [`seed_field_lattice`] for the encoding contract.
+    /// See the internal `seed_field_lattice` implementation for the encoding contract.
     #[must_use]
     pub fn seed_field(dst: &[u8], key: &str, val: &str) -> Self {
         Self(seed_field_lattice(dst, key, val))
@@ -544,7 +566,7 @@ impl<const LANES: usize> LtLattice<LANES> {
     #[must_use]
     pub fn lattice_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.0.len().wrapping_mul(2));
-        for lane in self.0.iter() {
+        for lane in &self.0 {
             bytes.extend_from_slice(&lane.to_le_bytes());
         }
         bytes
@@ -600,14 +622,20 @@ impl<const LANES: usize> SubAssign for LtLattice<LANES> {
 impl<const LANES: usize> Sum for LtLattice<LANES> {
     #[inline]
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self::ZERO, |acc, item| acc + item)
+        iter.fold(Self::ZERO, |mut acc, item| {
+            add_lattice(&mut acc.0, &item.0);
+            acc
+        })
     }
 }
 
 impl<'a, const LANES: usize> Sum<&'a Self> for LtLattice<LANES> {
     #[inline]
     fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-        iter.fold(Self::ZERO, |acc, item| acc + *item)
+        iter.fold(Self::ZERO, |mut acc, item| {
+            add_lattice(&mut acc.0, &item.0);
+            acc
+        })
     }
 }
 
@@ -661,7 +689,7 @@ impl RedactionOverlay {
         state_key: &str,
         event_id: &(impl core::fmt::Display + ?Sized),
     ) -> Self {
-        Self(LtHash(seed_lattice(
+        Self(LtHash::from_lanes(seed_lattice(
             Self::DST,
             event_type,
             state_key,
@@ -731,7 +759,7 @@ pub struct PduLtHash {
 
 impl Default for PduLtHash {
     fn default() -> Self {
-        Self::new(&[])
+        Self::new([])
     }
 }
 
@@ -898,7 +926,6 @@ mod tests {
     use super::*;
     use alloc::string::String;
     use alloc::vec::Vec;
-    use std::println;
 
     type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
 
@@ -1142,8 +1169,8 @@ mod tests {
 
     #[test]
     fn test_lthash_algebraic_traits_match_seed_api() {
-        let a = LtHash::seed("m.room.create", "", "$c");
-        let b = LtHash::seed("m.room.member", "@a:x", "$m");
+        let a = LtHash::seed("m.room.create", "", &"$c");
+        let b = LtHash::seed("m.room.member", "@a:x", &"$m");
 
         let mut manual = LtHash::ZERO;
         manual.add_seed(&a);
@@ -1166,10 +1193,10 @@ mod tests {
         // Subtraction is the additive inverse: (a + b) - b == a.
         assert_eq!(manual - b + b, manual);
 
-        assert_eq!(<LtHash as Sum>::sum([a, b, a]), a + a + b);
+        assert_eq!(<LtHash as Sum>::sum([a, b, a].into_iter()), a + a + b);
         assert_eq!(
-            <LtHash as Sum<&LtHash>>::sum([&a, &b, &a]),
-            <LtHash as Sum>::sum([a, a, b])
+            <LtHash as Sum<&LtHash>>::sum([&a, &b, &a].into_iter()),
+            <LtHash as Sum>::sum([a, a, b].into_iter())
         );
     }
 
@@ -1207,14 +1234,23 @@ mod tests {
         tagged.insert_batch_with_dst(custom, rows);
         let mut tagged_one_by_one = LtHash::ZERO;
         for row in rows {
-            tagged_one_by_one.add_seed(&LtHash::seed_with_dst(custom, row.0, row.1, row.2));
+            tagged_one_by_one.add_seed(&LtHash::seed_with_dst(custom, row.0, row.1, &row.2));
         }
         assert_eq!(tagged, tagged_one_by_one);
         assert_ne!(tagged, one_by_one);
 
+        // Removal is the additive inverse, so undoing the tagged batch lands
+        // back on the identity, and removing without a prior insert yields the
+        // negated seeds rather than the identity.
+        tagged.remove_batch_with_dst(custom, rows);
+        assert_eq!(tagged, LtHash::ZERO);
+
         let mut untagged = LtHash::ZERO;
         untagged.remove_batch_with_dst(custom, rows);
-        assert_eq!(untagged, LtHash::ZERO);
+        assert_ne!(untagged, LtHash::ZERO);
+        let mut restored = untagged;
+        restored.insert_batch_with_dst(custom, rows);
+        assert_eq!(restored, LtHash::ZERO);
     }
 
     #[test]
@@ -1245,15 +1281,13 @@ mod tests {
         split_two.insert_field(b"rezzy:test:field", "a", "bc");
         assert_ne!(split_one, split_two);
 
-        // ... and the domain tag is part of the element identity.
-        let mut other_dst = LtHash::ZERO;
-        other_dst.insert_field(b"rezzy:test:other", "sender", "@alice:example.org");
-        assert_ne!(
-            other_dst,
-            LtHash::seed_field(b"rezzy:test:field", "sender", "@alice:example.org")
-                .into_iter()
-                .collect::<LtHash>()
-        );
+        // ... and the domain tag is part of the element identity, so the same
+        // field under a different tag is a different element.
+        let under_other_tag =
+            LtHash::seed_field(b"rezzy:test:other", "sender", "@alice:example.org");
+        let under_field_tag =
+            LtHash::seed_field(b"rezzy:test:field", "sender", "@alice:example.org");
+        assert_ne!(under_other_tag, under_field_tag);
 
         let mut r = LtHash::ZERO;
         r.insert_bytes(b"rezzy:test:bytes", b"old");
@@ -1283,26 +1317,33 @@ mod tests {
 
     #[test]
     fn test_lthash_non_default_lane_counts_work() {
-        // Exercises the generic paths with a lane count that is not a multiple
-        // of 8 (so the scalar remainder loop runs) and with the default.
-        for lanes in [2_usize, 7, 8, 9, 1024] {
-            let mut h = LtLattice::<lanes>::ZERO;
+        // Exercises the generic paths with lane counts that are and are not a
+        // multiple of 8 (so the scalar remainder loop runs) and with the default.
+        fn roundtrip<const LANES: usize>() {
+            let mut h = LtLattice::<LANES>::ZERO;
             h.insert("m.room.create", "", "$c");
             h.insert("m.room.member", "@a:x", "$m");
-            assert_ne!(h, LtLattice::<lanes>::ZERO);
+            assert_ne!(h, LtLattice::<LANES>::ZERO);
 
             let digest = h.digest();
             assert_eq!(h.finalize_both(), (h.into_lattice(), digest));
+            assert_eq!(h.lattice_bytes().len(), LANES.wrapping_mul(2));
 
             h.remove("m.room.create", "", "$c");
             h.remove("m.room.member", "@a:x", "$m");
-            assert_eq!(h, LtLattice::<lanes>::ZERO);
+            assert_eq!(h, LtLattice::<LANES>::ZERO);
             assert_ne!(h.digest(), digest);
         }
 
+        roundtrip::<2>();
+        roundtrip::<7>();
+        roundtrip::<8>();
+        roundtrip::<9>();
+        roundtrip::<1024>();
+
         // A wider lattice gives a wider accumulator and an independent digest.
-        let narrow = LtLattice::<8>::seed("m.room.create", "", "$c");
-        let wide = LtHash::seed("m.room.create", "", "$c");
+        let narrow = LtLattice::<8>::seed("m.room.create", "", &"$c");
+        let wide = LtHash::seed("m.room.create", "", &"$c");
         assert_ne!(narrow.digest(), wide.digest());
         assert_ne!(narrow.lattice_bytes().len(), wide.lattice_bytes().len());
     }
@@ -1343,20 +1384,22 @@ mod tests {
 
     /// Regression pins for the BLAKE3 instantiation (`msc4500:lthash16:blake3:v1`).
     ///
-    /// These are rezzy-derived values, not published MSC4500 vectors: MSC4500's own
-    /// vectors are pinned to SHAKE256 expansion plus BLAKE2b collapse, which this module
-    /// deliberately does not implement. Changing the expansion or the collapse function
-    /// changes every value below, so treat this as the place to re-derive them.
+    /// These are rezzy-derived values, not the published MSC4500 vectors: this module
+    /// implements a different expansion and collapse pair, as the module docs explain.
+    /// Changing the expansion, the collapse function, the domain tag, or the
+    /// length-delimited element encoding changes every value below, so treat this as the
+    /// place to re-derive them.
     #[test]
-    fn dump_lthash_blake3_vectors() {
+    fn blake3_lthash_vectors() {
         fn hex(bytes: &[u8]) -> String {
             use core::fmt::Write;
-            bytes
-                .iter()
-                .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            bytes.iter().fold(
+                String::with_capacity(bytes.len().wrapping_mul(2)),
+                |mut s, b| {
                     write!(s, "{b:02x}").unwrap();
                     s
-                })
+                },
+            )
         }
         fn b64u(bytes: &[u8]) -> String {
             use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -1366,57 +1409,85 @@ mod tests {
             hex(&hash.lattice_bytes()[..16])
         }
 
-        println!("EMPTY   {}", b64u(&LtHash::ZERO.digest()));
+        // The empty accumulator still collapses to a real digest rather than a
+        // special case, so a state that is empty and one that is merely
+        // unresolved stay distinguishable from anything non-empty.
+        assert_eq!(
+            b64u(&LtHash::ZERO.digest()),
+            "viqN49z0bJTOhc3I4HrDCPTYqVSQ2VbDjXgP1hDbCBM"
+        );
 
         let seed1 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_1");
-        println!("SEED1   {}", hex(&seed1.lattice_bytes()[..8]));
+        assert_eq!(hex(&seed1.lattice_bytes()[..8]), "c3b425b048d36923");
         let mut s1 = LtHash::ZERO;
         s1.add_seed(&seed1);
-        println!("S1LAT   {}", lanes_hex(&s1));
-        println!("S1      {}", b64u(&s1.digest()));
+        assert_eq!(lanes_hex(&s1), "c3b425b048d369230ec3b609c1f0c5a5");
+        assert_eq!(
+            b64u(&s1.digest()),
+            "jkZrUIFtAvB1LEjCV0klBcoslgI_z-fy57tBaYhqy8g"
+        );
 
         let seed2 = LtHash::seed("m.room.name", "", &"$event_2");
-        println!("SEED2   {}", hex(&seed2.lattice_bytes()[..8]));
+        assert_eq!(hex(&seed2.lattice_bytes()[..8]), "a6f3137486864ae3");
         let mut s2 = s1;
         s2.add_seed(&seed2);
-        println!("S2LAT   {}", lanes_hex(&s2));
-        println!("S2      {}", b64u(&s2.digest()));
+        assert_eq!(lanes_hex(&s2), "69a83824ce59b3064470e993c77e73fe");
+        assert_eq!(
+            b64u(&s2.digest()),
+            "0MOPtd797los_3q4fTJt4bKCjhRFZ12nwPEPshWDcEA"
+        );
 
+        // Removing the first seed must land exactly back on the second state.
         let seed3 = LtHash::seed("m.room.member", "@alice:example.com", &"$event_3");
-        println!("SEED3   {}", hex(&seed3.lattice_bytes()[..8]));
+        assert_eq!(hex(&seed3.lattice_bytes()[..8]), "2092781e84ce05bf");
         let mut s3 = s2;
         s3.sub_seed(&seed1);
         s3.add_seed(&seed3);
-        println!("S3LAT   {}", lanes_hex(&s3));
-        println!("S3      {}", b64u(&s3.digest()));
+        assert_eq!(lanes_hex(&s3), "c6858b920a554fa224e1d928d63eceb7");
+        assert_eq!(
+            b64u(&s3.digest()),
+            "BHYsmq2zHFAQZgQGlXuFqaAG9w9o7vFY7NkRcUL_554"
+        );
 
         let mut back = s3;
         back.sub_seed(&seed3);
-        println!("BACK    {}", b64u(&back.digest()));
+        assert_eq!(
+            b64u(&back.digest()),
+            "yeMXj6Fokw2iYonH8htoklFY5AwtcdDDnRGU_B79_2g"
+        );
 
         let mut overlay = RedactionOverlay::ZERO;
         overlay.insert("m.room.member", "@alice:example.org", "$state");
-        println!("OVL1    {}", hex(&overlay.digest()));
+        assert_eq!(
+            hex(&overlay.digest()),
+            "c18c12274627af27191a45b13755fff86b2567a871e30453e1bbeeeb436f2159"
+        );
         let mut two = RedactionOverlay::ZERO;
         two.insert("m.room.create", "", "$create");
         two.insert("m.room.member", "@alice:example.org", "$state");
-        println!("OVL2    {}", hex(&two.digest()));
+        assert_eq!(
+            hex(&two.digest()),
+            "a572fff7e802aa93492e2c87bb50843b8da33bb29ff88177cda7067d08b0836f"
+        );
         let mut custom = RedactionOverlay::ZERO;
         custom.insert("org.example.custom", "key", "$custom");
-        println!("OVL3    {}", hex(&custom.digest()));
+        assert_eq!(
+            hex(&custom.digest()),
+            "c2a2306f0728514669fb35e8d96046ab96ca7ed764edcefe6484fa563930019b"
+        );
 
         // Plumbing-only surfaces, pinned so an accidental encoding change is visible.
-        println!(
-            "BYTES   {}",
-            b64u(&LtHash::seed_bytes(b"rezzy:test:bytes", b"payload").digest())
+        assert_eq!(
+            b64u(&LtHash::seed_bytes(b"rezzy:test:bytes", b"payload").digest()),
+            "A6dOXzQL9dQWi4YN-mX6YChzAVXKdUttuAi6eVbf900"
         );
-        println!(
-            "FIELD   {}",
-            b64u(&LtHash::seed_field(b"rezzy:test:field", "sender", "@alice:example.org").digest())
+        assert_eq!(
+            b64u(&LtHash::seed_field(b"rezzy:test:field", "sender", "@alice:example.org").digest()),
+            "1eXV0G7qmj1EBJiDWnR4ZA0uH3d1cYt_vTnA1I-ucTI"
         );
-        println!(
-            "NARROW  {}",
-            b64u(&LtLattice::<8>::seed("m.room.create", "", "$c").digest())
+        assert_eq!(
+            b64u(&LtLattice::<8>::seed("m.room.create", "", &"$c").digest()),
+            "qbaIieU0BVEcRZLD9O4ArrkTG1qizm8ICv2SE3vl9OE"
         );
     }
 
@@ -1565,7 +1636,7 @@ mod tests {
         );
         assert_eq!(
             LtHash::seed_field(b"rezzy:test:f", "k", &over_max),
-            LtHash::seed_field(b"rezzy:test:f", "k", &"v".repeat(65535)),
+            LtHash::seed_field(b"rezzy:test:f", "k", &"k".repeat(65535)),
         );
     }
 

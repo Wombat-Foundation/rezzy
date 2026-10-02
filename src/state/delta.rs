@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn test_compaction_inserts_snapshots() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes a SHAKE256 XOF expansion per item, making large `N` values
+        // `LtHash` computes a BLAKE3 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Build 35 pre-resolved states — should trigger snapshots at 0, 10, 20, 30
         let states = build_states(35);
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn test_reconstruct_state_at() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // `LtHash` computes a BLAKE3 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=45` to ensure fast tests.
         // Build 45 pre-resolved states — will have snapshots at 0, 10, 20, 30, 40
         let states = build_states(45);
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn test_compacted_delta_chain_from_resolved_snapshots() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // `LtHash` computes a BLAKE3 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Create 35 sequential resolved states
         let states = build_states(35);

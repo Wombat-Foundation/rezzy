@@ -218,6 +218,47 @@ confirming that no aggregation process is running.
 The existing multi-`--input` resolution path also rejects conflicting duplicate
 event payloads.
 
+## Hash inspection
+
+`rezzy hash lthash` builds the BLAKE3 LtHash accumulator directly and prints
+both the collapsed digest and the raw lattice, so the homomorphic properties
+can be checked by hand. It reads state entries rather than events, so it
+composes with a resolved-state report:
+
+```sh
+cargo run --release -p rezzy-cli --bin rezzy -- -f resolve-state \
+  --input-dir unmerged --room c10y-fNiMx5ijtgGFibzPUfNs9hpQvnJYPTV-fD2KPk \
+  | cargo run --release -p rezzy-cli --bin rezzy -- hash lthash --input -
+```
+
+`--input` accepts a bare array of `{type, state_key, event_id}` entries, a
+`{"resolved_state": [...]}` object as printed above, or a nested
+`{"m.room.member": {"@alice:example.org": "$event"}}` state map. `--input -`
+reads stdin.
+
+Elements can also be supplied ad hoc, which is how the algebra is checked
+without a room at all:
+
+```sh
+cargo run --release -p rezzy-cli --bin rezzy -- hash lthash \
+  --event 'm.room.member,@alice:example.org,$one' \
+  --event 'm.room.name,,$two' \
+  --output digest
+```
+
+Because the accumulator is an addition, the order of the elements does not
+matter, and one run containing both elements yields the same lattice as the
+sum of two runs containing one each. `--field KEY=VALUE` and
+`--raw-bytes HEX` add length-delimited field elements and raw byte elements
+under the same tag, and `--batch PATH` reads `type<TAB>state_key<TAB>event_id`
+rows (`-` reads stdin, `#` lines are comments).
+
+`--dst` overrides the domain separation tag, which changes every digest;
+prefix it with `hex:` or `utf-8:` to be explicit about the encoding. `--lanes`
+selects the lattice width from 8, 64, 256, 1024 (the default), or 2048, and a
+different width is a different accumulator with an independent digest.
+`--output` chooses `digest`, `lattice`, or `both`.
+
 ## Timeline ordering from the sidecar
 
 `rezzy -f timeline` uses a causal (Kahn) sort by default: parents always

@@ -2556,7 +2556,7 @@ where
 
     /// Computes the 32-byte MSC4500 §6 digest of the carried `LtHash` lattice.
     ///
-    /// Cheap (`BLAKE2b` over the 2 KiB lattice) and collision-resistant to 256 bits;
+    /// Cheap (`BLAKE3` over the 2 KiB lattice) and collision-resistant to 256 bits;
     /// useful as a compact dedup/identity key without copying the full lattice.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
@@ -4205,8 +4205,10 @@ mod tests {
         state
     }
 
-    static ZERO_HASH: crate::state::lthash::LtHash = crate::state::lthash::LtHash([0; 1024]);
-    static ONE_HASH: crate::state::lthash::LtHash = crate::state::lthash::LtHash([1; 1024]);
+    static ZERO_HASH: crate::state::lthash::LtHash =
+        crate::state::lthash::LtHash::from_lanes([0; 1024]);
+    static ONE_HASH: crate::state::lthash::LtHash =
+        crate::state::lthash::LtHash::from_lanes([1; 1024]);
 
     fn new_update() -> StateUpdate<'static, String, String> {
         StateUpdate::New {
@@ -4292,7 +4294,7 @@ mod tests {
         assert_ne!(d1, d2);
 
         // A New and an Unchanged are never equal, even with the same hash.
-        let different_hash = crate::state::lthash::LtHash([2; 1024]);
+        let different_hash = crate::state::lthash::LtHash::from_lanes([2; 1024]);
         let new: StateUpdate<'_, String, String> = StateUpdate::New {
             state: SharedState::new(),
             hash: &different_hash,
