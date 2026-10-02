@@ -36,10 +36,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use rezzy::state::LtHash;
 
 use crate::common::{
-    apply_state_op, apply_state_op_lthash, generate_state_ops, generate_unique_entries,
+    apply_state_op, apply_state_op_lthash, generate_state_ops, generate_unique_entries, lthash_of,
     random_member_key, sha256_sorted_hash, xor_fold_sha256, StateKey, Xorshift128,
 };
 
@@ -98,10 +97,7 @@ fn bench_incremental_hash(n: usize, steps: usize) {
     let base_entries = make_entries(n, 0x5EED_0000 + n as u64);
     let mut state: HashMap<StateKey, String> = base_entries.into_iter().collect();
 
-    let mut lt = LtHash::ZERO;
-    for ((event_type, state_key), event_id) in &state {
-        lt.insert(event_type, state_key, event_id);
-    }
+    let mut lt = lthash_of(&state);
 
     let mut rng = Xorshift128::new(0xBEEF);
     let existing_keys: Vec<StateKey> = state.keys().cloned().collect();

@@ -472,3 +472,12 @@ pub fn apply_state_op_lthash(
         }
     }
 }
+
+/// Builds an `LtHash` covering every entry of `state`.
+pub fn lthash_of(state: &HashMap<StateKey, String>) -> rezzy::state::LtHash {
+    let mut lt = rezzy::state::LtHash::ZERO;
+    for ((event_type, state_key), event_id) in state {
+        lt.insert(event_type, state_key, event_id);
+    }
+    lt
+}
