@@ -65,6 +65,38 @@ pub enum AlgebraicError {
     CountOverflow,
     /// Removing an event would take the count below zero.
     CountUnderflow,
+    /// The room's event IDs are sender-chosen strings (room versions 1 and 2),
+    /// so `algebraic_v1` MUST NOT build an `event_ids` frame for it.
+    UnsupportedRoomVersion,
+}
+
+/// What a room's event IDs are, as far as MSC4521's `event_ids` binding cares.
+///
+/// This is the recon-local input for the once-per-room check; the caller maps
+/// its room version onto it (room versions 1 and 2 are
+/// [`SenderChosen`](Self::SenderChosen), 3 and later
+/// [`ReferenceHash`](Self::ReferenceHash)), so this crate needs no dependency
+/// on a room-version type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomEventIdKind {
+    /// Event IDs are sender-chosen strings (room versions 1 and 2).
+    SenderChosen,
+    /// Event IDs are reference hashes (room versions 3 and later).
+    ReferenceHash,
+}
+
+impl RoomEventIdKind {
+    /// Rejects rooms the `event_ids` binding must not be used for.
+    ///
+    /// # Errors
+    /// Returns [`AlgebraicError::UnsupportedRoomVersion`] for
+    /// [`SenderChosen`](Self::SenderChosen).
+    pub const fn require_event_ids_frame(self) -> Result<(), AlgebraicError> {
+        match self {
+            Self::SenderChosen => Err(AlgebraicError::UnsupportedRoomVersion),
+            Self::ReferenceHash => Ok(()),
+        }
+    }
 }
 
 /// Encoding used to derive a Matrix event ID's canonical 32-byte digest.

@@ -16,7 +16,7 @@ use crate::EventId;
 use super::{
     algebraic::SyndromeSketch,
     triage::{BucketRequest, NodeSummary},
-    AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator, H64_TRIE_WIDTH,
+    AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator, RoomEventIdKind, H64_TRIE_WIDTH,
 };
 
 /// Read-only helper over a pre-sorted `h64` index.
@@ -109,13 +109,25 @@ pub struct ReconciliationContext<'a, Id: EventId, G: ForwardGraph<Id>> {
 
 impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
     /// Creates a reusable context for one room/frame snapshot.
-    #[must_use]
-    pub const fn new(graph: &'a G, frame_anchors: &'a [Id], sorted_h64: &'a [u64]) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns [`AlgebraicError::UnsupportedRoomVersion`] for a room whose
+    /// event IDs are not reference hashes: an `event_ids` frame MUST NOT be
+    /// constructed for it.
+    pub const fn new(
+        kind: RoomEventIdKind,
+        graph: &'a G,
+        frame_anchors: &'a [Id],
+        sorted_h64: &'a [u64],
+    ) -> Result<Self, AlgebraicError> {
+        if let Err(error) = kind.require_event_ids_frame() {
+            return Err(error);
+        }
+        Ok(Self {
             graph,
             frame_anchors,
             h64_index: H64Index::new(sorted_h64),
-        }
+        })
     }
 
     /// Returns the negotiated frame digest for this room snapshot.
@@ -124,7 +136,11 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
     /// Returns an error if any frame event IDs violate format rules or element
     /// hashing limits.
     pub fn frame_digest(&self) -> Result<RoomAccumulator, AlgebraicError> {
-        compute_frame_digest(self.graph, self.frame_anchors)
+        compute_frame_digest(
+            RoomEventIdKind::ReferenceHash,
+            self.graph,
+            self.frame_anchors,
+        )
     }
 
     /// Returns the `h64` range covered by one bucket request.
@@ -220,12 +236,15 @@ pub trait ForwardGraph<Id: EventId> {
 /// precede the anchor, such as pre-join history, are excluded.
 ///
 /// # Errors
-/// Returns an error if any frame event IDs violate format rules or element
-/// hashing limits.
+/// Returns [`AlgebraicError::UnsupportedRoomVersion`] for a room whose event
+/// IDs are not reference hashes (checked once, before any work), or an error
+/// if any frame event IDs violate format rules or element hashing limits.
 pub fn compute_frame_digest<Id: EventId, G: ForwardGraph<Id>>(
+    kind: RoomEventIdKind,
     graph: &G,
     frame_anchors: &[Id],
 ) -> Result<RoomAccumulator, AlgebraicError> {
+    kind.require_event_ids_frame()?;
     let mut accumulator = RoomAccumulator::new();
     let mut queue = VecDeque::new();
     let mut visited = BTreeSet::new();
@@ -633,7 +652,12 @@ mod tests {
             EventIdFormat::V4Plus
         );
 
-        let digest = compute_frame_digest(&custom_graph, &[id("$anchor")]).unwrap();
+        let digest = compute_frame_digest(
+            RoomEventIdKind::ReferenceHash,
+            &custom_graph,
+            &[id("$anchor")],
+        )
+        .unwrap();
 
         let mut expected = RoomAccumulator::new();
         expected
@@ -656,7 +680,8 @@ mod tests {
         graph.add_edge("$child1", "$grandchild");
         graph.add_edge("$child2", "$grandchild");
 
-        let digest = compute_frame_digest(&graph, &[id("$anchor")]).unwrap();
+        let digest =
+            compute_frame_digest(RoomEventIdKind::ReferenceHash, &graph, &[id("$anchor")]).unwrap();
 
         let mut expected = RoomAccumulator::new();
         expected
@@ -681,7 +706,8 @@ mod tests {
         // Disconnected outlier
         graph.known_events.insert(id("$outlier"));
 
-        let digest = compute_frame_digest(&graph, &[id("$anchor")]).unwrap();
+        let digest =
+            compute_frame_digest(RoomEventIdKind::ReferenceHash, &graph, &[id("$anchor")]).unwrap();
 
         let mut expected = RoomAccumulator::new();
         expected
@@ -778,7 +804,13 @@ mod tests {
         sorted_h64.sort_unstable();
         let anchors = [id("$anchor")];
 
-        let context = ReconciliationContext::new(&graph, &anchors, &sorted_h64);
+        let context = ReconciliationContext::new(
+            RoomEventIdKind::ReferenceHash,
+            &graph,
+            &anchors,
+            &sorted_h64,
+        )
+        .unwrap();
         let digest = context.frame_digest().unwrap();
 
         let mut expected = RoomAccumulator::new();
@@ -1055,6 +1087,26 @@ mod tests {
                 count: 3,
                 digest: 0x7
             }
+        );
+    }
+
+    /// Room versions 1 and 2 have sender-chosen event IDs, so no `event_ids`
+    /// frame may be built for them, and the rejection is explicit rather than
+    /// a side effect of an ID that happens not to be valid base64.
+    #[test]
+    fn sender_chosen_rooms_cannot_construct_an_event_ids_frame() {
+        let mut graph = MockGraph::new();
+        graph.add_edge("$anchor", "$child");
+        let anchors = [id("$anchor")];
+        assert_eq!(
+            compute_frame_digest(RoomEventIdKind::SenderChosen, &graph, &anchors),
+            Err(AlgebraicError::UnsupportedRoomVersion)
+        );
+        let sorted = [1_u64];
+        assert_eq!(
+            ReconciliationContext::new(RoomEventIdKind::SenderChosen, &graph, &anchors, &sorted)
+                .err(),
+            Some(AlgebraicError::UnsupportedRoomVersion)
         );
     }
 }

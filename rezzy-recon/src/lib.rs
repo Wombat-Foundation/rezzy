@@ -37,8 +37,8 @@ pub const H64_TRIE_WIDTH: u8 = 64;
 
 pub use algebraic::{
     gf64_mul, verify_residual, AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator,
-    SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_OVERFLOW_SKETCH_CAPACITY,
-    MAX_SKETCH_CAPACITY,
+    RoomEventIdKind, SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY,
+    MAX_OVERFLOW_SKETCH_CAPACITY, MAX_SKETCH_CAPACITY,
 };
 pub use client::{
     BucketExchange, ClientAction, ReconciliationClient, RemoteDigest, MAX_BUCKETS_PER_ROUND,
