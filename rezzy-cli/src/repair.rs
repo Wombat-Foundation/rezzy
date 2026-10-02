@@ -432,3 +432,47 @@ fn event_id_tokens(line: &str) -> impl Iterator<Item = String> + '_ {
         .filter(|token| token.starts_with('$') && token.len() > 1)
         .map(str::to_owned)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_distinct_paths;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rezzy-repair-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn rejects_output_that_is_the_input_file() {
+        let dir = scratch("same");
+        let input = dir.join("in.jsonl");
+        std::fs::write(&input, "").unwrap();
+        assert!(ensure_distinct_paths(&input, &input).is_err());
+        assert!(ensure_distinct_paths(&input, &dir.join(".").join("in.jsonl")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accepts_distinct_and_not_yet_existing_outputs() {
+        let dir = scratch("distinct");
+        let input = dir.join("in.jsonl");
+        std::fs::write(&input, "").unwrap();
+        assert!(ensure_distinct_paths(&input, &dir.join("out.jsonl")).is_ok());
+        assert!(ensure_distinct_paths(&input, &dir.join("missing").join("out.jsonl")).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_relative_output_resolves_against_current_directory() {
+        let dir = scratch("bare");
+        let input = dir.join("in.jsonl");
+        std::fs::write(&input, "").unwrap();
+        // Bare name resolves to the cwd, which is not the scratch dir.
+        assert!(
+            ensure_distinct_paths(&input, std::path::Path::new("out-does-not-exist.jsonl")).is_ok()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

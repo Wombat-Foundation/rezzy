@@ -885,11 +885,13 @@ fn fetch_dag_batch(
         dag_request.key_path,
         dag_request.keyring_account,
     );
+    let mut fell_back = false;
     let mut value = match response {
         Ok(v) => v,
         Err(e) if is_unreachable(&e) => return Err(e),
         Err(e) if !dag_request.no_fallback => {
             state.failures.record(&e);
+            fell_back = true;
             rezzy::json!({"pdus": fetch_events_individually(dag_request, ids, state)?})
         }
         Err(e) => return Err(e),
@@ -902,7 +904,8 @@ fn fetch_dag_batch(
         state.unresolved.extend(ids.iter().cloned());
         return Ok(DagBatch::Stop);
     }
-    if empty {
+    // Skip the retry when the error branch already fetched each ID once.
+    if empty && !fell_back {
         value = rezzy::json!({"pdus": fetch_events_individually(dag_request, ids, state)?});
     }
     // Track which requested IDs were actually returned in the response.
