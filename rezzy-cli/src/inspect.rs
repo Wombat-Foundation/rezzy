@@ -1,13 +1,14 @@
 //! Local inspection commands for Matrix JSONL exports.
 
 use crate::error::{AppError, ErrorCode};
-use crate::repair::{input_arg, output_arg, read_jsonl_events, scan_gaps, write_event_ids};
+use crate::repair::{
+    ensure_distinct_paths, input_arg, output_arg, read_jsonl_events, scan_gaps, write_event_ids,
+};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[must_use]
-/// Brief public API.
+/// Builds the `inspect` subcommand.
 pub fn command() -> Command {
     Command::new("inspect")
         .about("Inspect local Matrix JSONL exports")
@@ -53,22 +54,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<(), AppError> {
 
 fn run_gaps(input: &Path, output: Option<&Path>, json: bool) -> Result<(), AppError> {
     if let Some(output_path) = output {
-        let input_identity = fs::canonicalize(input)?;
-        let output_identity =
-            if output_path.exists() {
-                fs::canonicalize(output_path)?
-            } else {
-                let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
-                fs::canonicalize(parent)?.join(output_path.file_name().ok_or_else(|| {
-                    AppError::new(ErrorCode::IoError, "output path has no file name")
-                })?)
-            };
-        if input_identity == output_identity {
-            return Err(AppError::new(
-                ErrorCode::IoError,
-                "--input and --output must be different files",
-            ));
-        }
+        ensure_distinct_paths(input, output_path)?;
     }
 
     let events = read_jsonl_events(input)?;
@@ -96,7 +82,12 @@ fn run_gaps(input: &Path, output: Option<&Path>, json: bool) -> Result<(), AppEr
         let text = rezzy::json::write_string_pretty(&value)
             .map_err(|e| AppError::new(ErrorCode::UnexpectedFormat, e.to_string()))?;
         match output {
-            Some(path) => std::fs::write(path, format!("{text}\n"))?,
+            Some(path) => {
+                if let Some(parent) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, format!("{text}\n"))?;
+            }
             None => println!("{text}"),
         }
         return Ok(());

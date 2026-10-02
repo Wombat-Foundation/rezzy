@@ -9,7 +9,7 @@
 //! - Large batch operations: bulk state construction
 //! - Input size variations: small (minimal), medium (typical), large (max event IDs)
 //! - Expansion cost: the BLAKE3 XOF that seeds a lane, and the BLAKE3 collapse
-//! - SIMD vs scalar lattice arithmetic
+//! - Lattice arithmetic
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -28,6 +28,9 @@ use rezzy::state::LtHash;
 use crate::common::{generate_unique_entries, Xorshift128};
 
 type StateKey = (String, String);
+
+/// Largest state size run with `InputSize::Large` (~64 MiB of event IDs).
+const MAX_LARGE_STATE: usize = 1024;
 
 /// Input size categories for testing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +137,7 @@ fn bench_single_operations(size: InputSize) {
     let mut lt = LtHash::ZERO;
     let elapsed = bench_single_op(iterations, || {
         lt.insert(event_type, state_key, &event_id);
+        black_box(&lt);
     });
     println!("  insert()          : {}", format_ns_per_op(elapsed, iterations));
 
@@ -143,16 +147,20 @@ fn bench_single_operations(size: InputSize) {
     lt.add_seed(&seed);
     let elapsed = bench_single_op(iterations, || {
         lt.remove(event_type, state_key, &event_id);
+        black_box(&lt);
     });
     println!("  remove()          : {}", format_ns_per_op(elapsed, iterations));
 
     // Benchmark replace (2 seeds + add + sub)
     let event_id2 = size.generate_event_id(&mut rng, 1);
+    let mut lt = LtHash::ZERO;
+    lt.insert(event_type, state_key, &event_id);
     let elapsed = bench_single_op(iterations, || {
-        black_box(LtHash::seed(event_type, state_key, &event_id));
-        black_box(LtHash::seed(event_type, state_key, &event_id2));
+        lt.replace(event_type, state_key, &event_id, &event_id2);
+        lt.replace(event_type, state_key, &event_id2, &event_id);
+        black_box(&lt);
     });
-    println!("  replace (2 seeds) : {}", format_ns_per_op(elapsed, iterations));
+    println!("  replace (x2)      : {}", format_ns_per_op(elapsed, iterations));
 
     // Benchmark lattice add (just the arithmetic, no expansion)
     let seed1 = LtHash::seed(event_type, state_key, &event_id);
@@ -161,6 +169,7 @@ fn bench_single_operations(size: InputSize) {
     let elapsed = bench_single_op(iterations * 10, || {
         lt.add_seed(&seed1);
         lt.add_seed(&seed2);
+        black_box(&lt);
     });
     println!("  add_lattice (x2)  : {}", format_ns_per_op(elapsed, iterations * 10));
 
@@ -169,6 +178,7 @@ fn bench_single_operations(size: InputSize) {
     let elapsed = bench_single_op(iterations * 10, || {
         lt.sub_seed(&seed2);
         lt.add_seed(&seed2);
+        black_box(&lt);
     });
     println!("  sub_lattice (x2)  : {}", format_ns_per_op(elapsed, iterations * 10));
 
@@ -216,6 +226,7 @@ fn bench_batch_operations(size: InputSize) {
                 for seed in &seeds {
                     lt.add_seed(seed);
                 }
+                black_box(&lt);
             },
         );
         println!(
@@ -238,6 +249,7 @@ fn bench_batch_operations(size: InputSize) {
                 for seed in &seeds {
                     lt.sub_seed(seed);
                 }
+                black_box(&lt);
             },
         );
         println!(
@@ -257,12 +269,13 @@ fn bench_bulk_construction(size: InputSize) {
     let state_sizes = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
 
     for &state_size in &state_sizes {
-        if state_size > 16384 {
+        // Large event IDs are ~64 KiB each; cap the fixture to keep memory bounded.
+        if size == InputSize::Large && state_size > MAX_LARGE_STATE {
             continue;
         }
 
         let entries = make_entries_with_size(state_size, 0xB01C_0000 + state_size as u64, size);
-        let iterations = (1000 / (state_size / 16).max(1)) as u32;
+        let iterations = ((1000 / (state_size / 16).max(1)) as u32).max(1);
 
         // Benchmark from_state (full state hashing)
         let elapsed = bench_single_op(
@@ -310,6 +323,9 @@ fn bench_incremental_mutations(size: InputSize) {
     let steps = 300;
 
     for &n in &state_sizes {
+        if size == InputSize::Large && n > MAX_LARGE_STATE {
+            continue;
+        }
         let base_entries = make_entries_with_size(n, 0x5EED_0000 + n as u64, size);
         let mut state: HashMap<StateKey, String> = base_entries.into_iter().collect();
 
@@ -380,9 +396,9 @@ fn bench_incremental_mutations(size: InputSize) {
     }
 }
 
-/// Run SIMD vs scalar lattice arithmetic benchmark
+/// Run lattice arithmetic benchmarks
 fn bench_lattice_arithmetic() {
-    println!("\n=== Lattice Arithmetic (SIMD vs Scalar) ===");
+    println!("\n=== Lattice Arithmetic ===");
 
     let event_type = "m.room.member";
     let state_key = "@alice:example.org";
@@ -396,31 +412,33 @@ fn bench_lattice_arithmetic() {
 
     let iterations = 100_000;
 
-    // Scalar add (current implementation - 8-lane unrolled)
+    // Add
     let mut lt = LtHash::ZERO;
     let elapsed = bench_single_op(iterations, || {
         for seed in &seeds {
             lt.add_seed(seed);
         }
+        black_box(&lt);
     });
     println!(
-        "  scalar add_lattice (1000 seeds): {}",
+        "  add_lattice (1000 seeds): {}",
         format_ns_per_op(elapsed, iterations)
     );
 
-    // Scalar sub
+    // Sub
     let mut lt = seeds[0];
     let elapsed = bench_single_op(iterations, || {
         for seed in &seeds[1..] {
             lt.sub_seed(seed);
         }
+        black_box(&lt);
     });
     println!(
-        "  scalar sub_lattice (999 seeds): {}",
+        "  sub_lattice (999 seeds): {}",
         format_ns_per_op(elapsed, iterations)
     );
 
-    // Scalar add + sub alternating
+    // Add + sub alternating
     let mut lt = LtHash::ZERO;
     let elapsed = bench_single_op(iterations, || {
         for (i, seed) in seeds.iter().enumerate() {
@@ -430,9 +448,10 @@ fn bench_lattice_arithmetic() {
                 lt.sub_seed(seed);
             }
         }
+        black_box(&lt);
     });
     println!(
-        "  scalar add/sub (1000 seeds): {}",
+        "  add/sub (1000 seeds): {}",
         format_ns_per_op(elapsed, iterations)
     );
 }

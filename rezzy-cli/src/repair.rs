@@ -9,12 +9,46 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[must_use]
-/// Brief public API.
+/// Builds the `repair-ids` subcommand.
 pub fn command() -> Command {
     Command::new("repair-ids")
         .about("Fill missing Matrix event IDs in a JSONL export")
         .arg(input_arg())
         .arg(output_arg(true))
+}
+
+/// Reject an `output` that names the same file as `input`.
+///
+/// A bare relative output resolves against the current directory, and an output
+/// whose parent does not exist yet cannot alias an existing input.
+///
+/// # Errors
+/// Returns an error if `input` cannot be resolved or both paths name one file.
+pub(crate) fn ensure_distinct_paths(input: &Path, output: &Path) -> Result<(), AppError> {
+    let input_identity = fs::canonicalize(input)?;
+    let output_identity = if output.exists() {
+        fs::canonicalize(output)?
+    } else {
+        let parent = output
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let Ok(parent) = fs::canonicalize(parent) else {
+            return Ok(());
+        };
+        parent.join(
+            output
+                .file_name()
+                .ok_or_else(|| AppError::new(ErrorCode::IoError, "output path has no file name"))?,
+        )
+    };
+    if input_identity == output_identity {
+        return Err(AppError::new(
+            ErrorCode::IoError,
+            "--input and --output must be different files",
+        ));
+    }
+    Ok(())
 }
 
 /// The shared required `-i/--input` JSONL path argument.
@@ -48,23 +82,7 @@ pub fn output_arg(required: bool) -> Arg {
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     let input = matches.get_one::<PathBuf>("input").expect("required");
     let output = matches.get_one::<PathBuf>("output").expect("required");
-    let input_identity = fs::canonicalize(input)?;
-    let output_identity = if output.exists() {
-        fs::canonicalize(output)?
-    } else {
-        let parent = output.parent().unwrap_or_else(|| Path::new("."));
-        fs::canonicalize(parent)?.join(
-            output
-                .file_name()
-                .ok_or_else(|| AppError::new(ErrorCode::IoError, "output path has no file name"))?,
-        )
-    };
-    if input_identity == output_identity {
-        return Err(AppError::new(
-            ErrorCode::IoError,
-            "--input and --output must be different files",
-        ));
-    }
+    ensure_distinct_paths(input, output)?;
     let room_version = infer_room_version(input)?;
     validate_repair_room_version(&room_version)?;
 

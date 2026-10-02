@@ -497,6 +497,9 @@ fn well_known_lookup(destination: &str) -> Option<String> {
 fn base_url(destination: &str) -> String {
     if destination.starts_with("http://") || destination.starts_with("https://") {
         destination.trim_end_matches('/').to_owned()
+    } else if destination.contains(':') {
+        // An explicit port is used as given; no delegation applies.
+        format!("https://{destination}")
     } else if let Some(endpoint) = resolve_delegation(destination) {
         endpoint
     } else {
@@ -727,6 +730,8 @@ fn finalize_dag(mut state: DagWalkState, request: &DagRequest<'_>) -> Result<Jso
     Ok(result)
 }
 
+/// Write one fetched PDU. Returns `false` only once the event limit is reached;
+/// skipped (invalid or duplicate) PDUs return `true` so the batch continues.
 fn write_dag_event(
     pdu: &JsonValue,
     room_version: &str,
@@ -734,7 +739,7 @@ fn write_dag_event(
     state: &mut DagWalkState,
 ) -> Result<bool, AppError> {
     let Some(object) = pdu.as_object() else {
-        return Ok(false);
+        return Ok(true);
     };
     let event_id = object
         .get("event_id")
@@ -746,10 +751,10 @@ fn write_dag_event(
                 .map(|h| format!("${h}"))
         });
     let Some(event_id) = event_id else {
-        return Ok(false);
+        return Ok(true);
     };
     if !state.seen.insert(event_id.clone()) {
-        return Ok(false);
+        return Ok(true);
     }
     let mut line = pdu.clone();
     if let Some(obj) = line.as_object_mut() {
@@ -782,6 +787,35 @@ enum DagBatch {
     Skip,
 }
 
+/// Fetch each of `ids` with a single-event request, returning the PDUs found.
+///
+/// Per-event failures are recorded and the ID is left for the caller to mark
+/// unresolved; only an unreachable destination aborts.
+fn fetch_events_individually(
+    dag_request: &DagRequest<'_>,
+    ids: &[String],
+    state: &mut DagWalkState,
+) -> Result<Vec<JsonValue>, AppError> {
+    let mut pdus = Vec::new();
+    for id in ids {
+        let event_uri = format!("/_matrix/federation/v1/event/{}", quote(id));
+        match request(
+            dag_request.origin,
+            dag_request.destination,
+            "GET",
+            &event_uri,
+            &rezzy::json!({}),
+            dag_request.key_path,
+            dag_request.keyring_account,
+        ) {
+            Ok(v) => pdus.push(v.get("pdu").cloned().unwrap_or(v)),
+            Err(e) if is_unreachable(&e) => return Err(e),
+            Err(e) => state.failures.record(&e),
+        }
+    }
+    Ok(pdus)
+}
+
 fn fetch_dag_batch(
     dag_request: &DagRequest<'_>,
     ids: &[String],
@@ -809,30 +843,7 @@ fn fetch_dag_batch(
         Err(e) if is_unreachable(&e) => return Err(e),
         Err(e) if !dag_request.no_fallback => {
             state.failures.record(&e);
-            state.unresolved.extend(ids.iter().cloned());
-            let Some(id) = state.queue.pop_front() else {
-                return Ok(DagBatch::Skip);
-            };
-            let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
-            match request(
-                dag_request.origin,
-                dag_request.destination,
-                "GET",
-                &event_uri,
-                &rezzy::json!({}),
-                dag_request.key_path,
-                dag_request.keyring_account,
-            ) {
-                Ok(v) => {
-                    let pdu = v.get("pdu").cloned().unwrap_or(v);
-                    rezzy::json!({"pdus":[pdu]})
-                }
-                Err(e) if is_unreachable(&e) => return Err(e),
-                Err(e) => {
-                    state.failures.record(&e);
-                    return Ok(DagBatch::Skip);
-                }
-            }
+            rezzy::json!({"pdus": fetch_events_individually(dag_request, ids, state)?})
         }
         Err(e) => return Err(e),
     };
@@ -845,29 +856,7 @@ fn fetch_dag_batch(
         return Ok(DagBatch::Stop);
     }
     if empty {
-        state.unresolved.extend(ids.iter().cloned());
-        if let Some(id) = state.queue.pop_front() {
-            let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
-            match request(
-                dag_request.origin,
-                dag_request.destination,
-                "GET",
-                &event_uri,
-                &rezzy::json!({}),
-                dag_request.key_path,
-                dag_request.keyring_account,
-            ) {
-                Ok(event) => {
-                    let pdu = event.get("pdu").cloned().unwrap_or(event);
-                    value = rezzy::json!({"pdus":[pdu]});
-                }
-                Err(e) if is_unreachable(&e) => return Err(e),
-                Err(e) => {
-                    state.failures.record(&e);
-                    state.unresolved.push(id);
-                }
-            }
-        }
+        value = rezzy::json!({"pdus": fetch_events_individually(dag_request, ids, state)?});
     }
     // Track which requested IDs were actually returned in the response.
     let returned_ids: Vec<String> = value
@@ -995,7 +984,7 @@ fn fetch_gap_round(
     if !report.missing_prev.is_empty() {
         let path = round_dir.join("backfill.jsonl");
         let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
-        let summary = get_remote_dag(&DagRequest {
+        let result = get_remote_dag(&DagRequest {
             origin: request.origin,
             destination: request.destination,
             room_id: request.room_id,
@@ -1007,7 +996,16 @@ fn fetch_gap_round(
             keyring_account: request.keyring_account,
             no_fallback: request.no_fallback,
             emit_missing: None,
-        })?;
+        });
+        let summary = match result {
+            Ok(summary) => summary,
+            Err(error) if is_unreachable(&error) => return Err(error),
+            Err(error) => {
+                failed_requests = failed_requests.saturating_add(1);
+                eprintln!("[warn] round {round}: backfill failed: {error}");
+                rezzy::json!({})
+            }
+        };
         if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
             failed_requests = usize::try_from(n).unwrap_or(usize::MAX);
             if let Some(detail) = summary.get("failures").and_then(JsonValue::as_str) {
