@@ -4,10 +4,12 @@ ket = "ket"
 NAX = "NAX"
 fo = "fo"
 fpr = "fpr"
-tru = "tru"
-nulll = "nulll"
 Ba = "Ba"
 Ptd = "Ptd"
+
+[default]
+# Deliberately malformed JSON literals in rezzy-json invalid-input tests.
+extend-ignore-re = ['"tru",', '"nulll",']
 
 [files]
 extend-exclude = ["tests/critique_data/**", "tests/fixtures/**"]

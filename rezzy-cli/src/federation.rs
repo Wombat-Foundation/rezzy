@@ -423,9 +423,10 @@ fn canonical_request(
         .map_err(|e| AppError::new(ErrorCode::NetworkError, e.to_string()))
 }
 
-/// Cache of logical server name -> resolved `https://host[:port]` endpoint.
-fn delegation_cache() -> &'static Mutex<BTreeMap<String, String>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+/// Cache of logical server name -> resolved `https://host[:port]` endpoint, or
+/// `None` when no delegation record exists (so misses are not re-queried).
+fn delegation_cache() -> &'static Mutex<BTreeMap<String, Option<String>>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, Option<String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -451,15 +452,15 @@ fn resolve_delegation(destination: &str) -> Option<String> {
     }
     if let Ok(cache) = delegation_cache().lock() {
         if let Some(cached) = cache.get(destination) {
-            return Some(cached.clone());
+            return cached.clone();
         }
     }
     let resolved = well_known_lookup(destination).or_else(|| srv_lookup(destination));
     if let Some(ref endpoint) = resolved {
         eprintln!("[info] federation delegation: {destination} -> {endpoint}");
-        if let Ok(mut cache) = delegation_cache().lock() {
-            cache.insert(destination.to_owned(), endpoint.clone());
-        }
+    }
+    if let Ok(mut cache) = delegation_cache().lock() {
+        cache.insert(destination.to_owned(), resolved.clone());
     }
     resolved
 }
