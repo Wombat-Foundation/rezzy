@@ -634,24 +634,19 @@ pub struct DagRequest<'a> {
     pub emit_missing: Option<&'a Path>,
 }
 
-///
-/// # Errors
-/// Returns an error if fetching, parsing, or writing the crawl fails.
-pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
-    let DagRequest {
-        origin,
-        destination,
-        room_id,
-        starts,
-        room_version,
-        limit,
-        output,
-        key_path,
-        keyring_account,
-        no_fallback,
-        emit_missing,
-    } = *dag_request;
-    if starts.is_empty() {
+/// Mutable state accumulated while walking a remote DAG.
+struct DagWalkState {
+    queue: VecDeque<String>,
+    queued: HashSet<String>,
+    seen: HashSet<String>,
+    unresolved: Vec<String>,
+    failures: FetchFailures,
+    output_writer: BufWriter<fs::File>,
+    event_count: usize,
+}
+
+fn initialize_dag(request: &DagRequest<'_>) -> Result<(DagWalkState, usize), AppError> {
+    if request.starts.is_empty() {
         return Err(AppError::new(
             ErrorCode::MissingInputFlag,
             "get-remote-dag needs at least one --from <event-id> or --from-file <path> (the CLI has no local timeline to infer a starting event)",
@@ -659,26 +654,232 @@ pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppErro
     }
     let mut queue = VecDeque::new();
     let mut queued = HashSet::new();
-    for id in starts {
+    for id in request.starts {
         if queued.insert(id.clone()) {
             queue.push_back(id.clone());
         }
     }
-    let mut seen = HashSet::new();
-    let mut output_writer = open_output_writer(output)?;
-    let mut event_count = 0_usize;
-    let mut failures = FetchFailures::default();
-    let mut unresolved = Vec::new();
-    let max = if limit < 0 {
+    let max = if request.limit < 0 {
         usize::MAX
     } else {
-        usize::try_from(limit).unwrap_or(usize::MAX)
+        usize::try_from(request.limit).unwrap_or(usize::MAX)
     };
-    while !queue.is_empty() && seen.len() < max {
+    Ok((
+        DagWalkState {
+            queue,
+            queued,
+            seen: HashSet::new(),
+            unresolved: Vec::new(),
+            failures: FetchFailures::default(),
+            output_writer: open_output_writer(request.output)?,
+            event_count: 0,
+        },
+        max,
+    ))
+}
+
+fn finalize_dag(mut state: DagWalkState, request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
+    state.output_writer.flush()?;
+    if state.event_count == 0 && !state.failures.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::NetworkError,
+            format!(
+                "no events fetched from {} for {}: {}",
+                request.destination,
+                request.room_id,
+                state.failures.summary()
+            ),
+        ));
+    }
+    let remaining_frontier = state
+        .queue
+        .into_iter()
+        .chain(state.unresolved)
+        .filter(|id| !state.seen.contains(id))
+        .collect::<Vec<_>>();
+    if let Some(path) = request.emit_missing {
+        crate::repair::write_event_ids(path, &remaining_frontier)?;
+    }
+    let mut result = rezzy::json!({
+        "count": state.event_count,
+        "output": request.output.display().to_string(),
+        "remaining_frontier": remaining_frontier,
+    });
+    if !state.failures.is_empty() {
+        let _ = result.insert(
+            String::from("failed_requests"),
+            rezzy::json!(state.failures.total() as u64),
+        );
+        let _ = result.insert(
+            String::from("failures"),
+            rezzy::json!(state.failures.summary()),
+        );
+    }
+    if let Some(path) = request.emit_missing {
+        let _ = result.insert(
+            String::from("missing_output"),
+            rezzy::json!(path.to_string_lossy().to_string()),
+        );
+    }
+    Ok(result)
+}
+
+fn write_dag_event(
+    pdu: &JsonValue,
+    room_version: &str,
+    max: usize,
+    state: &mut DagWalkState,
+) -> Result<bool, AppError> {
+    let Some(object) = pdu.as_object() else {
+        return Ok(false);
+    };
+    let event_id = object
+        .get("event_id")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            rezzy::reference_hash(pdu, room_version)
+                .ok()
+                .map(|h| format!("${h}"))
+        });
+    let Some(event_id) = event_id else {
+        return Ok(false);
+    };
+    if !state.seen.insert(event_id.clone()) {
+        return Ok(false);
+    }
+    let mut line = pdu.clone();
+    if let Some(obj) = line.as_object_mut() {
+        obj.insert("event_id".to_owned(), JsonValue::String(event_id));
+    }
+    if let Some(prev) = line.get("prev_events").and_then(JsonValue::as_array) {
+        for item in prev {
+            let id = item.as_str().or_else(|| {
+                item.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(JsonValue::as_str)
+            });
+            if let Some(id) = id {
+                if !state.seen.contains(id) && state.queued.insert(id.to_owned()) {
+                    state.queue.push_back(id.to_owned());
+                }
+            }
+        }
+    }
+    let encoded = rezzy::json::write_string_value(&line)
+        .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?;
+    writeln!(state.output_writer, "{encoded}")?;
+    state.event_count = state.event_count.saturating_add(1);
+    Ok(state.seen.len() < max)
+}
+
+enum DagBatch {
+    Events(JsonValue),
+    Stop,
+    Skip,
+}
+
+fn fetch_dag_batch(
+    dag_request: &DagRequest<'_>,
+    ids: &[String],
+    state: &mut DagWalkState,
+) -> Result<DagBatch, AppError> {
+    let uri = format!(
+        "/_matrix/federation/v1/backfill/{}?{}&limit=500",
+        quote(dag_request.room_id),
+        ids.iter()
+            .map(|id| format!("v={}", quote(id)))
+            .collect::<Vec<_>>()
+            .join("&")
+    );
+    let response = request(
+        dag_request.origin,
+        dag_request.destination,
+        "GET",
+        &uri,
+        &rezzy::json!({}),
+        dag_request.key_path,
+        dag_request.keyring_account,
+    );
+    let mut value = match response {
+        Ok(v) => v,
+        Err(e) if is_unreachable(&e) => return Err(e),
+        Err(e) if !dag_request.no_fallback => {
+            state.failures.record(&e);
+            state.unresolved.extend(ids.iter().cloned());
+            let Some(id) = state.queue.pop_front() else {
+                return Ok(DagBatch::Skip);
+            };
+            let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
+            match request(
+                dag_request.origin,
+                dag_request.destination,
+                "GET",
+                &event_uri,
+                &rezzy::json!({}),
+                dag_request.key_path,
+                dag_request.keyring_account,
+            ) {
+                Ok(v) => {
+                    let pdu = v.get("pdu").cloned().unwrap_or(v);
+                    rezzy::json!({"pdus":[pdu]})
+                }
+                Err(e) if is_unreachable(&e) => return Err(e),
+                Err(e) => {
+                    state.failures.record(&e);
+                    return Ok(DagBatch::Skip);
+                }
+            }
+        }
+        Err(e) => return Err(e),
+    };
+    let empty = value
+        .get("pdus")
+        .and_then(JsonValue::as_array)
+        .map_or(true, Vec::is_empty);
+    if empty && dag_request.no_fallback {
+        state.unresolved.extend(ids.iter().cloned());
+        return Ok(DagBatch::Stop);
+    }
+    if empty {
+        state.unresolved.extend(ids.iter().cloned());
+        if let Some(id) = state.queue.pop_front() {
+            let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
+            match request(
+                dag_request.origin,
+                dag_request.destination,
+                "GET",
+                &event_uri,
+                &rezzy::json!({}),
+                dag_request.key_path,
+                dag_request.keyring_account,
+            ) {
+                Ok(event) => {
+                    let pdu = event.get("pdu").cloned().unwrap_or(event);
+                    value = rezzy::json!({"pdus":[pdu]});
+                }
+                Err(e) if is_unreachable(&e) => return Err(e),
+                Err(e) => {
+                    state.failures.record(&e);
+                    state.unresolved.push(id);
+                }
+            }
+        }
+    }
+    Ok(DagBatch::Events(value))
+}
+
+///
+/// # Errors
+/// Returns an error if fetching, parsing, or writing the crawl fails.
+pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
+    let room_version = dag_request.room_version;
+    let (mut state, max) = initialize_dag(dag_request)?;
+    while !state.queue.is_empty() && state.seen.len() < max {
         let mut ids = Vec::new();
         while ids.len() < 50 {
-            if let Some(id) = queue.pop_front() {
-                if !seen.contains(&id) {
+            if let Some(id) = state.queue.pop_front() {
+                if !state.seen.contains(&id) {
                     ids.push(id);
                 }
             } else {
@@ -688,134 +889,16 @@ pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppErro
         if ids.is_empty() {
             continue;
         }
-        let uri = format!(
-            "/_matrix/federation/v1/backfill/{}?{}&limit=500",
-            quote(room_id),
-            ids.iter()
-                .map(|id| format!("v={}", quote(id)))
-                .collect::<Vec<_>>()
-                .join("&")
-        );
-        let response = request(
-            origin,
-            destination,
-            "GET",
-            &uri,
-            &rezzy::json!({}),
-            key_path,
-            keyring_account,
-        );
-        let mut value = match response {
-            Ok(v) => v,
-            // The destination never answered: per-event fallback cannot help,
-            // and retrying thousands of IDs just turns a fast failure into a
-            // multi-hour hang. Abort the whole crawl immediately.
-            Err(e) if is_unreachable(&e) => return Err(e),
-            Err(e) if !no_fallback => {
-                failures.record(&e);
-                unresolved.extend(ids.iter().cloned());
-                let Some(id) = queue.pop_front() else {
-                    continue;
-                };
-                let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
-                match request(
-                    origin,
-                    destination,
-                    "GET",
-                    &event_uri,
-                    &rezzy::json!({}),
-                    key_path,
-                    keyring_account,
-                ) {
-                    Ok(v) => {
-                        let pdu = v.get("pdu").cloned().unwrap_or(v);
-                        rezzy::json!({"pdus":[pdu]})
-                    }
-                    Err(e) if is_unreachable(&e) => return Err(e),
-                    Err(e) => {
-                        failures.record(&e);
-                        continue;
-                    }
-                }
-            }
-            Err(e) => return Err(e),
+        let value = match fetch_dag_batch(dag_request, &ids, &mut state)? {
+            DagBatch::Events(value) => value,
+            DagBatch::Stop => break,
+            DagBatch::Skip => continue,
         };
-        let empty_backfill = value
-            .get("pdus")
-            .and_then(JsonValue::as_array)
-            .map_or(true, Vec::is_empty);
-        if empty_backfill && no_fallback {
-            unresolved.extend(ids.iter().cloned());
-            break;
-        }
-        if empty_backfill {
-            unresolved.extend(ids.iter().cloned());
-            if let Some(id) = queue.pop_front() {
-                let event_uri = format!("/_matrix/federation/v1/event/{}", quote(&id));
-                match request(
-                    origin,
-                    destination,
-                    "GET",
-                    &event_uri,
-                    &rezzy::json!({}),
-                    key_path,
-                    keyring_account,
-                ) {
-                    Ok(event) => {
-                        let pdu = event.get("pdu").cloned().unwrap_or(event);
-                        value = rezzy::json!({"pdus":[pdu]});
-                    }
-                    Err(e) if is_unreachable(&e) => return Err(e),
-                    Err(e) => {
-                        failures.record(&e);
-                        unresolved.push(id);
-                    }
-                }
-            }
-        }
         let Some(pdus) = value.get("pdus").and_then(JsonValue::as_array) else {
             continue;
         };
         for pdu in pdus {
-            let Some(object) = pdu.as_object() else {
-                continue;
-            };
-            let event_id = object
-                .get("event_id")
-                .and_then(JsonValue::as_str)
-                .map(str::to_owned)
-                .or_else(|| {
-                    rezzy::reference_hash(pdu, room_version)
-                        .ok()
-                        .map(|h| format!("${h}"))
-                });
-            let Some(event_id) = event_id else { continue };
-            if !seen.insert(event_id.clone()) {
-                continue;
-            }
-            let mut line = pdu.clone();
-            if let Some(obj) = line.as_object_mut() {
-                obj.insert("event_id".to_owned(), JsonValue::String(event_id));
-            }
-            if let Some(prev) = line.get("prev_events").and_then(JsonValue::as_array) {
-                for item in prev {
-                    let id = item.as_str().or_else(|| {
-                        item.as_array()
-                            .and_then(|a| a.first())
-                            .and_then(JsonValue::as_str)
-                    });
-                    if let Some(id) = id {
-                        if !seen.contains(id) && queued.insert(id.to_owned()) {
-                            queue.push_back(id.to_owned());
-                        }
-                    }
-                }
-            }
-            let encoded = rezzy::json::write_string_value(&line)
-                .map_err(|e| AppError::new(ErrorCode::MalformedJson, e.to_string()))?;
-            writeln!(output_writer, "{encoded}")?;
-            event_count = event_count.saturating_add(1);
-            if seen.len() >= max {
+            if !write_dag_event(pdu, room_version, max, &mut state)? {
                 break;
             }
         }
@@ -823,54 +906,28 @@ pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppErro
         // Make the fetched events durable before advancing the checkpoint.
         // If interrupted after this point, re-fetching the checkpointed
         // frontier is safe because aggregate deduplicates event IDs.
-        output_writer.flush()?;
-        let frontier = queue
+        state.output_writer.flush()?;
+        let frontier = state
+            .queue
             .iter()
-            .filter(|id| !seen.contains(*id))
+            .filter(|id| !state.seen.contains(*id))
             .cloned()
-            .chain(unresolved.iter().filter(|id| !seen.contains(*id)).cloned())
+            .chain(
+                state
+                    .unresolved
+                    .iter()
+                    .filter(|id| !state.seen.contains(*id))
+                    .cloned(),
+            )
             .collect::<Vec<_>>();
-        if let Some(path) = emit_missing.filter(|path| *path != Path::new("-")) {
+        if let Some(path) = dag_request
+            .emit_missing
+            .filter(|path| *path != Path::new("-"))
+        {
             write_frontier_checkpoint(path, &frontier)?;
         }
     }
-    output_writer.flush()?;
-    if event_count == 0 && !failures.is_empty() {
-        return Err(AppError::new(
-            ErrorCode::NetworkError,
-            format!(
-                "no events fetched from {destination} for {room_id}: {}",
-                failures.summary()
-            ),
-        ));
-    }
-    let remaining_frontier = queue
-        .into_iter()
-        .chain(unresolved)
-        .filter(|id| !seen.contains(id))
-        .collect::<Vec<_>>();
-    if let Some(path) = emit_missing {
-        crate::repair::write_event_ids(path, &remaining_frontier)?;
-    }
-    let mut result = rezzy::json!({
-        "count": event_count,
-        "output": output.display().to_string(),
-        "remaining_frontier": remaining_frontier,
-    });
-    if !failures.is_empty() {
-        let _ = result.insert(
-            String::from("failed_requests"),
-            rezzy::json!(failures.total() as u64),
-        );
-        let _ = result.insert(String::from("failures"), rezzy::json!(failures.summary()));
-    }
-    if let Some(path) = emit_missing {
-        let _ = result.insert(
-            String::from("missing_output"),
-            rezzy::json!(path.to_string_lossy().to_string()),
-        );
-    }
-    Ok(result)
+    finalize_dag(state, dag_request)
 }
 
 /// Parameters for filling missing references from a remote server.
@@ -887,21 +944,105 @@ struct GapFillRequest<'a> {
     no_fallback: bool,
 }
 
+fn gap_fill_result(
+    events: &[rezzy::JsonValue],
+    fetched: &[PathBuf],
+    completed_rounds: u32,
+    failed_requests: usize,
+    closed: bool,
+) -> JsonValue {
+    let final_report = crate::repair::scan_gaps(events);
+    rezzy::json!({
+        "status": if closed || final_report.is_closed() { "closed" } else { "incomplete" },
+        "rounds": completed_rounds,
+        "events": final_report.present.len(),
+        "missing_prev_events": final_report.missing_prev.iter().cloned().collect::<Vec<_>>(),
+        "missing_auth_events": final_report.missing_auth.iter().cloned().collect::<Vec<_>>(),
+        "failed_requests": failed_requests,
+        "fetched": fetched.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
+    })
+}
+
+fn fetch_gap_round(
+    request: &GapFillRequest<'_>,
+    events: &mut Vec<JsonValue>,
+    round_dir: &Path,
+    round: u32,
+) -> Result<(usize, usize, Vec<PathBuf>, usize), AppError> {
+    let before = crate::repair::scan_gaps(events).present.len();
+    let report = crate::repair::scan_gaps(events);
+    let mut fetched = Vec::new();
+    let mut failed_requests = 0_usize;
+    if !report.missing_prev.is_empty() {
+        let path = round_dir.join("backfill.jsonl");
+        let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
+        let summary = get_remote_dag(&DagRequest {
+            origin: request.origin,
+            destination: request.destination,
+            room_id: request.room_id,
+            starts: &starts,
+            room_version: request.room_version,
+            limit: -1,
+            output: &path,
+            key_path: request.key_path,
+            keyring_account: request.keyring_account,
+            no_fallback: request.no_fallback,
+            emit_missing: None,
+        })?;
+        if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
+            failed_requests = usize::try_from(n).unwrap_or(usize::MAX);
+            if let Some(detail) = summary.get("failures").and_then(JsonValue::as_str) {
+                eprintln!("[warn] round {round}: {n} backfill request(s) failed: {detail}");
+            }
+        }
+        if summary
+            .get("count")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0)
+            > 0
+        {
+            fetched.push(path.clone());
+            events.extend(crate::repair::read_jsonl_events(&path)?);
+        }
+    }
+    let report = crate::repair::scan_gaps(events);
+    if !report.missing_auth.is_empty() {
+        let path = round_dir.join("auth.jsonl");
+        let (count, failures) = fetch_auth_batches(
+            request.origin,
+            request.destination,
+            request.room_id,
+            &report,
+            &path,
+            request.key_path,
+            request.keyring_account,
+        )?;
+        if !failures.is_empty() {
+            failed_requests = failed_requests.saturating_add(failures.total());
+            eprintln!(
+                "[warn] round {round}: {} auth-chain request(s) failed: {}",
+                failures.total(),
+                failures.summary()
+            );
+        }
+        if count > 0 {
+            fetched.push(path.clone());
+            events.extend(crate::repair::read_jsonl_events(&path)?);
+        }
+    }
+    let after = crate::repair::scan_gaps(events).present.len();
+    Ok((before, after, fetched, failed_requests))
+}
+
 /// Fetch missing timeline and authentication references for a bounded number
 /// of rounds. This intentionally writes fetched batches separately; callers
 /// can inspect or aggregate them without mutating the original input.
 fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
     let GapFillRequest {
         inputs,
-        origin,
-        destination,
-        room_id,
-        room_version,
         rounds,
         output_dir,
-        key_path,
-        keyring_account,
-        no_fallback,
+        ..
     } = *request;
     fs::create_dir_all(output_dir)?;
     let mut events = Vec::new();
@@ -918,94 +1059,29 @@ fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         if rounds != 0 && round >= rounds {
             break;
         }
-        let report = crate::repair::scan_gaps(&events);
-        if report.is_closed() {
+        if crate::repair::scan_gaps(&events).is_closed() {
             closed = true;
             break;
         }
-        let before = report.present.len();
         let round_dir = output_dir.join(format!("round-{round:03}"));
         fs::create_dir_all(&round_dir)?;
-
-        if !report.missing_prev.is_empty() {
-            let path = round_dir.join("backfill.jsonl");
-            let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
-            let summary = get_remote_dag(&DagRequest {
-                origin,
-                destination,
-                room_id,
-                starts: &starts,
-                room_version,
-                limit: -1,
-                output: &path,
-                key_path,
-                keyring_account,
-                no_fallback,
-                emit_missing: None,
-            })?;
-            if let Some(n) = summary.get("failed_requests").and_then(JsonValue::as_u64) {
-                failed_requests =
-                    failed_requests.saturating_add(usize::try_from(n).unwrap_or(usize::MAX));
-                if let Some(detail) = summary.get("failures").and_then(JsonValue::as_str) {
-                    eprintln!("[warn] round {round}: {n} backfill request(s) failed: {detail}");
-                }
-            }
-            let backfilled = summary
-                .get("count")
-                .and_then(JsonValue::as_u64)
-                .unwrap_or(0);
-            if backfilled > 0 {
-                fetched.push(path.clone());
-                events.extend(crate::repair::read_jsonl_events(&path)?);
-            }
-        }
-
-        let report = crate::repair::scan_gaps(&events);
-        if !report.missing_auth.is_empty() {
-            let path = round_dir.join("auth.jsonl");
-            let (count, failures) = fetch_auth_batches(
-                origin,
-                destination,
-                room_id,
-                &report,
-                &path,
-                key_path,
-                keyring_account,
-            )?;
-            if !failures.is_empty() {
-                failed_requests = failed_requests.saturating_add(failures.total());
-                eprintln!(
-                    "[warn] round {round}: {} auth-chain request(s) failed: {}",
-                    failures.total(),
-                    failures.summary()
-                );
-            }
-            if count > 0 {
-                fetched.push(path.clone());
-                events.extend(crate::repair::read_jsonl_events(&path)?);
-            }
-        }
-
-        let after = crate::repair::scan_gaps(&events).present.len();
+        let (before, after, round_fetched, round_failures) =
+            fetch_gap_round(request, &mut events, &round_dir, round)?;
+        fetched.extend(round_fetched);
+        failed_requests = failed_requests.saturating_add(round_failures);
         round = round.saturating_add(1);
         completed_rounds = round;
         if after <= before {
             break;
         }
     }
-    let final_report = crate::repair::scan_gaps(&events);
-    if final_report.is_closed() {
-        closed = true;
-    }
-    Ok(rezzy::json!({
-        "status": if closed { "closed" } else { "incomplete" },
-        "rounds": completed_rounds,
-        "events": final_report.present.len(),
-        "missing_prev_events": final_report.missing_prev.iter().cloned().collect::<Vec<_>>(),
-        "missing_auth_events": final_report.missing_auth.iter().cloned().collect::<Vec<_>>(),
-        "failed_requests": failed_requests,
-        "fetched": fetched.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
-    }))
+    Ok(gap_fill_result(
+        &events,
+        &fetched,
+        completed_rounds,
+        failed_requests,
+        closed,
+    ))
 }
 
 /// Aggregated federation request failures, grouped by stable error code.
