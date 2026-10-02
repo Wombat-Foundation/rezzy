@@ -104,7 +104,7 @@ impl<'a> H64Index<'a> {
 pub struct ReconciliationContext<'a, Id: EventId, G: ForwardGraph<Id>> {
     graph: &'a G,
     frame_anchors: &'a [Id],
-    h64_index: H64Index<'a>,
+    population: &'a SortedPopulation,
 }
 
 impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
@@ -118,7 +118,7 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         kind: RoomEventIdKind,
         graph: &'a G,
         frame_anchors: &'a [Id],
-        sorted_h64: &'a [u64],
+        population: &'a SortedPopulation,
     ) -> Result<Self, AlgebraicError> {
         if let Err(error) = kind.require_event_ids_frame() {
             return Err(error);
@@ -126,7 +126,7 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         Ok(Self {
             graph,
             frame_anchors,
-            h64_index: H64Index::new(sorted_h64),
+            population,
         })
     }
 
@@ -151,7 +151,7 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         &self,
         request: &BucketRequest,
     ) -> Result<core::ops::Range<usize>, AlgebraicError> {
-        self.h64_index.bucket_range(request)
+        self.population.index().bucket_range(request)
     }
 
     /// Returns the `h64` slice covered by one bucket request.
@@ -159,7 +159,7 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
     /// # Errors
     /// Returns an error when the request is malformed.
     pub fn bucket_slice(&self, request: &BucketRequest) -> Result<&'a [u64], AlgebraicError> {
-        self.h64_index.bucket_slice(request)
+        self.population.index().bucket_slice(request)
     }
 
     /// Constructs bucket sketches over the room's sorted `h64` index.
@@ -170,7 +170,26 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         &self,
         requests: &[BucketRequest],
     ) -> Result<Vec<SyndromeSketch>, AlgebraicError> {
-        build_bucket_sketches(self.h64_index.sorted_h64, requests)
+        build_bucket_sketches(self.population.h64s(), requests)
+    }
+
+    /// Like [`bucket_sketches`](Self::bucket_sketches), but also returns each
+    /// node's [`NodeSummary`], from the same population object.
+    ///
+    /// # Errors
+    /// Returns an error if any sketches exceed capacity limits or if requests
+    /// are invalid.
+    pub fn bucket_nodes(
+        &self,
+        requests: &[BucketRequest],
+    ) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
+        build_bucket_nodes(self.population, requests)
+    }
+
+    /// The sorted population this context serves.
+    #[must_use]
+    pub const fn population(&self) -> &'a SortedPopulation {
+        self.population
     }
 }
 
@@ -800,15 +819,15 @@ mod tests {
 
         let child = ElementHash::from_opaque_bytes(b"$child");
         let grandchild = ElementHash::from_opaque_bytes(b"$grandchild");
-        let mut sorted_h64 = vec![grandchild.h64, child.h64];
-        sorted_h64.sort_unstable();
+        let population = SortedPopulation::new(vec![grandchild, child]);
+        let sorted_h64 = population.h64s().to_vec();
         let anchors = [id("$anchor")];
 
         let context = ReconciliationContext::new(
             RoomEventIdKind::ReferenceHash,
             &graph,
             &anchors,
-            &sorted_h64,
+            &population,
         )
         .unwrap();
         let digest = context.frame_digest().unwrap();
@@ -828,7 +847,7 @@ mod tests {
         assert_eq!(sketches.len(), 1);
         let mut roots = sketches[0].clone().decode_elements(4).unwrap();
         roots.sort_unstable();
-        let mut expected_roots = sorted_h64.clone();
+        let mut expected_roots = sorted_h64;
         expected_roots.sort_unstable();
         assert_eq!(roots, expected_roots);
     }
@@ -1102,10 +1121,15 @@ mod tests {
             compute_frame_digest(RoomEventIdKind::SenderChosen, &graph, &anchors),
             Err(AlgebraicError::UnsupportedRoomVersion)
         );
-        let sorted = [1_u64];
+        let population = SortedPopulation::default();
         assert_eq!(
-            ReconciliationContext::new(RoomEventIdKind::SenderChosen, &graph, &anchors, &sorted)
-                .err(),
+            ReconciliationContext::new(
+                RoomEventIdKind::SenderChosen,
+                &graph,
+                &anchors,
+                &population
+            )
+            .err(),
             Some(AlgebraicError::UnsupportedRoomVersion)
         );
     }

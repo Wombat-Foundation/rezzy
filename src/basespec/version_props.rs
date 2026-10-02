@@ -18,7 +18,9 @@
 //   - V4+:   same as V3 but with `$` prefix only (no domain)
 // Authoritative: `RoomVersionFormat::uses_reference_hash_event_ids` (v1/v2
 // vs. v3+) in `rezzy_types.rs`; the v3-vs-v4+ base64 padding/charset split
-// is `rezzy_recon::EventIdFormat` (`V3`/`V4Plus`). Map `uses_reference_hash_event_ids` onto `rezzy_recon::RoomEventIdKind` when building a frame; v1/v2 are rejected there (out of scope for MSC4521).
+// is `rezzy_recon::EventIdFormat` (`V3`/`V4Plus`). Map
+// `uses_reference_hash_event_ids` onto `rezzy_recon::RoomEventIdKind` when
+// building a frame; v1/v2 are rejected there (out of scope for MSC4521).
 
 // Room ID format
 //   - V1-V11: server-assigned (`!localpart:domain`)

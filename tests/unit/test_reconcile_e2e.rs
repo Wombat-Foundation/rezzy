@@ -28,8 +28,8 @@ use rezzy_recon::client::{
 use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
 use rezzy_recon::{
-    build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, ElementHash,
-    NodeSummary, SortedPopulation,
+    build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
+    ElementHash, NodeSummary, SortedPopulation,
 };
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
@@ -335,7 +335,7 @@ fn run_verified(local: &Side, remote: &Side) -> (ClientAction, BucketExchange) {
     let client = ReconciliationClient::default().allow_unlimited_delta();
     let initial = client.select_action(&local.kernel, remote_digest(&remote.kernel), 0);
     let ClientAction::BucketSketches {
-        mut requests,
+        requests,
         accumulated_roots,
     } = initial
     else {
@@ -348,12 +348,23 @@ fn run_verified(local: &Side, remote: &Side) -> (ClientAction, BucketExchange) {
     )
     .ok()
     .map(|e| e.delta);
-    let mut exchange = BucketExchange::new(
+    let exchange = BucketExchange::new(
         accumulated_roots,
         rezzy_recon::client::MAX_RECONCILIATION_ROUNDS,
         MAX_BUCKETS_PER_ROUND,
         MAX_BUCKETED_SKETCH_CAPACITY,
     );
+    drive(local, remote, exchange, requests, estimate)
+}
+
+/// Runs an exchange to a terminal action from its first round's requests.
+fn drive(
+    local: &Side,
+    remote: &Side,
+    mut exchange: BucketExchange,
+    mut requests: Vec<BucketRequest>,
+    estimate: Option<u64>,
+) -> (ClientAction, BucketExchange) {
     loop {
         let remote_nodes = build_bucket_nodes(&remote.population, &requests).unwrap();
         let local_nodes = build_bucket_nodes(&local.population, &requests).unwrap();
@@ -433,12 +444,12 @@ fn verified_exchange_resolves_and_passes_phase_two() {
 
 /// A shared element whose `h64` collides with a remote-only one (mocked, since
 /// no real event ID can be ground to this). The root survives the sketch on
-/// the wrong side and the node fails its count identity. The same restricted
-/// root set comes back under a bigger capacity, so the exchange classifies a
-/// collision after two attempts, never admits the node, and reports the prefix
-/// as ladder-failed instead of climbing every step to the baseline.
+/// the wrong side and the node fails its count identity. A phase-1 failure is
+/// split, never given a bigger capacity, so the collision is narrowed to a
+/// small prefix instead of costing the whole population: the honest remote-only
+/// element (placed in the other half) is still resolved.
 #[test]
-fn colliding_h64_is_ladder_failed_after_two_attempts() {
+fn colliding_h64_is_narrowed_not_the_whole_frame() {
     let mut generator = Xorshift128::new(12);
     let shared: Vec<ElementHash> = (0..200).map(|_| generator.hash()).collect();
     let collided = shared[17];
@@ -446,7 +457,11 @@ fn colliding_h64_is_ladder_failed_after_two_attempts() {
         h128: collided.h128 ^ 0xdead_beef,
         h64: collided.h64,
     };
-    let extra = generator.hash();
+    // In the opposite top-level half, so the first split separates it.
+    let extra = ElementHash {
+        h128: generator.hash().h128,
+        h64: collided.h64 ^ (1_u64 << 63),
+    };
     let local = Side::new(shared.clone());
     let remote = Side::new([shared, vec![twin, extra]].concat());
 
@@ -458,16 +473,18 @@ fn colliding_h64_is_ladder_failed_after_two_attempts() {
     else {
         panic!("expected a partial resolve, got {action:?}");
     };
+    assert_eq!(ladder_failed.len(), 1);
     assert!(
-        roots.is_empty(),
-        "the failed node's roots must not be admitted"
+        ladder_failed[0].0 > 0,
+        "must be narrower than the whole frame: {ladder_failed:?}"
     );
-    assert_eq!(ladder_failed, vec![(0, 0)]);
+    assert!(in_node(collided.h64, ladder_failed[0]));
+    assert!(roots.contains(&extra.h64), "the honest element is resolved");
+    assert!(roots.iter().all(|&r| !in_node(r, ladder_failed[0])));
     assert_eq!(exchange.ladder_failed(), ladder_failed.as_slice());
-    assert!(exchange.classified().is_empty());
     assert!(
-        exchange.rounds_emitted() <= 2,
-        "two attempts, not the whole ladder: {}",
+        exchange.rounds_emitted() <= 6,
+        "a few levels, not the whole ladder: {}",
         exchange.rounds_emitted()
     );
 }
@@ -577,4 +594,93 @@ fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
         "only the colliding node may fail phase 2"
     );
     assert!(in_node(x.h64, rejected[0]));
+}
+
+/// Splits an exchange's classified nodes into the roots of those that pass
+/// phase 2 and the nodes that fail it. `returned` is the peer's identifiers.
+fn phase_two(exchange: &BucketExchange, returned: &[ElementHash]) -> (Vec<u64>, Vec<(u8, u64)>) {
+    let (mut good, mut failed) = (Vec::new(), Vec::new());
+    for c in exchange.classified() {
+        let digests: Vec<[u8; 32]> = returned
+            .iter()
+            .filter(|e| c.m_roots().contains(&e.h64))
+            .map(|e| digest_of(*e))
+            .collect();
+        if verify_follow_up(c, c.node(), &digests).is_ok() {
+            good.extend(c.l_roots().iter().chain(c.m_roots()));
+        } else {
+            failed.push(c.node());
+        }
+    }
+    (good, failed)
+}
+
+/// A phase-2 failure has no retry inside the exchange, but the caller can
+/// narrow it: re-run just the failed node's children, repeating while phase 2
+/// keeps failing. The honest roots in the node are recovered; the collision
+/// ends up isolated at a prefix deeper than the node.
+#[test]
+fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
+    let mut generator = Xorshift128::new(13);
+    let shared: Vec<ElementHash> = (0..200).map(|_| generator.hash()).collect();
+    let local_extra: Vec<ElementHash> = (0..22).map(|_| generator.hash()).collect();
+    let mut remote_extra: Vec<ElementHash> = (0..22).map(|_| generator.hash()).collect();
+    let x = generator.hash();
+    let y = ElementHash {
+        h128: x.h128 ^ 0xfeed_face,
+        h64: x.h64,
+    };
+    // An honest remote-only element in the same half as the pair.
+    remote_extra.push(ElementHash {
+        h128: generator.hash().h128,
+        h64: x.h64 ^ (1_u64 << 62),
+    });
+
+    let local = Side::new([shared.clone(), local_extra.clone(), vec![x]].concat());
+    let remote = Side::new([shared, remote_extra.clone(), vec![y]].concat());
+    let (action, exchange) = run_verified(&local, &remote);
+    assert!(matches!(action, ClientAction::ResolveRoots { .. }));
+
+    let (mut recovered, mut pending) = phase_two(&exchange, &remote_extra);
+    assert_eq!(pending.len(), 1, "only the colliding node fails phase 2");
+    let node = pending[0];
+    let mut lost: Vec<(u8, u64)> = Vec::new();
+    for _ in 0..64 {
+        if pending.is_empty() {
+            break;
+        }
+        let Ok((exchange, requests)) = BucketExchange::narrow(
+            &pending,
+            rezzy_recon::client::MAX_RECONCILIATION_ROUNDS,
+            MAX_BUCKETS_PER_ROUND,
+            MAX_BUCKETED_SKETCH_CAPACITY,
+        ) else {
+            // At the depth cap there is nothing left to narrow: the caller's
+            // per-prefix fallback takes the node.
+            lost.append(&mut pending);
+            break;
+        };
+        let (action, exchange) = drive(&local, &remote, exchange, requests, None);
+        let ClientAction::ResolveRoots { ladder_failed, .. } = action else {
+            panic!("expected a partial resolve, got {action:?}");
+        };
+        lost.extend(ladder_failed);
+        let (good, failed) = phase_two(&exchange, &remote_extra);
+        recovered.extend(good);
+        pending = failed;
+    }
+    assert!(pending.is_empty() || !lost.is_empty());
+    assert!(!lost.is_empty());
+    assert!(lost.iter().all(|&l| l.0 > node.0), "narrower than {node:?}");
+    assert!(lost.iter().any(|&l| in_node(x.h64, l)));
+
+    // Every honest root in the original node outside the lost prefixes was
+    // recovered, and nothing inside them was.
+    let in_lost = |h: u64| lost.iter().any(|&l| in_node(h, l));
+    for e in local_extra.iter().chain(&remote_extra) {
+        if in_node(e.h64, node) && !in_lost(e.h64) {
+            assert!(recovered.contains(&e.h64), "honest root {:#x} lost", e.h64);
+        }
+    }
+    assert!(recovered.iter().all(|&r| !in_lost(r)));
 }
