@@ -101,13 +101,18 @@ impl<'a> H64Index<'a> {
 /// state: it avoids threading the graph, anchors, and sorted index separately
 /// through every call site.
 #[derive(Debug, Clone, Copy)]
-pub struct ReconciliationContext<'a, Id: EventId, G: ForwardGraph<Id>> {
+pub struct ReconciliationContext<
+    'a,
+    Id: EventId,
+    G: ForwardGraph<Id>,
+    P: Population = SortedPopulation,
+> {
     graph: &'a G,
     frame_anchors: &'a [Id],
-    population: &'a SortedPopulation,
+    population: &'a P,
 }
 
-impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
+impl<'a, Id: EventId, G: ForwardGraph<Id>, P: Population> ReconciliationContext<'a, Id, G, P> {
     /// Creates a reusable context for one room/frame snapshot.
     ///
     /// # Errors
@@ -118,7 +123,7 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         kind: RoomEventIdKind,
         graph: &'a G,
         frame_anchors: &'a [Id],
-        population: &'a SortedPopulation,
+        population: &'a P,
     ) -> Result<Self, AlgebraicError> {
         if let Err(error) = kind.require_event_ids_frame() {
             return Err(error);
@@ -143,6 +148,27 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         )
     }
 
+    /// Like `bucket_sketches`, but also returns each
+    /// node's [`NodeSummary`], from the same population object.
+    ///
+    /// # Errors
+    /// Returns an error if any sketches exceed capacity limits or if requests
+    /// are invalid.
+    pub fn bucket_nodes(
+        &self,
+        requests: &[BucketRequest],
+    ) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
+        build_bucket_nodes(self.population, requests)
+    }
+
+    /// The population this context serves.
+    #[must_use]
+    pub const fn population(&self) -> &'a P {
+        self.population
+    }
+}
+
+impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G, SortedPopulation> {
     /// Returns the `h64` range covered by one bucket request.
     ///
     /// # Errors
@@ -171,25 +197,6 @@ impl<'a, Id: EventId, G: ForwardGraph<Id>> ReconciliationContext<'a, Id, G> {
         requests: &[BucketRequest],
     ) -> Result<Vec<SyndromeSketch>, AlgebraicError> {
         build_bucket_sketches(self.population.h64s(), requests)
-    }
-
-    /// Like [`bucket_sketches`](Self::bucket_sketches), but also returns each
-    /// node's [`NodeSummary`], from the same population object.
-    ///
-    /// # Errors
-    /// Returns an error if any sketches exceed capacity limits or if requests
-    /// are invalid.
-    pub fn bucket_nodes(
-        &self,
-        requests: &[BucketRequest],
-    ) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
-        build_bucket_nodes(self.population, requests)
-    }
-
-    /// The sorted population this context serves.
-    #[must_use]
-    pub const fn population(&self) -> &'a SortedPopulation {
-        self.population
     }
 }
 
@@ -374,6 +381,11 @@ impl SortedPopulation {
         H64Index::new(&self.h64)
     }
 
+    fn node_range(&self, node: (u8, u64)) -> core::ops::Range<usize> {
+        self.index()
+            .bucket_range_unchecked(&BucketRequest::new(node.0, node.1, 1))
+    }
+
     /// The `h128` of every element whose `h64` is `root`, in order; empty when
     /// the root is absent.
     #[must_use]
@@ -384,6 +396,43 @@ impl SortedPopulation {
     }
 }
 
+/// A room's population as the reconciliation exchange reads it: per-node
+/// summaries, the `h64`s of a node, and the `h128`s behind a decoded root.
+///
+/// An in-memory [`SortedPopulation`] implements it, and a persisted store can
+/// serve the same reads from a pinned snapshot. Nodes are `(depth, prefix)`;
+/// callers validate them (see `validate_bucket_requests`) before asking.
+pub trait Population {
+    /// The count and `h128` XOR of the elements inside `node`.
+    ///
+    /// # Errors
+    /// Returns an error if the count overflows.
+    fn node_summary(&self, node: (u8, u64)) -> Result<NodeSummary, AlgebraicError>;
+
+    /// Calls `f` with the `h64` of every element inside `node`, in order.
+    fn for_each_h64_in(&self, node: (u8, u64), f: &mut dyn FnMut(u64));
+
+    /// Appends to `out` the `h128` of every element whose `h64` is `root`.
+    fn candidates_into(&self, root: u64, out: &mut Vec<u128>);
+}
+
+impl Population for SortedPopulation {
+    fn node_summary(&self, node: (u8, u64)) -> Result<NodeSummary, AlgebraicError> {
+        let range = self.node_range(node);
+        NodeSummary::from_h128s(&self.h128[range])
+    }
+
+    fn for_each_h64_in(&self, node: (u8, u64), f: &mut dyn FnMut(u64)) {
+        for &h64 in &self.h64[self.node_range(node)] {
+            f(h64);
+        }
+    }
+
+    fn candidates_into(&self, root: u64, out: &mut Vec<u128>) {
+        out.extend_from_slice(self.candidates(root));
+    }
+}
+
 /// Like [`build_bucket_sketches`], but also returns each node's
 /// [`NodeSummary`] (count and `h128` XOR), computed over the same slice that
 /// is toggled into the sketch.
@@ -391,21 +440,23 @@ impl SortedPopulation {
 /// # Errors
 /// Returns an error if a sketch exceeds capacity limits or the requests are
 /// invalid.
-pub fn build_bucket_nodes(
-    population: &SortedPopulation,
+pub fn build_bucket_nodes<P: Population + ?Sized>(
+    population: &P,
     requests: &[BucketRequest],
 ) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
-    let (sorted_h64, sorted_h128) = (population.h64s(), population.h128s());
     crate::triage::validate_bucket_requests(requests)?;
-    let index = population.index();
     let mut nodes = Vec::with_capacity(requests.len());
     for request in requests {
-        let range = index.bucket_range_unchecked(request);
+        let node = (request.depth, request.prefix);
         let mut sketch = SyndromeSketch::new(request.capacity)?;
-        for &h64 in &sorted_h64[range.clone()] {
-            sketch.toggle(h64)?;
-        }
-        nodes.push((sketch, NodeSummary::from_h128s(&sorted_h128[range])?));
+        let mut toggled = Ok(());
+        population.for_each_h64_in(node, &mut |h64| {
+            if toggled.is_ok() {
+                toggled = sketch.toggle(h64);
+            }
+        });
+        toggled?;
+        nodes.push((sketch, population.node_summary(node)?));
     }
     Ok(nodes)
 }
@@ -1132,5 +1183,98 @@ mod tests {
             .err(),
             Some(AlgebraicError::UnsupportedRoomVersion)
         );
+    }
+
+    /// A population that is not a `SortedPopulation`: it answers from an
+    /// unordered list, as a persisted store reading runs would.
+    struct ScanPopulation(Vec<ElementHash>);
+
+    impl Population for ScanPopulation {
+        fn node_summary(&self, node: (u8, u64)) -> Result<NodeSummary, AlgebraicError> {
+            let range = H64Index::bounds_unchecked(&BucketRequest::new(node.0, node.1, 1));
+            let h128s: Vec<u128> = self
+                .0
+                .iter()
+                .filter(|e| range.contains(&u128::from(e.h64)))
+                .map(|e| e.h128)
+                .collect();
+            NodeSummary::from_h128s(&h128s)
+        }
+
+        fn for_each_h64_in(&self, node: (u8, u64), f: &mut dyn FnMut(u64)) {
+            let range = H64Index::bounds_unchecked(&BucketRequest::new(node.0, node.1, 1));
+            let mut h64s: Vec<u64> = self
+                .0
+                .iter()
+                .map(|e| e.h64)
+                .filter(|h| range.contains(&u128::from(*h)))
+                .collect();
+            h64s.sort_unstable();
+            h64s.into_iter().for_each(f);
+        }
+
+        fn candidates_into(&self, root: u64, out: &mut Vec<u128>) {
+            let mut found: Vec<u128> = self
+                .0
+                .iter()
+                .filter(|e| e.h64 == root)
+                .map(|e| e.h128)
+                .collect();
+            found.sort_unstable();
+            out.extend(found);
+        }
+    }
+
+    #[test]
+    fn build_bucket_nodes_serves_any_population_identically() {
+        let elements = vec![
+            element(0x9, 7),
+            element(0x3, 7),
+            element(0x5, 1 << 63),
+            element(0x6, u64::MAX),
+            element(0x1, 40),
+        ];
+        let sorted = SortedPopulation::new(elements.clone());
+        let scan = ScanPopulation(elements);
+        let requests = [
+            BucketRequest::new(3, 0, 8),
+            BucketRequest::new(2, 1, 8),
+            BucketRequest::new(1, 1, 8),
+        ];
+        let nodes = build_bucket_nodes(&sorted, &requests).unwrap();
+        assert_eq!(nodes, build_bucket_nodes(&scan, &requests).unwrap());
+        assert_eq!(nodes[0].1.count, 3);
+        assert_eq!(nodes[2].1.count, 2);
+        let whole = [BucketRequest::new(0, 0, 8)];
+        assert_eq!(
+            build_bucket_nodes(&sorted, &whole).unwrap(),
+            build_bucket_nodes(&scan, &whole).unwrap()
+        );
+    }
+
+    #[test]
+    fn candidates_into_appends_and_leaves_existing_entries() {
+        let population =
+            SortedPopulation::new(vec![element(0x9, 7), element(0x3, 7), element(0x4, 8)]);
+        let mut out = vec![0xFF];
+        population.candidates_into(7, &mut out);
+        assert_eq!(out, [0xFF, 0x3, 0x9]);
+        population.candidates_into(99, &mut out);
+        assert_eq!(out, [0xFF, 0x3, 0x9]);
+    }
+
+    #[test]
+    fn node_summary_matches_the_nodes_slice() {
+        let population = SortedPopulation::new(vec![
+            element(0x5, 1),
+            element(0x6, 2),
+            element(0x7, 1 << 63),
+        ]);
+        let root = population.node_summary((0, 0)).unwrap();
+        assert_eq!(root.count, 3);
+        assert_eq!(root.digest, 0x5 ^ 0x6 ^ 0x7);
+        let right = population.node_summary((1, 1)).unwrap();
+        assert_eq!((right.count, right.digest), (1, 0x7));
+        assert_eq!(population.node_summary((1, 0)).unwrap().count, 2);
     }
 }
