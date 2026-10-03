@@ -422,8 +422,9 @@ fn bench_lattice_arithmetic() {
 ///
 /// Expansion dominates `insert`/`remove`, and collapse dominates `digest`, so
 /// these two numbers explain nearly all of the per-element cost above. The
-/// pre-migration SHAKE256 backend is deliberately absent: it is no longer a
-/// code path, and keeping it here would only measure dead work.
+/// pre-migration SHAKE256 + BLAKE2b backend is deliberately absent here: it is
+/// no longer a code path, so measuring it would only slow this suite down.
+/// For the head-to-head against that retired stack, run `lthash_backends`.
 fn bench_expansion_backends(size: InputSize) {
     println!(
         "\n=== BLAKE3 Expansion and Collapse (input size: {}) ===",

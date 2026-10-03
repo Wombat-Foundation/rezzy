@@ -112,6 +112,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "math",
+        name: "lthash_backends",
+        description: "LtHash SHAKE256+BLAKE2b versus BLAKE3+BLAKE3 primitive stacks",
+        run_fn: math::lthash_backends::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
         name: "reconcile",
         description: "Set reconciliation (PinSketch/Minisketch) encoding & decoding",
         run_fn: math::reconcile::run,
