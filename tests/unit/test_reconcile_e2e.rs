@@ -29,8 +29,8 @@ use rezzy_recon::client::{
 use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
 use rezzy_recon::{
-    build_bucket_nodes, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess, BucketRequest,
-    should_narrow, Classified, ElementHash, NodeSummary, SortedPopulation,
+    build_bucket_nodes, should_narrow, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess,
+    BucketRequest, Classified, ElementHash, NodeSummary, SortedPopulation,
 };
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
@@ -655,9 +655,8 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
     while !pending.is_empty() {
         // Same stop rule as phase 1: small or unsplittable nodes go to the
         // caller's per-prefix fallback instead of another pass.
-        let (narrowable, fallback): (Vec<_>, Vec<_>) = pending
-            .iter()
-            .partition(|c| should_narrow(c, rounds_left));
+        let (narrowable, fallback): (Vec<_>, Vec<_>) =
+            pending.iter().partition(|c| should_narrow(c, rounds_left));
         lost.extend(fallback.iter().map(|c| c.node()));
         if narrowable.is_empty() {
             break;
