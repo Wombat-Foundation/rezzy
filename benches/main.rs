@@ -113,7 +113,7 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     BenchmarkEntry {
         domain: "math",
         name: "lthash_backends",
-        description: "LtHash SHAKE256+BLAKE2b versus BLAKE3+BLAKE3 primitive stacks",
+        description: "LtHash primitive stacks plus SHA-512-CTR / AES-256-CTR expansion candidates",
         run_fn: math::lthash_backends::run,
     },
     BenchmarkEntry {

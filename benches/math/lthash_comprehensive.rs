@@ -7,7 +7,9 @@
 //! - Single operations: insert, remove, replace, seed
 //! - Multi operations: batch insert/remove (varying batch sizes)
 //! - Large batch operations: bulk state construction
-//! - Input size variations: small (minimal), medium (typical), large (max event IDs)
+//! - Input size variations: small (minimal), medium (typical), large (400-byte
+//!   IDs), stress (65 KiB IDs — a deliberate data-volume stressor, not
+//!   realistic)
 //! - Expansion cost: the BLAKE3 XOF that seeds a lane, and the BLAKE3 collapse
 //! - Lattice arithmetic
 
@@ -30,15 +32,24 @@ use crate::common::{
     random_member_key, StateKey, Xorshift128,
 };
 
-/// Largest state size run with `InputSize::Large` (~64 MiB of event IDs).
-const MAX_LARGE_STATE: usize = 1024;
+/// Largest state size run with `InputSize::Stress` (1024 entries x 65 KiB
+/// event IDs = ~64 MiB): a deliberate data-volume stressor, not a realistic
+/// fixture.
+const MAX_STRESS_STATE: usize = 1024;
 
-/// Input size categories for testing
+/// Input size categories.
+///
+/// `Small`/`Medium`/`Large` describe realistic event IDs; `Large` is the
+/// realistic upper bound (~400 bytes). `Stress` keeps the old 65535-byte IDs
+/// purely to expose data-volume scaling — no real event ID comes close, so its
+/// results are reported under a distinct name and never mixed with the
+/// realistic categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputSize {
     Small,  // Minimal event IDs like "$a"
     Medium, // Typical event IDs like "$event123:example.org"
-    Large,  // Max-length event IDs (65535 bytes)
+    Large,  // Realistic upper bound: ~400-byte event IDs
+    Stress, // Deliberate stressor: 65535-byte event IDs (never realistic)
 }
 
 impl InputSize {
@@ -47,6 +58,7 @@ impl InputSize {
             InputSize::Small => "small",
             InputSize::Medium => "medium",
             InputSize::Large => "large",
+            InputSize::Stress => "stress",
         }
     }
 
@@ -54,23 +66,27 @@ impl InputSize {
         match self {
             InputSize::Small => format!("${idx}"),
             InputSize::Medium => format!("$event{idx}:example.org"),
-            InputSize::Large => {
-                // Generate a ~65KB event ID (truncated to u16::MAX)
-                let len = 65535;
-                let mut s = String::with_capacity(len + 2);
-                s.push('$');
-                for i in 0..len {
-                    let c = ((rng.next_u64() >> (i % 8)) & 0xFF) as u8;
-                    if c.is_ascii_alphanumeric() {
-                        s.push(c as char);
-                    } else {
-                        s.push('a');
-                    }
-                }
-                s
-            }
+            // Realistic worst case: real event IDs top out around 400 bytes.
+            InputSize::Large => random_event_id(400, rng),
+            // Deliberate data-volume stressor, not a realistic event ID.
+            InputSize::Stress => random_event_id(65535, rng),
         }
     }
+}
+
+/// Random alphanumeric event ID of `len` bytes behind a `$` prefix.
+fn random_event_id(len: usize, rng: &mut Xorshift128) -> String {
+    let mut s = String::with_capacity(len + 2);
+    s.push('$');
+    for i in 0..len {
+        let c = ((rng.next_u64() >> (i % 8)) & 0xFF) as u8;
+        if c.is_ascii_alphanumeric() {
+            s.push(c as char);
+        } else {
+            s.push('a');
+        }
+    }
+    s
 }
 
 /// Generate entries with configurable input size
@@ -277,8 +293,8 @@ fn bench_bulk_construction(size: InputSize) {
     let state_sizes = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
 
     for &state_size in &state_sizes {
-        // Large event IDs are ~64 KiB each; cap the fixture to keep memory bounded.
-        if size == InputSize::Large && state_size > MAX_LARGE_STATE {
+        // Stress event IDs are ~64 KiB each; cap the fixture to keep memory bounded.
+        if size == InputSize::Stress && state_size > MAX_STRESS_STATE {
             continue;
         }
 
@@ -328,7 +344,7 @@ fn bench_incremental_mutations(size: InputSize) {
     let steps = 300;
 
     for &n in &state_sizes {
-        if size == InputSize::Large && n > MAX_LARGE_STATE {
+        if size == InputSize::Stress && n > MAX_STRESS_STATE {
             continue;
         }
         let base_entries = make_entries_with_size(n, 0x5EED_0000 + n as u64, size);
@@ -501,12 +517,17 @@ pub fn run() {
     println!(" COMPREHENSIVE LTHASH BENCHMARK SUITE");
     println!("============================================================");
     println!("Testing: single ops, batch ops, bulk construction, incremental");
-    println!("Input sizes: small, medium, large");
+    println!("Input sizes: small, medium, large (400-byte IDs), stress (65 KiB IDs)");
 
     let mut step = 0;
 
     // Single operations for each input size
-    for size in [InputSize::Small, InputSize::Medium, InputSize::Large] {
+    for size in [
+        InputSize::Small,
+        InputSize::Medium,
+        InputSize::Large,
+        InputSize::Stress,
+    ] {
         checkpoint(&mut step);
         bench_single_operations(size);
         bench_batch_operations(size);

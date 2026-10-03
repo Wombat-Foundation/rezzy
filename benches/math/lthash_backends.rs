@@ -14,12 +14,19 @@
 //! - **insert**: expansion + lattice add
 //! - **build**: from-scratch state hash of `n` entries, end to end
 //! - **mutate**: insert/overwrite/remove stream over a live state
+//! - **candidate backends**: the shipped stacks beside the hand-rolled
+//!   SHA-512 CTR and AES-256-CTR expansions (AES-NI and portable paths timed
+//!   separately), plus end-to-end builds with each candidate. These are
+//!   non-wire-compatible experiments with their own DSTs — see
+//!   [`expansion_backends`] for the constructions and the cache-timing caveat
+//!   that applies to the portable AES path.
 //!
 //! Before timing anything the bench proves it is measuring what it claims: the
-//! `shake+blake2` stack must reproduce the published MSC4500 test vectors, and
-//! the `blake3+blake3` stack must match `rezzy::state::LtHash` byte for byte.
-//! A fast number can therefore never come from a different (or broken)
-//! algorithm.
+//! `shake+blake2` stack must reproduce the published MSC4500 test vectors, the
+//! `blake3+blake3` stack must match `rezzy::state::LtHash` byte for byte, and
+//! every candidate primitive must clear its own published vectors (NIST/FIPS)
+//! before it is timed. A fast number can therefore never come from a
+//! different (or broken) algorithm.
 //!
 //! Run with: `cargo bench --manifest-path benches/Cargo.toml -- lthash_backends`
 
@@ -45,6 +52,8 @@ use sha3::Shake256;
 use crate::common::{
     generate_state_ops, generate_unique_entries, random_member_key, StateKey, StateOp, Xorshift128,
 };
+
+use super::expansion_backends;
 
 /// Lattice width of the MSC4500 instantiation: 1024 little-endian 16-bit lanes.
 const LANES: usize = 1024;
@@ -118,6 +127,73 @@ impl Stack {
     }
 }
 
+/// Expansion backends compared by the candidate section: the two shipped
+/// stacks plus the experimental backends in [`expansion_backends`]. All five
+/// hash the same buffered framing, so only the primitive varies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expand {
+    Blake3,
+    Shake256,
+    Sha512Ctr,
+    AesCtrNi,
+    AesCtrPortable,
+}
+
+impl Expand {
+    const ALL: [Expand; 5] = [
+        Expand::Blake3,
+        Expand::Shake256,
+        Expand::Sha512Ctr,
+        Expand::AesCtrNi,
+        Expand::AesCtrPortable,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Expand::Blake3 => "blake3",
+            Expand::Shake256 => "shake256",
+            Expand::Sha512Ctr => "sha512-ctr",
+            Expand::AesCtrNi => "aes-ctr-ni",
+            Expand::AesCtrPortable => "aes-ctr-portable",
+        }
+    }
+
+    fn dst(self) -> &'static [u8] {
+        match self {
+            Expand::Blake3 => LtHash::DST,
+            Expand::Shake256 => DST_SHAKE,
+            Expand::Sha512Ctr => expansion_backends::DST_SHA512_CTR,
+            Expand::AesCtrNi | Expand::AesCtrPortable => expansion_backends::DST_AES_CTR,
+        }
+    }
+
+    /// Expands already-framed element bytes into a 2048-byte seed.
+    fn expand(self, frame: &[u8], out: &mut [u8]) {
+        match self {
+            Expand::Blake3 => blake3::Hasher::new().update(frame).finalize_xof().fill(out),
+            Expand::Shake256 => {
+                let mut xof = Shake256::default();
+                sha3::digest::Update::update(&mut xof, frame);
+                sha3::digest::ExtendableOutput::finalize_xof_into(xof, out);
+            }
+            Expand::Sha512Ctr => expansion_backends::expand_sha512_ctr(frame, out),
+            Expand::AesCtrNi => expansion_backends::expand_aes_ctr(frame, out, true),
+            Expand::AesCtrPortable => expansion_backends::expand_aes_ctr(frame, out, false),
+        }
+    }
+
+    /// The backends measurable on this CPU: the AES-NI path only exists where
+    /// the CPU (and the target) actually has AES-NI.
+    fn available() -> Vec<Expand> {
+        Expand::ALL
+            .into_iter()
+            .filter(|backend| {
+                *backend != Expand::AesCtrNi || expansion_backends::aes_ni_available()
+            })
+            .collect()
+    }
+}
+
 /// Byte sink shared by both stacks, so the element framing is byte-identical
 /// no matter which primitive is being timed.
 trait Sink {
@@ -175,6 +251,28 @@ fn truncate_to_u16_limit(s: &str) -> (&str, u16) {
     }
 }
 
+/// Byte-buffer twin of [`feed_element`]: writes the identical framing bytes
+/// into `buf` (cleared first) for backends that need the element as a slice
+/// instead of a stream. [`check_framing_parity`] proves the two never drift.
+fn frame_element<'a>(
+    dst: &[u8],
+    event_type: &str,
+    state_key: &str,
+    event_id: &str,
+    buf: &'a mut Vec<u8>,
+) -> &'a [u8] {
+    buf.clear();
+    let (event_type, type_len) = truncate_to_u16_limit(event_type);
+    let (state_key, sk_len) = truncate_to_u16_limit(state_key);
+    buf.extend_from_slice(dst);
+    buf.extend_from_slice(&type_len.to_le_bytes());
+    buf.extend_from_slice(event_type.as_bytes());
+    buf.extend_from_slice(&sk_len.to_le_bytes());
+    buf.extend_from_slice(state_key.as_bytes());
+    buf.extend_from_slice(event_id.as_bytes());
+    buf
+}
+
 /// Unpacks `2 * LANES` bytes into little-endian 16-bit lanes.
 fn unpack_lanes(bytes: &[u8]) -> [u16; LANES] {
     let mut out = [0u16; LANES];
@@ -184,7 +282,10 @@ fn unpack_lanes(bytes: &[u8]) -> [u16; LANES] {
     out
 }
 
-/// Input-size categories, mirroring `lthash_comprehensive`.
+/// Input-size categories: a short `$0`-style ID, a real `$ev:domain` ID, and a
+/// ~400-byte ID — the realistic upper bound for an event ID. (The framing
+/// format tolerates up to 65535 bytes; no real event ID comes close, so this
+/// bench deliberately does not use `lthash_comprehensive`'s `Stress` category.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Size {
     Small,
@@ -206,7 +307,8 @@ impl Size {
             Size::Small => format!("${idx}"),
             Size::Medium => format!("$event{idx}:example.org"),
             Size::Large => {
-                let len = 65535;
+                // ~400 bytes: the realistic worst case for an event ID.
+                let len = 400;
                 let mut s = String::with_capacity(len + 2);
                 s.push('$');
                 for i in 0..len {
@@ -412,10 +514,7 @@ fn bench_expansion(step: &mut u32) {
     ] {
         let mut rng = Xorshift128::new(seed);
         let event_id = size.event_id(&mut rng, 0);
-        let iterations = match size {
-            Size::Small | Size::Medium => 20_000,
-            Size::Large => 300,
-        };
+        let iterations = 20_000;
         measure(
             iterations,
             &format!("expand ({})", size.name()),
@@ -555,13 +654,201 @@ fn apply_op(
     }
 }
 
+/// Proves the buffered framing used by the candidate section hashes the same
+/// bytes as the streaming framing the shipped stacks hash — including the
+/// `u16` truncation path — and that the buffered BLAKE3 path lands on the same
+/// seed as the streaming stack.
+fn check_framing_parity() {
+    struct Collect(Vec<u8>);
+
+    impl Sink for Collect {
+        fn put(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+    }
+
+    let event_id = "$event_1";
+    let long_state_key = "k".repeat(70_000);
+    for (event_type, state_key) in [
+        ("m.room.member", "@alice:example.org"),
+        ("m.room.member", ""),
+        ("m.room.name", long_state_key.as_str()),
+    ] {
+        let mut streamed = Collect(Vec::new());
+        feed_element(&mut streamed, LtHash::DST, event_type, state_key, event_id);
+        let mut buf = Vec::new();
+        let buffered = frame_element(LtHash::DST, event_type, state_key, event_id, &mut buf);
+        assert_eq!(
+            buffered,
+            streamed.0.as_slice(),
+            "buffered framing drifted from the streaming framing"
+        );
+    }
+
+    let mut buf = Vec::new();
+    let frame = frame_element(
+        LtHash::DST,
+        "m.room.member",
+        "@alice:example.org",
+        event_id,
+        &mut buf,
+    );
+    let mut out = [0u8; LANES * 2];
+    Expand::Blake3.expand(frame, &mut out);
+    assert_eq!(
+        unpack_lanes(&out),
+        Stack::Blake3.expand("m.room.member", "@alice:example.org", event_id),
+        "buffered blake3 expansion drifted from the streaming stack"
+    );
+    println!("  element framing (streaming vs buffered): ok");
+}
+
+/// Ratio lines shared by both candidate sections: how each backend compares
+/// against the `blake3` baseline (which is the shipped production expansion).
+fn print_speedups(label: &str, times: &[(&'static str, Duration)], baseline: &str) {
+    let base = times
+        .iter()
+        .find(|(name, _)| *name == baseline)
+        .map_or(Duration::ZERO, |(_, elapsed)| *elapsed);
+    for (name, elapsed) in times {
+        if *name == baseline {
+            continue;
+        }
+        let ratio = base.as_secs_f64() / elapsed.as_secs_f64();
+        if ratio >= 1.0 {
+            println!("  => {label}: {name} is {ratio:.2}x faster than {baseline}");
+        } else {
+            println!(
+                "  => {label}: {name} is {:.2}x slower than {baseline}",
+                1.0 / ratio
+            );
+        }
+    }
+}
+
+/// Candidate expansion backends: every stack and candidate hashing the same
+/// buffered element, at the three input sizes, with the candidate primitives
+/// proved correct first.
+fn bench_expansion_backends(step: &mut u32) {
+    checkpoint(step);
+    println!("\n=== Expansion backends (framed element -> 2048-byte seed) ===");
+    println!("  candidates are NOT MSC4500 wire-compatible: own DSTs, throughput only");
+    println!("  both AES paths share the blake3 key derivation and the scalar key schedule,");
+    println!("  so block encryption is the only thing that differs between them");
+    println!("  aes-ctr-portable is the wasm/portable stand-in: 4 KiB of T-tables with");
+    println!("  secret-dependent lookups (the classic AES cache-timing surface). This is a");
+    println!("  throughput bench: it cannot observe that side channel, so the number is the");
+    println!("  cost of the portable path, never a claim that the path is safe");
+    expansion_backends::check();
+    check_framing_parity();
+    let backends = Expand::available();
+    if !expansion_backends::aes_ni_available() {
+        println!("  AES-NI: unavailable on this CPU; aes-ctr-ni omitted (portable still timed)");
+    }
+
+    let mut buf: Vec<u8> = Vec::with_capacity(70_000);
+    for (size, seed) in [
+        (Size::Small, 0xE0FF_0001),
+        (Size::Medium, 0xE0FF_0002),
+        (Size::Large, 0xE0FF_0003),
+    ] {
+        let mut rng = Xorshift128::new(seed);
+        let event_id = size.event_id(&mut rng, 0);
+        let iterations = 20_000;
+        let label = format!("expand ({})", size.name());
+        let mut times: Vec<(&'static str, Duration)> = Vec::new();
+        for backend in &backends {
+            let backend = *backend;
+            let mut op = || {
+                // `black_box` on the frame keeps the framing itself inside the
+                // timed window instead of letting it hoist out of the loop.
+                let frame = black_box(frame_element(
+                    backend.dst(),
+                    "m.room.member",
+                    "@alice:example.org",
+                    &event_id,
+                    &mut buf,
+                ));
+                let mut out = [0u8; LANES * 2];
+                backend.expand(frame, &mut out);
+                black_box(out);
+            };
+            for _ in 0..iterations.min(2_000) {
+                op();
+            }
+            let elapsed = time(iterations, &mut op);
+            println!(
+                "  {label} {}: {}",
+                backend.name(),
+                fmt_ns(elapsed, iterations)
+            );
+            times.push((backend.name(), elapsed));
+        }
+        print_speedups(&label, &times, "blake3");
+    }
+}
+
+/// Builds an accumulator over `entries` with `backend`'s expansion, framing
+/// each element into the reusable `buf` — the candidate harness's input path.
+fn build_buffered(backend: Expand, entries: &[(StateKey, String)], buf: &mut Vec<u8>) -> LtHash {
+    let mut lattice = LtHash::ZERO;
+    let mut bytes = [0u8; LANES * 2];
+    for ((event_type, state_key), event_id) in entries {
+        let frame = black_box(frame_element(
+            backend.dst(),
+            event_type,
+            state_key,
+            event_id,
+            buf,
+        ));
+        backend.expand(frame, &mut bytes);
+        lattice.add_seed(&LtHash::from_lanes(unpack_lanes(&bytes)));
+    }
+    lattice
+}
+
+/// End-to-end bulk build with each candidate expansion: the number that would
+/// actually change if a candidate were adopted. Collapse stays BLAKE3 for all
+/// of them, so expansion is the only variable.
+fn bench_backend_builds(step: &mut u32) {
+    checkpoint(step);
+    println!("\n=== Bulk build with candidate expansions (n=1024, blake3 collapse) ===");
+
+    let entries = generate_unique_entries(1024, 0xB01C_0A51, random_member_key, |rng| {
+        format!("$event{}:example.org", rng.next_u64())
+    });
+    let iterations = 10u32;
+    let backends = Expand::available();
+    let mut buf: Vec<u8> = Vec::with_capacity(70_000);
+    let mut times: Vec<(&'static str, Duration)> = Vec::new();
+    for backend in &backends {
+        let backend = *backend;
+        let mut op = || {
+            let lattice = build_buffered(backend, &entries, &mut buf);
+            black_box(lattice.digest());
+        };
+        for _ in 0..2 {
+            op();
+        }
+        let elapsed = time(iterations, &mut op);
+        println!(
+            "  build (n=1024) {}: {}",
+            backend.name(),
+            fmt_ms(elapsed, iterations)
+        );
+        times.push((backend.name(), elapsed));
+    }
+    print_speedups("build (n=1024)", &times, "blake3");
+}
+
 /// Run all benchmarks.
 pub fn run() {
     println!("============================================================");
     println!(" LTHASH PRIMITIVE STACK: shake+blake2 vs blake3+blake3");
     println!("============================================================");
     println!("Same element encoding, same lattice arithmetic, two primitive stacks");
-    println!("Sections: correctness, expansion, collapse, insert, build, mutate");
+    println!("Sections: correctness, expansion, collapse, insert, build, mutate,");
+    println!("          candidate expansion backends, candidate builds");
 
     let mut step = 0;
 
@@ -571,6 +858,8 @@ pub fn run() {
     bench_insert(&mut step);
     bench_bulk_build(&mut step);
     bench_incremental(&mut step);
+    bench_expansion_backends(&mut step);
+    bench_backend_builds(&mut step);
 
     println!("\n============================================================");
     println!(" PRIMITIVE STACK COMPARISON COMPLETE");

@@ -36,7 +36,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-
 use crate::common::{
     apply_state_op, apply_state_op_lthash, generate_state_ops, generate_unique_entries, lthash_of,
     random_member_key, sha256_sorted_hash, xor_fold_sha256, StateKey, Xorshift128,
