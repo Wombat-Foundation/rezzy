@@ -1208,7 +1208,11 @@ mod tests {
             auth_events: &[],
             state_predecessors: &[],
         };
-        let raw: String = r.encode().iter().map(|b| alloc::format!("{b:02x}")).collect();
+        let raw: String = r
+            .encode()
+            .iter()
+            .map(|b| alloc::format!("{b:02x}"))
+            .collect();
         assert_eq!(
             raw,
             "0800246576656e745f310d006d2e726f6f6d2e6d656d626572120040616c6963653a6578616d706c652e636f6d0000000000000000"
