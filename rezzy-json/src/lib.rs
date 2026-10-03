@@ -3,6 +3,28 @@
 //! Objects use `BTreeMap` so iteration is deterministic and already suitable
 //! for Matrix canonical JSON. Numbers retain their source spelling; canonical
 //! validation and writing decide which spellings are acceptable.
+//!
+//! # Numeric ranges
+//!
+//! [`Number`] keeps the source spelling, so integers round-trip byte-exactly
+//! from [`Value::parse`] through [`write_string_value`] and
+//! [`write_raw_canonical_filtered`] all the way up to `u64::MAX`. That is much
+//! wider than the range that is safe to sign:
+//!
+//! - `|n| <= 2^53 - 1` ([`MAX_SAFE_INTEGER`]) is the canonical range.
+//!   [`write_raw_canonical_filtered_strict`] accepts it, and so does `ruma`,
+//!   whose bound is `js_int::Int`.
+//! - `2^53 - 1 < n <= u64::MAX` still round-trips exactly, but is rejected by
+//!   [`write_raw_canonical_filtered_strict`] and by `ruma`. Acceptance by the
+//!   permissive writer is **not** a signing guarantee.
+//! - `n > u64::MAX` is currently rewritten through `f64` and loses precision.
+//!
+//! [`Number::as_f64`] is lossy above `2^53`, so integer identifiers must be read
+//! with [`Number::as_i64`], [`Number::as_u64`], or [`Number::as_str`].
+//!
+//! Store 64-bit external identifiers such as X/Twitter snowflake ids as JSON
+//! strings: that is the only encoding which is canonical, interoperable, and
+//! lossless. See `docs/json_numeric_limits.md` for the full matrix.
 
 #![no_std]
 
@@ -23,8 +45,15 @@ use core::{
 pub type Object = BTreeMap<String, Value>;
 
 /// Largest integer a JSON number may carry per Matrix canonical JSON (2^53 - 1).
+///
+/// This bounds canonical output, not parsing: integers above it are still
+/// parsed and re-emitted exactly, they just cannot be canonicalized by
+/// [`write_raw_canonical_filtered_strict`] or by `ruma`. See the crate-level
+/// numeric range docs.
 pub const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 /// Smallest integer a JSON number may carry per Matrix canonical JSON (-(2^53 - 1)).
+///
+/// See [`MAX_SAFE_INTEGER`] for what this does and does not bound.
 pub const MIN_SAFE_INTEGER: i64 = -((1_i64 << 53) - 1);
 
 #[must_use]
@@ -79,7 +108,7 @@ impl Number {
             return Self("-0.0".to_string());
         }
         let is_float = source.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'));
-        if !is_float && (source.parse::<i64>().is_ok() || source.parse::<u64>().is_ok()) {
+        if !is_float {
             return Self(source.to_string());
         }
         // Keep the existing canonical rendering for representable values,
@@ -117,6 +146,12 @@ impl Number {
 
     #[must_use]
     /// Returns the value as `f64`, or `None` if it is not that type.
+    ///
+    /// **Lossy above [`MAX_SAFE_INTEGER`].** `f64` cannot represent every
+    /// integer past `2^53`, so a 64-bit identifier read this way comes back
+    /// rounded (`175928847299117063` yields `175928847299117056`) even though
+    /// the canonical spelling was preserved exactly. Use [`Self::as_i64`],
+    /// [`Self::as_u64`], or [`Self::as_str`] for identifiers.
     pub fn as_f64(&self) -> Option<f64> {
         self.0.parse().ok().filter(|value: &f64| value.is_finite())
     }
@@ -143,6 +178,52 @@ fn normalize_exponent(formatted: &str) -> String {
         }
     }
     formatted.to_string()
+}
+
+#[cfg(feature = "simd")]
+fn simd_safe_for_input(input: &[u8]) -> bool {
+    let mut depth = 0usize;
+    let mut digits = 0usize;
+    let mut index = 0usize;
+    while let Some(&byte) = input.get(index) {
+        if byte == b'\\' && input.get(index.saturating_add(1)) == Some(&b'u') {
+            return false;
+        }
+        if matches!(byte, b'e' | b'E') {
+            let mut exponent_index = index.saturating_add(1);
+            if matches!(input.get(exponent_index), Some(b'+' | b'-')) {
+                exponent_index = exponent_index.saturating_add(1);
+            }
+            let mut exponent_digits = 0usize;
+            while input
+                .get(exponent_index.saturating_add(exponent_digits))
+                .is_some_and(u8::is_ascii_digit)
+            {
+                exponent_digits = exponent_digits.saturating_add(1);
+            }
+            if exponent_digits >= 3 {
+                return false;
+            }
+        }
+        if matches!(byte, b'{' | b'[') {
+            depth = depth.saturating_add(1);
+            if depth > Tokenizer::MAX_DEPTH {
+                return false;
+            }
+        } else if matches!(byte, b'}' | b']') {
+            depth = depth.saturating_sub(1);
+        }
+        if byte.is_ascii_digit() {
+            digits = digits.saturating_add(1);
+        } else {
+            digits = 0;
+        }
+        if digits > 19 {
+            return false;
+        }
+        index = index.saturating_add(1);
+    }
+    true
 }
 
 impl From<u64> for Number {
@@ -282,8 +363,16 @@ impl Value {
     /// # Errors
     /// Returns [`Error`] if `input` is not valid JSON or has trailing content.
     pub fn parse(input: &str) -> Result<Self, Error> {
+        #[cfg(feature = "simd")]
+        return Self::parse_bytes(input.as_bytes());
+
+        #[cfg(not(feature = "simd"))]
+        Self::parse_scalar(input.as_bytes())
+    }
+
+    fn parse_scalar(input: &[u8]) -> Result<Self, Error> {
         let mut parser = Parser {
-            input: input.as_bytes(),
+            input,
             pos: 0,
             depth: 0,
         };
@@ -299,8 +388,48 @@ impl Value {
     /// # Errors
     /// Returns [`Error`] if `input` is not valid UTF-8 or not valid JSON.
     pub fn parse_bytes(input: &[u8]) -> Result<Self, Error> {
-        let text = core::str::from_utf8(input).map_err(|_| Error::InvalidString)?;
-        Self::parse(text)
+        #[cfg(feature = "simd")]
+        {
+            // simd-json parses numbers into machine values and therefore loses
+            // the Matrix-significant `-0` spelling. Preserve the scalar path
+            // for that rare case.
+            if input.windows(2).any(|window| window == b"-0") || !simd_safe_for_input(input) {
+                return Self::parse_scalar(input);
+            }
+            let mut input = input.to_vec();
+            simd_json::to_owned_value(&mut input)
+                .map(Self::from_simd_value)
+                .map_err(|_| Error::InvalidToken)
+        }
+
+        #[cfg(not(feature = "simd"))]
+        Self::parse_scalar(input)
+    }
+
+    #[cfg(feature = "simd")]
+    fn from_simd_value(value: simd_json::OwnedValue) -> Self {
+        match value {
+            simd_json::OwnedValue::Static(value) => match value {
+                simd_json::StaticNode::Null => Self::Null,
+                simd_json::StaticNode::Bool(value) => Self::Bool(value),
+                simd_json::StaticNode::I64(value) => Self::Number(Number(value.to_string())),
+                simd_json::StaticNode::U64(value) => Self::Number(Number(value.to_string())),
+                simd_json::StaticNode::F64(value) => {
+                    let mut buffer = ryu::Buffer::new();
+                    Self::Number(Number(normalize_exponent(buffer.format_finite(value))))
+                }
+            },
+            simd_json::OwnedValue::String(value) => Self::String(value),
+            simd_json::OwnedValue::Array(values) => {
+                Self::Array(values.into_iter().map(Self::from_simd_value).collect())
+            }
+            simd_json::OwnedValue::Object(values) => Self::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, Self::from_simd_value(value)))
+                    .collect(),
+            ),
+        }
     }
 }
 
@@ -505,65 +634,96 @@ const fn simple_escape(escape: u8) -> Option<char> {
     })
 }
 
-/// Appends `value` to `out` as a quoted, escaped JSON string.
-fn write_string(out: &mut String, value: &str) -> fmt::Result {
-    use fmt::Write as _;
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c <= '\u{1f}' => write!(out, "\\u{:04x}", c as u32)?,
-            c => out.push(c),
+/// Appends the JSON escape for the ASCII byte `byte` to `out`.
+///
+/// Callers must only pass bytes below `0x20`, `"`, or `\`.
+fn push_escape(out: &mut String, byte: u8) {
+    const HEX: [u8; 16] = *b"0123456789abcdef";
+    match byte {
+        b'"' => out.push_str("\\\""),
+        b'\\' => out.push_str("\\\\"),
+        0x08 => out.push_str("\\b"),
+        0x0c => out.push_str("\\f"),
+        b'\n' => out.push_str("\\n"),
+        b'\r' => out.push_str("\\r"),
+        b'\t' => out.push_str("\\t"),
+        _ => {
+            out.push_str("\\u00");
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
     }
+}
+
+/// Appends `value` to `out` as a quoted, escaped JSON string.
+///
+/// Scans bytes rather than `char`s so the common escape-free run is copied in
+/// one bulk append instead of one push per scalar.
+fn write_string_into(out: &mut String, value: &str) {
     out.push('"');
-    Ok(())
+    let bytes = value.as_bytes();
+    let mut run = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte >= 0x20 && byte != b'"' && byte != b'\\' {
+            // Multi-byte UTF-8 sequences are all >= 0x80, so `index` never lands
+            // inside one and the run slice below is always a valid `str`.
+            index = index.checked_add(1).expect("JSON string index overflow");
+            continue;
+        }
+        out.push_str(&value[run..index]);
+        push_escape(out, byte);
+        index = index.checked_add(1).expect("JSON string index overflow");
+        run = index;
+    }
+    out.push_str(&value[run..]);
+    out.push('"');
+}
+
+/// Appends `value` to `out` as compact canonical JSON.
+///
+/// Object keys come out sorted because [`Object`] is a [`BTreeMap`].
+fn write_value_into(out: &mut String, value: &Value) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
+        Value::Number(n) => out.push_str(n.as_str()),
+        Value::String(s) => write_string_into(out, s),
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i != 0 {
+                    out.push(',');
+                }
+                write_value_into(out, item);
+            }
+            out.push(']');
+        }
+        Value::Object(obj) => {
+            out.push('{');
+            for (i, (key, item)) in obj.iter().enumerate() {
+                if i != 0 {
+                    out.push(',');
+                }
+                write_string_into(out, key);
+                out.push(':');
+                write_value_into(out, item);
+            }
+            out.push('}');
+        }
+    }
 }
 
 /// Writes `value` as compact canonical JSON.
 ///
 /// # Errors
-/// Returns [`fmt::Error`] if writing to the output string fails.
+/// Never returns an error; the [`fmt::Error`] return type is kept for
+/// compatibility with existing callers.
+#[allow(clippy::unnecessary_wraps)]
 pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
-    fn write_value(out: &mut String, value: &Value) -> fmt::Result {
-        match value {
-            Value::Null => out.push_str("null"),
-            Value::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
-            Value::Number(n) => out.push_str(n.as_str()),
-            Value::String(s) => write_string(out, s)?,
-            Value::Array(items) => {
-                out.push('[');
-                for (i, item) in items.iter().enumerate() {
-                    if i != 0 {
-                        out.push(',');
-                    }
-                    write_value(out, item)?;
-                }
-                out.push(']');
-            }
-            Value::Object(obj) => {
-                out.push('{');
-                for (i, (key, item)) in obj.iter().enumerate() {
-                    if i != 0 {
-                        out.push(',');
-                    }
-                    write_string(out, key)?;
-                    out.push(':');
-                    write_value(out, item)?;
-                }
-                out.push('}');
-            }
-        }
-        Ok(())
-    }
     let mut out = String::new();
-    write_value(&mut out, value)?;
+    write_value_into(&mut out, value);
     Ok(out)
 }
 
@@ -575,12 +735,14 @@ pub fn write_string_value(value: &Value) -> Result<String, fmt::Error> {
 /// Matrix event semantics.
 ///
 /// # Errors
-/// Returns [`fmt::Error`] if writing to the output string fails.
+/// Never returns an error; the [`fmt::Error`] return type is kept for
+/// compatibility with existing callers.
+#[allow(clippy::unnecessary_wraps)]
 pub fn write_string_value_filtered<F>(value: &Value, mut exclude: F) -> Result<String, fmt::Error>
 where
     F: FnMut(&str) -> bool,
 {
-    fn write_value<F>(out: &mut String, value: &Value, exclude: &mut F) -> fmt::Result
+    fn write_value<F>(out: &mut String, value: &Value, exclude: &mut F)
     where
         F: FnMut(&str) -> bool,
     {
@@ -596,9 +758,9 @@ where
                         out.push(',');
                     }
                     first = false;
-                    write_string(out, key)?;
+                    write_string_into(out, key);
                     out.push(':');
-                    write_value(out, item, exclude)?;
+                    write_value(out, item, exclude);
                 }
                 out.push('}');
             }
@@ -608,17 +770,21 @@ where
                     if index != 0 {
                         out.push(',');
                     }
-                    write_value(out, item, exclude)?;
+                    write_value(out, item, exclude);
                 }
                 out.push(']');
             }
-            _ => out.push_str(&write_string_value(value)?),
+            // Leaves are written straight into `out`; routing them through
+            // `write_string_value` would allocate a `String` per scalar.
+            Value::Null => out.push_str("null"),
+            Value::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
+            Value::Number(n) => out.push_str(n.as_str()),
+            Value::String(s) => write_string_into(out, s),
         }
-        Ok(())
     }
 
     let mut out = String::new();
-    write_value(&mut out, value, &mut exclude)?;
+    write_value(&mut out, value, &mut exclude);
     Ok(out)
 }
 
@@ -635,105 +801,174 @@ fn write_raw_canonical_filtered_internal<F>(
 where
     F: FnMut(&str) -> bool,
 {
-    fn emit<F>(raw: &[u8], out: &mut String, exclude: &mut F, strict: bool) -> Result<(), Error>
-    where
-        F: FnMut(&str) -> bool,
-    {
-        let mut tokenizer = Tokenizer::new(raw);
-        tokenizer.ws();
-        match tokenizer.input.get(tokenizer.pos).copied() {
-            Some(b'{') => {
-                let mut members = tokenizer
-                    .object_members()
-                    .map_err(|_| Error::InvalidToken)?;
-                tokenizer.ws();
-                if tokenizer.pos != raw.len() {
-                    return Err(Error::TrailingCharacters);
-                }
-                members.sort_by(|a, b| a.key.as_ref().cmp(b.key.as_ref()));
-                let mut unique = Vec::new();
-                for member in members {
-                    if unique.last().is_some_and(|last: &MemberSpan<'_>| {
-                        last.key.as_ref() == member.key.as_ref()
-                    }) {
-                        let _ = unique.pop();
-                    }
-                    unique.push(member);
-                }
-                out.push('{');
-                let mut first = true;
-                for member in unique {
-                    if exclude(member.key.as_ref()) {
-                        continue;
-                    }
-                    if !first {
-                        out.push(',');
-                    }
-                    first = false;
-                    let key = Value::String(member.key.into_owned());
-                    out.push_str(&write_string_value(&key).map_err(|_| Error::InvalidString)?);
-                    out.push(':');
-                    emit(member.raw_value, out, exclude, strict)?;
-                }
-                out.push('}');
-            }
-            Some(b'[') => {
-                tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
-                tokenizer.ws();
-                out.push('[');
-                let mut first = true;
-                while tokenizer.input.get(tokenizer.pos) != Some(&b']') {
-                    let start = tokenizer.pos;
-                    tokenizer.skip_value().map_err(|_| Error::InvalidToken)?;
-                    if !first {
-                        out.push(',');
-                    }
-                    first = false;
-                    emit(&tokenizer.input[start..tokenizer.pos], out, exclude, strict)?;
-                    tokenizer.ws();
-                    if tokenizer.input.get(tokenizer.pos) == Some(&b',') {
-                        tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
-                        tokenizer.ws();
-                        if tokenizer.input.get(tokenizer.pos) == Some(&b']') {
-                            return Err(Error::InvalidToken);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                if tokenizer.input.get(tokenizer.pos) != Some(&b']') {
-                    return Err(Error::InvalidToken);
-                }
-                out.push(']');
-                tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
-                tokenizer.ws();
-                if tokenizer.pos != raw.len() {
-                    return Err(Error::TrailingCharacters);
-                }
-            }
-            Some(b'-' | b'0'..=b'9') if strict => {
-                let text = core::str::from_utf8(raw).map_err(|_| Error::InvalidNumber)?;
-                if !is_canonical_integer_str(text) {
-                    return Err(Error::InvalidNumber);
-                }
-                out.push_str(
-                    &write_string_value(&Value::parse_bytes(raw)?)
-                        .map_err(|_| Error::InvalidString)?,
-                );
-            }
-            Some(_) => out.push_str(
-                &write_string_value(&Value::parse_bytes(raw)?).map_err(|_| Error::InvalidString)?,
-            ),
-            None => return Err(Error::UnexpectedEnd),
-        }
-        Ok(())
-    }
-    let mut output = String::new();
-    emit(input, &mut output, &mut exclude, strict)?;
+    let mut output = String::with_capacity(input.len());
+    emit_raw(input, &mut output, &mut exclude, strict)?;
     Ok(output)
 }
 
+fn emit_raw<F>(raw: &[u8], out: &mut String, exclude: &mut F, strict: bool) -> Result<(), Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut tokenizer = Tokenizer::new(raw);
+    tokenizer.ws();
+    match tokenizer.input.get(tokenizer.pos).copied() {
+        Some(b'{') => emit_object(&mut tokenizer, raw, out, exclude, strict),
+        Some(b'[') => emit_array(&mut tokenizer, raw, out, exclude, strict),
+        Some(b'"') => emit_string(&mut tokenizer, raw, out),
+        Some(b'n') => emit_literal(&mut tokenizer, raw, out, b"null"),
+        Some(b't') => emit_literal(&mut tokenizer, raw, out, b"true"),
+        Some(b'f') => emit_literal(&mut tokenizer, raw, out, b"false"),
+        Some(b'-' | b'0'..=b'9') => emit_number(&mut tokenizer, raw, out, strict),
+        Some(_) => Err(Error::InvalidToken),
+        None => Err(Error::UnexpectedEnd),
+    }
+}
+
+fn finish(tokenizer: &mut Tokenizer<'_>, raw: &[u8]) -> Result<(), Error> {
+    tokenizer.ws();
+    (tokenizer.pos == raw.len())
+        .then_some(())
+        .ok_or(Error::TrailingCharacters)
+}
+
+fn emit_object<F>(
+    tokenizer: &mut Tokenizer<'_>,
+    raw: &[u8],
+    out: &mut String,
+    exclude: &mut F,
+    strict: bool,
+) -> Result<(), Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut members = tokenizer
+        .object_members()
+        .map_err(|_| Error::InvalidToken)?;
+    finish(tokenizer, raw)?;
+    members.sort_by(|a, b| a.key.as_ref().cmp(b.key.as_ref()));
+    out.push('{');
+    let mut first = true;
+    for index in 0..members.len() {
+        let member = &members[index];
+        if members
+            .get(index.saturating_add(1))
+            .is_some_and(|next| next.key.as_ref() == member.key.as_ref())
+            || exclude(member.key.as_ref())
+        {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        write_string_into(out, member.key.as_ref());
+        out.push(':');
+        emit_raw(member.raw_value, out, exclude, strict)?;
+    }
+    out.push('}');
+    Ok(())
+}
+
+fn emit_array<F>(
+    tokenizer: &mut Tokenizer<'_>,
+    raw: &[u8],
+    out: &mut String,
+    exclude: &mut F,
+    strict: bool,
+) -> Result<(), Error>
+where
+    F: FnMut(&str) -> bool,
+{
+    tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
+    tokenizer.ws();
+    out.push('[');
+    let mut first = true;
+    while tokenizer.input.get(tokenizer.pos) != Some(&b']') {
+        let start = tokenizer.pos;
+        tokenizer.skip_value().map_err(|_| Error::InvalidToken)?;
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        emit_raw(&tokenizer.input[start..tokenizer.pos], out, exclude, strict)?;
+        tokenizer.ws();
+        if tokenizer.input.get(tokenizer.pos) == Some(&b',') {
+            tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
+            tokenizer.ws();
+            if tokenizer.input.get(tokenizer.pos) == Some(&b']') {
+                return Err(Error::InvalidToken);
+            }
+        } else {
+            break;
+        }
+    }
+    if tokenizer.input.get(tokenizer.pos) != Some(&b']') {
+        return Err(Error::InvalidToken);
+    }
+    out.push(']');
+    tokenizer.pos = tokenizer.pos.checked_add(1).ok_or(Error::InvalidToken)?;
+    finish(tokenizer, raw)
+}
+
+fn emit_string(tokenizer: &mut Tokenizer<'_>, raw: &[u8], out: &mut String) -> Result<(), Error> {
+    let span = tokenizer.string_raw().map_err(|_| Error::InvalidString)?;
+    finish(tokenizer, raw)?;
+    out.push('"');
+    if span.contains(&b'\\') {
+        let mut decoded = String::new();
+        unescape_raw_string(span, &mut decoded).map_err(Error::from)?;
+        write_string_into(out, &decoded);
+    } else {
+        out.push_str(core::str::from_utf8(span).map_err(|_| Error::InvalidString)?);
+    }
+    out.push('"');
+    Ok(())
+}
+
+fn emit_literal(
+    tokenizer: &mut Tokenizer<'_>,
+    raw: &[u8],
+    out: &mut String,
+    literal: &[u8],
+) -> Result<(), Error> {
+    tokenizer.word(literal).map_err(|_| Error::InvalidToken)?;
+    finish(tokenizer, raw)?;
+    out.push_str(core::str::from_utf8(literal).expect("JSON literal is UTF-8"));
+    Ok(())
+}
+
+fn emit_number(
+    tokenizer: &mut Tokenizer<'_>,
+    raw: &[u8],
+    out: &mut String,
+    strict: bool,
+) -> Result<(), Error> {
+    let start = tokenizer.pos;
+    tokenizer.skip_number().map_err(|_| Error::InvalidNumber)?;
+    let span = raw.get(start..tokenizer.pos).ok_or(Error::InvalidNumber)?;
+    finish(tokenizer, raw)?;
+    let text = core::str::from_utf8(span).map_err(|_| Error::InvalidNumber)?;
+    if strict && !is_canonical_integer_str(text) {
+        return Err(Error::InvalidNumber);
+    }
+    if strict {
+        out.push_str(text);
+    } else {
+        let number = Number::parse(text);
+        out.push_str(number.as_str());
+    }
+    Ok(())
+}
+
 /// Canonicalizes JSON from raw spans with caller-supplied field exclusion.
+///
+/// This is the permissive writer: any well-formed JSON number is accepted and
+/// its spelling normalized (`1E1` becomes `10.0`). Use it to read and re-emit
+/// content you do not sign. **A successful result here is not a guarantee the
+/// value is signable** — integers above [`MAX_SAFE_INTEGER`] are accepted but
+/// then rejected by [`write_raw_canonical_filtered_strict`] and by `ruma`.
+/// See the crate-level numeric range docs.
 ///
 /// # Errors
 /// Returns [`Error`] when the input is malformed JSON or cannot be
@@ -748,8 +983,11 @@ where
 /// Canonicalizes JSON after enforcing Matrix's strict canonical-number rules.
 ///
 /// Strict mode accepts only integer spellings without fractions or exponents,
-/// and limits values to `[-(2^53 - 1), 2^53 - 1]`. Numeric spans are checked
-/// directly without constructing a DOM.
+/// and limits values to `[-(2^53 - 1), 2^53 - 1]`, matching `ruma`'s
+/// `js_int::Int` bound. Numeric spans are checked directly without constructing
+/// a DOM. Anything wider parses, and round-trips exactly, but is rejected here
+/// — which is what makes this the signing path. Store 64-bit identifiers as
+/// JSON strings.
 ///
 /// # Errors
 /// Returns [`Error::InvalidNumber`] when a number violates those rules, or a
@@ -768,7 +1006,7 @@ where
 // `depth` is a nesting counter bounded by the input's nesting depth; the
 // increment cannot realistically overflow `usize`.
 #[allow(clippy::arithmetic_side_effects)]
-fn write_value_pretty(out: &mut String, value: &Value, depth: usize) -> fmt::Result {
+fn write_value_pretty(out: &mut String, value: &Value, depth: usize) {
     match value {
         Value::Array(items) if !items.is_empty() => {
             out.push('[');
@@ -779,7 +1017,7 @@ fn write_value_pretty(out: &mut String, value: &Value, depth: usize) -> fmt::Res
                     out.push_str(",\n");
                 }
                 indent(out, depth + 1);
-                write_value_pretty(out, item, depth + 1)?;
+                write_value_pretty(out, item, depth + 1);
             }
             out.push('\n');
             indent(out, depth);
@@ -793,28 +1031,36 @@ fn write_value_pretty(out: &mut String, value: &Value, depth: usize) -> fmt::Res
                 }
                 out.push('\n');
                 indent(out, depth + 1);
-                write_quoted(out, key)?;
+                write_string_into(out, key);
                 out.push_str(": ");
-                write_value_pretty(out, item, depth + 1)?;
+                write_value_pretty(out, item, depth + 1);
             }
             out.push('\n');
             indent(out, depth);
             out.push('}');
         }
-        _ => {
-            out.push_str(&write_string_value(value)?);
-        }
+        Value::Null => out.push_str("null"),
+        Value::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
+        Value::Number(n) => out.push_str(n.as_str()),
+        Value::String(s) => write_string_into(out, s),
+        // Empty containers are the fallthrough for the guarded arms above.
+        Value::Array(_) => out.push_str("[]"),
+        Value::Object(_) => out.push_str("{}"),
     }
-    Ok(())
 }
 
 /// Writes `value` as indented, human-readable JSON.
 ///
+/// The [`fmt::Error`] in the signature is retained for API stability; writing
+/// into a [`String`] cannot fail.
+///
 /// # Errors
-/// Returns [`fmt::Error`] if writing to the output string fails.
+/// Never returns an error; the [`fmt::Error`] return type is kept for
+/// compatibility with existing callers.
+#[allow(clippy::unnecessary_wraps)]
 pub fn write_string_pretty(value: &Value) -> Result<String, fmt::Error> {
     let mut out = String::new();
-    write_value_pretty(&mut out, value, 0)?;
+    write_value_pretty(&mut out, value, 0);
     Ok(out)
 }
 
@@ -822,12 +1068,6 @@ fn indent(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push_str("  ");
     }
-}
-
-fn write_quoted(out: &mut String, value: &str) -> fmt::Result {
-    let quoted = write_string_value(&Value::String(value.to_string()))?;
-    out.push_str(&quoted);
-    Ok(())
 }
 
 /// Streaming JSON tokenizer for zero-allocation parsing and subtree skipping.
@@ -999,12 +1239,19 @@ impl<'a> Tokenizer<'a> {
         }
         loop {
             self.ws();
-            let key_start = self.pos;
-            self.string_raw()?;
-            let key_end = self.pos;
-            let key = match Value::parse_bytes(&self.input[key_start..key_end]) {
-                Ok(Value::String(value)) => Cow::Owned(value),
-                _ => return Err(TokenizerError::InvalidString),
+            let key_bytes = self.string_raw()?;
+            // Borrow the key straight from `input` when it carries no escapes;
+            // only an escaped key needs a decoded copy. Running a full
+            // `Value` parse per key would allocate for every member.
+            let key = if key_bytes.contains(&b'\\') {
+                let mut decoded = String::new();
+                unescape_raw_string(key_bytes, &mut decoded)
+                    .map_err(|_| TokenizerError::InvalidString)?;
+                Cow::Owned(decoded)
+            } else {
+                Cow::Borrowed(
+                    core::str::from_utf8(key_bytes).map_err(|_| TokenizerError::InvalidString)?,
+                )
             };
             self.ws();
             if self.input.get(self.pos) != Some(&b':') {
@@ -1902,24 +2149,44 @@ impl Parser<'_> {
     }
     fn string(&mut self) -> Result<String, Error> {
         self.pos += 1;
-        let mut out = String::new();
-        let mut start = self.pos;
+        let start = self.pos;
+        // Escape-free strings are the overwhelmingly common case and need one
+        // slice plus one copy instead of a segment-by-segment append.
+        let mut scan = start;
+        loop {
+            match self.input.get(scan) {
+                Some(b'"') => {
+                    let text = core::str::from_utf8(&self.input[start..scan])
+                        .map_err(|_| Error::InvalidString)?;
+                    self.pos = scan + 1;
+                    return Ok(String::from(text));
+                }
+                Some(b'\\' | 0..=0x1f) => break,
+                Some(_) => scan += 1,
+                None => return Err(Error::UnexpectedEnd),
+            }
+        }
+        let mut out = String::from(
+            core::str::from_utf8(&self.input[start..scan]).map_err(|_| Error::InvalidString)?,
+        );
+        self.pos = scan;
+        let mut run = self.pos;
         loop {
             let b = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
             match b {
                 b'"' => {
-                    self.push_segment(&mut out, start)?;
+                    self.push_segment(&mut out, run)?;
                     return Ok(out);
                 }
                 b'\\' => {
-                    self.push_segment(&mut out, start)?;
+                    self.push_segment(&mut out, run)?;
                     let escaped = *self.input.get(self.pos).ok_or(Error::UnexpectedEnd)?;
                     self.pos += 1;
                     match escaped {
                         b'u' => out.push(self.unicode_escape()?),
                         _ => out.push(simple_escape(escaped).ok_or(Error::InvalidEscape)?),
                     }
-                    start = self.pos;
+                    run = self.pos;
                 }
                 0..=0x1f => return Err(Error::InvalidString),
                 _ => self.pos += 1,
@@ -2078,7 +2345,10 @@ mod tests {
         write_string_value, write_string_value_filtered, Error, Value,
     };
     use crate::{FieldMask, ValueRef};
-    use alloc::string::String;
+    use alloc::{
+        format,
+        string::{String, ToString},
+    };
 
     #[test]
     fn parses_nested_values_and_sorts_object_keys() {
@@ -2450,5 +2720,79 @@ mod tests {
     fn number_as_f64_is_finite_only() {
         let value = Value::parse("1e400").unwrap();
         assert_eq!(value.as_f64(), None);
+    }
+
+    /// The boundary values that separate the three numeric ranges.
+    ///
+    /// A golden corpus of realistic events cannot catch drift here: real
+    /// payloads carry no exponent-notation floats, no identifiers past
+    /// `u64::MAX`, and no lone surrogates. These cases must stay pinned.
+    #[test]
+    fn numeric_range_boundaries_are_pinned() {
+        use crate::{
+            write_raw_canonical_filtered, write_raw_canonical_filtered_strict, MAX_SAFE_INTEGER,
+        };
+
+        // Canonical range: exact everywhere, including through `f64`.
+        for exact in [
+            MAX_SAFE_INTEGER.to_string(),
+            format!("-{}", MAX_SAFE_INTEGER),
+            "0".to_string(),
+            "42".to_string(),
+        ] {
+            let parsed = Value::parse(&exact).unwrap();
+            assert_eq!(write_string_value(&parsed).unwrap(), exact, "{exact}");
+            assert_eq!(
+                parsed.as_f64().map(|f| f.to_string()),
+                Some(exact.clone()),
+                "canonical range must survive f64: {exact}"
+            );
+            assert_eq!(
+                write_raw_canonical_filtered_strict(exact.as_bytes(), |_| false).unwrap(),
+                exact
+            );
+        }
+
+        // Wide but non-canonical: parses and round-trips exactly, yet is
+        // rejected by the signing path and is lossy through `f64`. Acceptance by
+        // the permissive writer is not a signing guarantee.
+        for wide in [
+            "9007199254740992",
+            "175928847299117063",
+            "9223372036854775807",
+            "18446744073709551615",
+        ] {
+            let parsed = Value::parse(wide).unwrap();
+            assert_eq!(write_string_value(&parsed).unwrap(), wide, "{wide}");
+            assert_eq!(
+                write_raw_canonical_filtered(wide.as_bytes(), |_| false).unwrap(),
+                wide
+            );
+            assert!(
+                write_raw_canonical_filtered_strict(wide.as_bytes(), |_| false).is_err(),
+                "strict mode must reject {wide}"
+            );
+            assert_ne!(
+                parsed.as_f64().map(|f| f.to_string()).as_deref(),
+                parsed.as_str(),
+                "above 2^53, f64 must not be lossless: {wide}"
+            );
+        }
+
+        // `as_f64` is lossy above 2^53, so identifiers must not be read through it.
+        let snowflake = Value::parse("175928847299117063").unwrap();
+        assert_eq!(snowflake.as_i64(), Some(175_928_847_299_117_063));
+        assert_eq!(snowflake.as_str(), Some("175928847299117063"));
+        assert_ne!(
+            snowflake.as_f64().map(|f| f.to_string()).as_deref(),
+            snowflake.as_str()
+        );
+
+        // A 64-bit identifier survives strict canonicalization as a string.
+        assert_eq!(
+            write_raw_canonical_filtered_strict(br#"{"id":"175928847299117063"}"#, |_| false)
+                .unwrap(),
+            r#"{"id":"175928847299117063"}"#
+        );
     }
 }

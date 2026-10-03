@@ -1102,6 +1102,9 @@ pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId, K: Ord + As
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use core::fmt::Write as _;
+
     use super::*;
     use alloc::string::String;
     use alloc::vec::Vec;
@@ -1191,7 +1194,6 @@ mod tests {
             state_predecessors: &[],
         });
         // Pinned identically in gomatrixcrypto/lthash.
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         assert_eq!(
             URL_SAFE_NO_PAD.encode(x.digest()),
             "zDnrgYKfPuS6ztctVfakvKVx6rM7l8QVDUuGXcibrnE"
@@ -1200,7 +1202,6 @@ mod tests {
 
     #[test]
     fn resolution_inputs_proposal_vector() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let r = ResolutionInputRecord {
             event_id: "$event_1",
             event_type: "m.room.member",
@@ -1208,11 +1209,10 @@ mod tests {
             auth_events: &[],
             state_predecessors: &[],
         };
-        let raw: String = r
-            .encode()
-            .iter()
-            .map(|b| alloc::format!("{b:02x}"))
-            .collect();
+        let raw = r.encode().iter().fold(String::new(), |mut raw, byte| {
+            write!(raw, "{byte:02x}").expect("writing to String cannot fail");
+            raw
+        });
         assert_eq!(
             raw,
             "0800246576656e745f310d006d2e726f6f6d2e6d656d626572120040616c6963653a6578616d706c652e636f6d0000000000000000"

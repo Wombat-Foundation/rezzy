@@ -226,8 +226,8 @@ The `-v6` token is inferred from the filename. The command only fills missing
 IDs; it does not overwrite the source file. `aggregate --repair-missing-ids`
 uses the same inference for every input file.
 
-Build the CLI with the `tls` feature; federation/keyring support is intentionally
-not present in the default CLI build:
+Build the CLI with the `tls` feature; federation/keyring support is
+intentionally not present in the default CLI build:
 
 ```sh
 cargo build -p rezzy-cli --features tls

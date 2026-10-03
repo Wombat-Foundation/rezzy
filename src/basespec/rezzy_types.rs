@@ -4247,10 +4247,9 @@ mod canonical_parity_tests {
             let oracle = if number == "-0" {
                 "-0.0".to_string()
             } else if number == "18446744073709551616" {
-                // simd-json 0.14 rejects integers wider than u64; the
-                // reference JSON numeric normalization is the finite f64
-                // spelling used by rezzy-json for this relaxed-mode case.
-                "1.8446744073709552e+19".to_string()
+                // Preserve integer source spelling rather than silently
+                // rounding through f64 when it exceeds u64::MAX.
+                number.to_string()
             } else {
                 let mut input = number.as_bytes().to_vec();
                 let parsed: simd_json::OwnedValue =
