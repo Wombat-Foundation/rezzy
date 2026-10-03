@@ -409,10 +409,13 @@ pub trait Population {
     /// Returns an error if the count overflows.
     fn node_summary(&self, node: (u8, u64)) -> Result<NodeSummary, AlgebraicError>;
 
-    /// Calls `f` with the `h64` of every element inside `node`, in order.
+    /// Calls `f` with the `h64` of every element inside `node`, in no
+    /// particular order: toggling a sketch is an XOR, so order never matters,
+    /// and a persisted store need not merge its runs to promise one.
     fn for_each_h64_in(&self, node: (u8, u64), f: &mut dyn FnMut(u64));
 
-    /// Appends to `out` the `h128` of every element whose `h64` is `root`.
+    /// Appends to `out` the `h128` of every element whose `h64` is `root`, in
+    /// no particular order (the verifier XORs them).
     fn candidates_into(&self, root: u64, out: &mut Vec<u128>);
 }
 
