@@ -1173,6 +1173,31 @@ mod tests {
         assert_ne!(overlay.digest(), inputs.digest());
     }
 
+    #[test]
+    fn resolution_inputs_cross_implementation_vector() {
+        let mut x = ResolutionInputs::ZERO;
+        x.insert(&ResolutionInputRecord {
+            event_id: "$e",
+            event_type: "m.room.member",
+            state_key: "@a:x",
+            auth_events: &["$b", "$a"],
+            state_predecessors: &["$p"],
+        });
+        x.insert(&ResolutionInputRecord {
+            event_id: "$a",
+            event_type: "m.room.create",
+            state_key: "",
+            auth_events: &[],
+            state_predecessors: &[],
+        });
+        // Pinned identically in gomatrixcrypto/lthash.
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(x.digest()),
+            "zDnrgYKfPuS6ztctVfakvKVx6rM7l8QVDUuGXcibrnE"
+        );
+    }
+
     type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
 
     /// Builds a `StateMap` from `(event_type, state_key) -> event_id` rows.
