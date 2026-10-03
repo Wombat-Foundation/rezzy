@@ -271,9 +271,11 @@ impl BucketExchange {
     /// children.
     ///
     /// `max_rounds` should be the caller's remaining budget, shared across
-    /// passes: subtract [`Self::rounds_emitted`] from it after each pass. Returns the exchange (one round already counted) and the
-    /// first round's requests; children that do not fit the per-round caps are
-    /// queued in the pending frontier, as in a normal exchange.
+    /// passes: subtract [`Self::rounds_emitted`] from it after each pass.
+    ///
+    /// Returns the exchange (one round already counted) and the first round's
+    /// requests; children that do not fit the per-round caps are queued in the
+    /// pending frontier, as in a normal exchange.
     ///
     /// Call [`should_narrow`] first: below its threshold the node belongs to
     /// the caller's per-prefix fallback.
