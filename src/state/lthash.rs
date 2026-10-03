@@ -828,6 +828,101 @@ impl RedactionOverlay {
     }
 }
 
+/// One labelled element of the MSC4500 resolution-input set `I(P)`: an event
+/// record together with its outgoing `auth_events` and `prev_state_events`
+/// edges. The same event ID with different edges is a distinct element.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolutionInputRecord<'a> {
+    pub event_id: &'a str,
+    pub event_type: &'a str,
+    pub state_key: &'a str,
+    pub auth_events: &'a [&'a str],
+    /// `prev_state_events`; empty for room versions that do not define it.
+    pub state_predecessors: &'a [&'a str],
+}
+
+impl ResolutionInputRecord<'_> {
+    /// Serializes the record exactly as specified by MSC4500:
+    ///
+    /// ```text
+    /// len(event_id) || event_id || len(type) || type || len(state_key) || state_key ||
+    /// auth_events || state_predecessors
+    /// ```
+    ///
+    /// Each `len` is `uint16le`. An ID list is `uint32le(count)` followed by
+    /// its IDs in bytewise ascending order, each as `uint16le(length) || id`.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        fn put(out: &mut Vec<u8>, s: &str) {
+            let (s, len) = truncate_to_u16_limit(s);
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+        fn put_ids(out: &mut Vec<u8>, ids: &[&str]) {
+            let mut sorted: Vec<&str> = ids.to_vec();
+            sorted.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            let count = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
+            out.extend_from_slice(&count.to_le_bytes());
+            for id in sorted {
+                put(out, id);
+            }
+        }
+
+        let mut out = Vec::new();
+        put(&mut out, self.event_id);
+        put(&mut out, self.event_type);
+        put(&mut out, self.state_key);
+        put_ids(&mut out, self.auth_events);
+        put_ids(&mut out, self.state_predecessors);
+        out
+    }
+}
+
+/// Diagnostic accumulator over the labelled state-resolution input set
+/// `I(P)` (MSC4500 `resolution-inputs-blake3-v1`). It is a separate lattice
+/// under its own domain-separation tag and never describes a state snapshot.
+///
+/// Callers must supply a set: each distinct record exactly once, however many
+/// paths reach it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolutionInputs(pub LtHash);
+
+impl Default for ResolutionInputs {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+impl ResolutionInputs {
+    /// The empty input set.
+    pub const ZERO: Self = Self(LtHash::ZERO);
+
+    /// Domain separation tag for the resolution-input accumulator.
+    pub const DST: &'static [u8] = b"msc4500:resolution_inputs:blake3:v1";
+
+    /// Adds one labelled input record.
+    pub fn insert(&mut self, record: &ResolutionInputRecord<'_>) {
+        self.0.insert_bytes(Self::DST, &record.encode());
+    }
+
+    /// Removes one previously inserted record.
+    pub fn remove(&mut self, record: &ResolutionInputRecord<'_>) {
+        self.0.remove_bytes(Self::DST, &record.encode());
+    }
+
+    /// Collapses the lattice to its 32-byte wire digest.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        self.0.digest()
+    }
+
+    /// Borrows the underlying lattice.
+    #[must_use]
+    pub fn lattice(&self) -> &LtHash {
+        &self.0
+    }
+}
+
 /// A field-by-field accumulator for a single protocol data unit (PDU).
 ///
 /// This is the porcelain over [`LtHash`] for callers that hash a structured object one
@@ -1010,6 +1105,73 @@ mod tests {
     use super::*;
     use alloc::string::String;
     use alloc::vec::Vec;
+
+    #[test]
+    fn resolution_input_record_encoding_is_canonical() {
+        // Edge lists are sorted bytewise, so caller order is irrelevant.
+        let a = ResolutionInputRecord {
+            event_id: "$e",
+            event_type: "m.room.member",
+            state_key: "@a:x",
+            auth_events: &["$b", "$a"],
+            state_predecessors: &[],
+        };
+        let b = ResolutionInputRecord {
+            auth_events: &["$a", "$b"],
+            ..a
+        };
+        assert_eq!(a.encode(), b.encode());
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[2, 0]);
+        expected.extend_from_slice(b"$e");
+        expected.extend_from_slice(&[13, 0]);
+        expected.extend_from_slice(b"m.room.member");
+        expected.extend_from_slice(&[4, 0]);
+        expected.extend_from_slice(b"@a:x");
+        expected.extend_from_slice(&[2, 0, 0, 0, 2, 0]);
+        expected.extend_from_slice(b"$a");
+        expected.extend_from_slice(&[2, 0]);
+        expected.extend_from_slice(b"$b");
+        expected.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(a.encode(), expected);
+    }
+
+    #[test]
+    fn resolution_inputs_distinguish_edges_and_domain() {
+        let base = ResolutionInputRecord {
+            event_id: "$e",
+            event_type: "m.room.name",
+            state_key: "",
+            auth_events: &["$c"],
+            state_predecessors: &[],
+        };
+        let rewired = ResolutionInputRecord {
+            auth_events: &["$d"],
+            ..base
+        };
+
+        let mut x = ResolutionInputs::ZERO;
+        x.insert(&base);
+        let mut y = ResolutionInputs::ZERO;
+        y.insert(&rewired);
+        // Same event ID, different outgoing edges: distinct element.
+        assert_ne!(x.digest(), y.digest());
+
+        // Insert/remove round-trips to the empty set.
+        x.remove(&base);
+        assert_eq!(x, ResolutionInputs::ZERO);
+
+        // Not interchangeable with the redaction overlay's domain.
+        let mut overlay = RedactionOverlay::ZERO;
+        overlay.insert("m.room.name", "", "$e");
+        let mut inputs = ResolutionInputs::ZERO;
+        inputs.insert(&ResolutionInputRecord {
+            auth_events: &[],
+            ..base
+        });
+        assert_ne!(overlay.digest(), inputs.digest());
+    }
 
     type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
 
