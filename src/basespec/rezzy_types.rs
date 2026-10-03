@@ -4230,15 +4230,7 @@ mod canonical_parity_tests {
 
     #[test]
     fn parsed_number_spellings_match_simd_json() {
-        for number in [
-            "-0",
-            "1.0",
-            "1e3",
-            "1E+3",
-            "1e-7",
-            "1e20",
-            "18446744073709551616",
-        ] {
+        for number in ["-0", "1.0", "1e3", "1E+3", "1e-7", "1e20"] {
             let value = crate::json::Value::parse(number).unwrap();
             let ours = crate::json::write_string_value(&value).unwrap();
             // `rezzy-json` preserves JSON negative zero as `-0.0`; simd-json's
@@ -4246,10 +4238,6 @@ mod canonical_parity_tests {
             // expected by our canonical writer for this one edge case.
             let oracle = if number == "-0" {
                 "-0.0".to_string()
-            } else if number == "18446744073709551616" {
-                // Preserve integer source spelling rather than silently
-                // rounding through f64 when it exceeds u64::MAX.
-                number.to_string()
             } else {
                 let mut input = number.as_bytes().to_vec();
                 let parsed: simd_json::OwnedValue =
@@ -4257,6 +4245,32 @@ mod canonical_parity_tests {
                 normalize_simd_number(parsed.encode())
             };
             assert_eq!(ours, oracle, "number spelling {number}");
+        }
+    }
+
+    /// Integers wider than `u64` deliberately diverge from simd-json.
+    ///
+    /// simd-json 0.14 rejects them outright (`InvalidNumber`), because its DOM
+    /// stores numbers as machine floats. `rezzy-json` keeps the source spelling
+    /// instead, so the value survives byte-exactly and the canonical bytes that
+    /// get signed are the ones the event actually contained. Rewriting such a
+    /// value through `f64` would change both the value and the hash.
+    #[test]
+    fn wide_integers_are_preserved_where_simd_json_rejects_them() {
+        for number in ["18446744073709551616", "1267650600228229401496703205376"] {
+            let value = crate::json::Value::parse(number).unwrap();
+            assert_eq!(
+                crate::json::write_string_value(&value).unwrap(),
+                number,
+                "wide integer must round-trip byte-exactly: {number}"
+            );
+
+            let mut input = number.as_bytes().to_vec();
+            let oracle = simd_json::to_owned_value(&mut input);
+            assert!(
+                oracle.is_err(),
+                "if simd-json ever supports this, re-check our divergence: {number}"
+            );
         }
     }
 

@@ -1,44 +1,46 @@
 # JSON numeric limits in `rezzy-json`
 
-How integers behave across the parse, canonical-write, and strict-canonical
-paths, where the boundaries are, and why they are where they are. Every claim
-here was checked against a pinned `HEAD` build of `rezzy-json` and against
-`ruma-common` 0.19 as the interop reference.
+How integers behave across the parse, permissive-canonical, and strict-canonical
+paths, where the boundaries are, and why they are where they are.
 
 The short version: **`Number` keeps the source spelling, so integers round-trip
-byte-exactly across a very wide range — but the range that is _canonical_ is
+byte-exactly across an enormous range — but the range that is _canonical_ is
 much narrower, and anything above it must not be signed as a JSON number.**
 
 ## The three ranges
 
-| Range                    | Parse / `write_string_value` / non-strict canonical | `write_raw_canonical_filtered_strict` | `ruma` canonical JSON                |
-| ------------------------ | --------------------------------------------------- | ------------------------------------- | ------------------------------------ |
-| `\|n\| <= 2^53-1`        | exact                                               | accepted                              | accepted                             |
-| `2^53-1 < n <= u64::MAX` | exact                                               | `Err(InvalidNumber)`                  | `Err` (`js_int::Int`)                |
-| `n > u64::MAX`           | source spelling preserved                           | `Err(InvalidNumber)`                  | `Err` (`float cannot be serialized`) |
+| Range                    | Parse / `write_string_value` / permissive canonical | Strict canonical     | `ruma` canonical JSON    |
+| ------------------------ | --------------------------------------------------- | -------------------- | ------------------------ |
+| `\|n\| <= 2^53-1`        | exact                                               | accepted             | accepted                 |
+| `2^53-1 < n <= u64::MAX` | exact                                               | `Err(InvalidNumber)` | `Err` (`js_int::Int`)    |
+| `n > u64::MAX`           | exact                                               | `Err(InvalidNumber)` | `Err` (cannot serialize) |
+
+All three rows round-trip byte-exactly in the first column, including integers
+far wider than `u64`:
+
+```
+9007199254740991                     permissive=9007199254740991                     strict=ok
+9007199254740992                     permissive=9007199254740992                     strict=ERR(InvalidNumber)
+175928847299117063                   permissive=175928847299117063                   strict=ERR(InvalidNumber)
+9223372036854775807                  permissive=9223372036854775807                  strict=ERR(InvalidNumber)
+18446744073709551615                 permissive=18446744073709551615                 strict=ERR(InvalidNumber)
+18446744073709551616                 permissive=18446744073709551616                 strict=ERR(InvalidNumber)
+1267650600228229401496703205376      permissive=1267650600228229401496703205376      strict=ERR(InvalidNumber)
+```
 
 ### Canonical-safe: `|n| <= 2^53-1`
 
-`9007199254740991` is the largest integer JSON can carry exactly in every
-consumer, and it is the bound `MAX_SAFE_INTEGER` / `MIN_SAFE_INTEGER` encode.
-`is_canonical_integer_str` enforces it, strict mode is built on it, and `ruma`
-enforces the identical bound via `js_int::Int`. This is the only range that is
-safe to sign.
+`9007199254740991` is the largest integer every JSON consumer carries exactly,
+and it is what `MAX_SAFE_INTEGER` / `MIN_SAFE_INTEGER` encode. `ruma` enforces
+the identical bound via `js_int::Int`. This is the only range that is safe to
+sign.
 
-### Wide but not canonical: `2^53` to `u64::MAX`
+### Wide but not canonical: `2^53` and above
 
-Integers in this range are parsed and re-emitted **exactly**, because `Number`
-stores the source spelling and `Number::parse` returns it verbatim whenever it
-parses as `i64` or `u64`:
-
-```
-snowflake 175928847299117063   canonical=175928847299117063   (byte-exact)
-i64::MAX 9223372036854775807  canonical=9223372036854775807  (byte-exact)
-u64::MAX 18446744073709551615 canonical=18446744073709551615 (byte-exact)
-```
-
-The exactness is real but it is not enough, because these values are rejected
-downstream. Strict mode refuses them, and so does `ruma`:
+Integers above the bound are parsed and re-emitted **exactly**, including ones
+that overflow `u64`, because `Number` holds the source digits rather than a
+parsed machine value. But exactness is not enough, because the signing paths
+refuse them:
 
 ```
 175928847299117063   ERR  integer is out of the range of `js_int::Int`
@@ -49,40 +51,57 @@ So a wide integer survives `rezzy-json` and then fails in `ruma`, or fails at
 strict canonicalization, depending on which code path signs it. Treat
 "rezzy-json accepted it" as _not_ evidence that it is signable.
 
-### Beyond `u64::MAX`: preserved, but not canonical
+### simd-json diverges above `u64`
 
-Integer literals above `u64::MAX` retain their source spelling. They remain
-non-canonical and are rejected by strict canonicalization, but their bytes are
-not silently rewritten:
+`simd-json` 0.14 **rejects** integers wider than `u64`, because its DOM stores
+numbers as machine floats:
 
 ```
-18446744073709551616  ->  1.8446744073709552e+19
-1267650600228229401496703205376  ->  1.2676506002282294e+30
+18446744073709551616   simd-json: InvalidNumber
 ```
 
-`as_i64`, `as_u64`, and `as_f64` return `None` for such an integer. Use strict
-canonicalization or parse the source string explicitly when a range check is
-required.
+`rezzy-json` preserves them instead. This divergence is intentional and pinned
+by `wide_integers_are_preserved_where_simd_json_rejects_them` in
+`src/basespec/rezzy_types.rs`, which also asserts that simd-json still errors —
+so if upstream ever adds support, the test tells us to re-check the divergence.
 
-## `as_f64` is lossy above `2^53`
+An earlier revision of this crate rewrote such integers through `f64`, turning
+`18446744073709551616` into `1.8446744073709552e+19`. That silently changed the
+value _and_ the signed bytes, and contradicted the crate's own contract that
+numbers retain their source spelling. It is fixed; the behaviour is now covered
+by tests rather than documentation alone.
 
-The canonical _string_ stays correct; only the accessor rounds.
+## `as_f64` is lossy from `2^53 + 1`
 
-| input                  | `as_i64`      | `as_u64`      | `as_f64`               |
-| ---------------------- | ------------- | ------------- | ---------------------- |
-| `9007199254740991`     | `Some(..991)` | `Some(..991)` | exact                  |
-| `175928847299117063`   | `Some(..063)` | `Some(..063)` | `175928847299117056`   |
-| `9223372036854775807`  | `Some(..807)` | `None`        | `9223372036854775808`  |
-| `18446744073709551615` | `None`        | `Some(..615)` | `18446744073709551616` |
+The canonical _string_ stays correct; only the accessor rounds. `f64` is exact
+through `2^53` inclusive — `2^53` is a power of two, so it survives — and lossy
+for essentially everything above it:
 
-Anything that routes an identifier through a float — a `f64` field, a
-`serde_json::Value` conversion, an f64-keyed map — corrupts it. For integer
-identifiers use `as_i64`/`as_u64`, or `as_str` when the range is unknown.
+| input                         | `as_f64`               | exact?            |
+| ----------------------------- | ---------------------- | ----------------- |
+| `9007199254740991` (`2^53-1`) | `9007199254740991`     | yes               |
+| `9007199254740992` (`2^53`)   | `9007199254740992`     | yes, power of two |
+| `9007199254740993` (`2^53+1`) | `9007199254740992`     | **no**            |
+| `175928847299117063`          | `175928847299117060`   | **no**            |
+| `9223372036854775807`         | `9223372036854776000`  | **no**            |
+| `18446744073709551615`        | `18446744073709552000` | **no**            |
+| `1e400`                       | `None`                 | n/a, not finite   |
+
+Two things worth internalising. The loss starts at `2^53 + 1`, not at `2^53`, so
+a spot check on `2^53` will not reveal it. And `as_f64` returns `Some` with a
+rounded value rather than `None` for these — `None` appears only when the
+literal overflows `f64` entirely, as with `1e400`. `as_f64` is therefore not a
+validity check.
+
+Anything that routes an identifier through a float — an `f64` field, a
+`serde_json::Value` conversion, an `f64`-keyed map — corrupts it. For integer
+identifiers use `as_i64` / `as_u64`, or `Number::as_str` when the range is
+unknown.
 
 ## Snowflake IDs
 
-X/Twitter snowflake ids are `int64`, topping out at `9223372036854775807`, which
-is roughly 1024x larger than `2^53-1`. A snowflake id in the `2^53`..`2^63` band
+X/Twitter snowflake ids are `int64`, topping out at `9223372036854775807`,
+roughly 1024x larger than `2^53 - 1`. A snowflake id in the `2^53`..`2^63` band
 therefore parses and re-emits exactly but is **not canonical**, and `ruma` will
 refuse it.
 
@@ -98,56 +117,81 @@ write_raw_canonical_filtered_strict(br#"{"id":"175928847299117063"}"#, |_| false
 // Ok({"id":"175928847299117063"})
 ```
 
-**Store external 64-bit identifiers as JSON strings.** This is the only encoding
-that is canonical, interop-safe, and lossless. It costs a `Number` accessor at
-the read site and nothing at all in the signed bytes.
+**Store external 64-bit identifiers as JSON strings.** That is the only encoding
+which is canonical, interoperable, and lossless. It costs a `Number::as_str()`
+at the read site and nothing at all in the signed bytes.
 
 ## `-0`
 
-The scalar path maps the source spelling `-0` to `-0.0`, and preserves the sign
+The scalar path maps the source spelling `-0` to `-0.0` and preserves the sign
 of negative zero through `as_f64` (`Some(-0.0)`), because `-0` is
-distinguishable and Matrix-significant. Under the `simd` feature the parse path
-falls back to the scalar parser whenever `-0` appears in the input, because
-`simd-json` collapses numbers to machine values and would lose the spelling.
+distinguishable and Matrix-significant. Under the `simd` feature, inputs
+containing `-0` fall back to the scalar parser, since `simd-json` collapses
+numbers to machine values and would lose the spelling.
 
 ## Strict versus non-strict
 
-`write_raw_canonical_filtered` is the permissive writer: it accepts any
-well-formed JSON number and normalizes its spelling (`1E1` becomes `10.0`). Use
-it for reading and re-emitting content you do not sign.
+`write_raw_canonical_filtered` is the permissive writer. Integer spellings pass
+through unchanged; floats are normalized in place (`1e21` becomes `1e+21`). Use
+it to read and re-emit content you do not sign.
 
 `write_raw_canonical_filtered_strict` enforces Matrix's rule that numbers are
-integers with no fraction or exponent, within `±(2^53-1)`. This is the signing
-path. It validates numeric spans in place without building a DOM, and rejects
-anything in the two upper ranges above with `Error::InvalidNumber`.
+integers with no fraction or exponent, within `±(2^53-1)`. It validates numeric
+spans directly without constructing a DOM, and rejects everything above with
+`Error::InvalidNumber`.
 
-The distinction matters because the permissive writer's acceptance is not a
-signing guarantee. A value can canonicalize cleanly under the permissive writer
-and still be rejected by the strict writer or by `ruma`.
+The distinction is the thing most likely to be got wrong: the permissive
+writer's acceptance is **not** a signing guarantee. A value can canonicalize
+cleanly under the permissive writer and still be rejected by the strict writer
+or by `ruma`.
 
 ## Verifying changes to this behaviour
 
-Behaviour in the table above was established differentially: the same corpus was
+Behaviour in the tables above was established differentially — the same corpus
 run through a build with the `simd` feature and a build with
-`--no-default-features`, and the canonical outputs compared byte-for-byte.
+`--no-default-features`, comparing canonical output byte-for-byte.
 
-A caution learned the hard way: a golden corpus of _realistic Matrix payloads_
-does not detect any of this. Real events carry `origin_server_ts` and depth
-integers well inside `2^53`, no exponent-notation floats, no identifiers past
-`u64::MAX`, no lone surrogates, and no nesting past 128. Such a corpus passes
-with `golden_cmp=0` on a build that gets every row of the table above wrong. Any
+A caution learned the hard way: **a golden corpus of realistic Matrix payloads
+detects none of this.** Real events carry `origin_server_ts` and depth integers
+well inside `2^53`, no exponent-notation floats, no identifiers past `u64::MAX`,
+no lone surrogates, and no nesting past 128. Such a corpus passes with zero
+golden mismatches on a build that gets every row of these tables wrong. Any
 regression harness for this crate needs the boundary values as explicit cases:
-`2^53-1`, `2^53`, `i64::MAX`, `u64::MAX`, `u64::MAX+1`, `1e21`, `1e308`,
-`1e400`, `"\ud800"`, and 200-deep nesting.
+`2^53-1`, `2^53`, `2^53+1`, `i64::MAX`, `u64::MAX`, `u64::MAX+1`, `2^100`,
+`1e21`, `1e308`, `1e400`, `"\ud800"`, and 200-deep nesting.
+`numeric_range_boundaries_are_pinned` in `rezzy-json/src/lib.rs` covers the
+integer and `f64` rows.
+
+## Known divergence: error variants under `simd`
+
+A differential probe of 40 boundary cases across the `simd` and
+`--no-default-features` builds currently shows **four** divergences, and all
+four are the _name_ of the error returned for malformed input, never a value or
+a canonical output:
+
+| input                      | scalar               | `simd`         |
+| -------------------------- | -------------------- | -------------- |
+| `"\\x"`                    | `InvalidEscape`      | `InvalidToken` |
+| raw control char in string | `InvalidString`      | `InvalidToken` |
+| `1 2`                      | `TrailingCharacters` | `InvalidToken` |
+| `{} extra`                 | `TrailingCharacters` | `InvalidToken` |
+
+Every numeric and string boundary value agrees. The practical effect is
+diagnostic: under the default feature a caller cannot distinguish a bad escape
+from trailing garbage. The cheap fix is to retry the parse with the scalar
+parser whenever the SIMD path returns an error, so the precise variant survives
+while the fast path still handles the success case.
 
 ## Open items
 
-- **`as_f64` has no guard.** It is lossy above `2^53` by construction and the
-  docs now say so, but nothing at the call site warns.
+- **Error variants are flattened under `simd`** — see above.
+- **`as_f64` has no guard.** It is lossy from `2^53 + 1` by construction, and it
+  answers `Some(rounded)` rather than `None`, so it reads as trustworthy at the
+  call site. Documented, but not defended against.
 - **The `simd` fast-path gate is coarser than it needs to be.** It scans raw
   bytes without tracking string context, so braces, long digit runs, and `e` /
   `E` inside ordinary message bodies count as JSON syntax and force the scalar
-  path. Correct, but it silently gives up the SIMD win on exactly the prose-
-  heavy events that dominate a real `/sync`. Tracking string context in the gate
-  would recover it. Floats still need to defer to the scalar path so that
-  `1e400` keeps yielding a value whose `as_f64` is `None` rather than an error.
+  path. Correct, but it silently gives up the SIMD win on exactly the
+  prose-heavy events that dominate a real `/sync`. Floats must keep deferring to
+  the scalar path so that `1e400` keeps yielding `as_f64() == None`; tracking
+  string context in the gate would let everything else stay on SIMD.

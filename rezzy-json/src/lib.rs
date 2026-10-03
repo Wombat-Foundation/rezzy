@@ -17,10 +17,12 @@
 //! - `2^53 - 1 < n <= u64::MAX` still round-trips exactly, but is rejected by
 //!   [`write_raw_canonical_filtered_strict`] and by `ruma`. Acceptance by the
 //!   permissive writer is **not** a signing guarantee.
-//! - `n > u64::MAX` is currently rewritten through `f64` and loses precision.
+//! - Integers wider than `u64::MAX` also round-trip exactly. `simd-json` rejects
+//!   those outright; keeping them is intentional.
 //!
-//! [`Number::as_f64`] is lossy above `2^53`, so integer identifiers must be read
-//! with [`Number::as_i64`], [`Number::as_u64`], or [`Number::as_str`].
+//! [`Number::as_f64`] is lossy from `2^53 + 1` onward, so integer identifiers
+//! must be read with [`Number::as_i64`], [`Number::as_u64`], or
+//! [`Number::as_str`].
 //!
 //! Store 64-bit external identifiers such as X/Twitter snowflake ids as JSON
 //! strings: that is the only encoding which is canonical, interoperable, and
@@ -147,11 +149,17 @@ impl Number {
     #[must_use]
     /// Returns the value as `f64`, or `None` if it is not that type.
     ///
-    /// **Lossy above [`MAX_SAFE_INTEGER`].** `f64` cannot represent every
-    /// integer past `2^53`, so a 64-bit identifier read this way comes back
-    /// rounded (`175928847299117063` yields `175928847299117056`) even though
-    /// the canonical spelling was preserved exactly. Use [`Self::as_i64`],
-    /// [`Self::as_u64`], or [`Self::as_str`] for identifiers.
+    /// **Lossy from [`MAX_SAFE_INTEGER`] + 1.** `f64` represents every integer
+    /// through `2^53` exactly — `2^53` itself is a power of two — but rounds
+    /// essentially everything above it, so `2^53 + 1` is the first value that
+    /// comes back wrong. A 64-bit identifier read this way is corrupted
+    /// (`175928847299117063` yields `175928847299117060`) even though the
+    /// canonical spelling was preserved exactly.
+    ///
+    /// Note this returns `Some(rounded)`, not `None`: `None` appears only when
+    /// the literal overflows `f64` entirely, as with `1e400`. It is therefore
+    /// not a validity check. Use [`Self::as_i64`], [`Self::as_u64`], or
+    /// [`Self::as_str`] for identifiers.
     pub fn as_f64(&self) -> Option<f64> {
         self.0.parse().ok().filter(|value: &f64| value.is_finite())
     }
@@ -2772,20 +2780,47 @@ mod tests {
                 write_raw_canonical_filtered_strict(wide.as_bytes(), |_| false).is_err(),
                 "strict mode must reject {wide}"
             );
+            let Value::Number(number) = &parsed else {
+                panic!("expected a number");
+            };
+            assert_eq!(number.as_str(), wide, "source spelling must be kept");
+        }
+
+        // `f64` is exact through 2^53 inclusive -- 2^53 itself is a power of
+        // two -- and lossy for essentially everything above it, including
+        // 2^53 + 1. So reading an identifier through `as_f64` is unsafe from
+        // the very first integer past the canonical bound.
+        assert_eq!(
+            Value::parse("9007199254740992")
+                .unwrap()
+                .as_f64()
+                .map(|f| f.to_string()),
+            Some("9007199254740992".to_string()),
+            "2^53 is a power of two and stays exact"
+        );
+        for lossy in [
+            "9007199254740993",
+            "175928847299117063",
+            "9223372036854775807",
+            "18446744073709551615",
+        ] {
             assert_ne!(
-                parsed.as_f64().map(|f| f.to_string()).as_deref(),
-                parsed.as_str(),
-                "above 2^53, f64 must not be lossless: {wide}"
+                Value::parse(lossy).unwrap().as_f64().map(|f| f.to_string()),
+                Some(lossy.to_string()),
+                "past 2^53, f64 must not be lossless: {lossy}"
             );
         }
 
-        // `as_f64` is lossy above 2^53, so identifiers must not be read through it.
+        // `as_f64` is lossy past 2^53, so identifiers must not be read through it.
         let snowflake = Value::parse("175928847299117063").unwrap();
         assert_eq!(snowflake.as_i64(), Some(175_928_847_299_117_063));
-        assert_eq!(snowflake.as_str(), Some("175928847299117063"));
+        let Value::Number(number) = &snowflake else {
+            panic!("expected a number");
+        };
+        assert_eq!(number.as_str(), "175928847299117063");
         assert_ne!(
             snowflake.as_f64().map(|f| f.to_string()).as_deref(),
-            snowflake.as_str()
+            Some("175928847299117063")
         );
 
         // A 64-bit identifier survives strict canonicalization as a string.
