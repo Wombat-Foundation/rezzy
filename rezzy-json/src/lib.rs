@@ -1,4 +1,8 @@
-//! Small `alloc`-only JSON value and parser used by the no-std core.
+        if digits > 19
+            || digits == 19 && input.get(index.saturating_sub(19)) == Some(&b'-')
+        {
+            return false;
+        }
 //!
 //! Objects use `BTreeMap` so iteration is deterministic and already suitable
 //! for Matrix canonical JSON. Numbers retain their source spelling; canonical
