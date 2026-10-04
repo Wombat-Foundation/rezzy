@@ -837,7 +837,7 @@ pub struct ResolutionInputRecord<'a> {
     pub event_type: &'a str,
     pub state_key: &'a str,
     pub auth_events: &'a [&'a str],
-    /// `prev_state_events`; empty for room versions that do not define it.
+    /// `prev_state_events` for V2.2; `prev_events` for earlier room versions.
     pub state_predecessors: &'a [&'a str],
 }
 
