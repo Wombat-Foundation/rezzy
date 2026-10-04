@@ -618,7 +618,14 @@ fn bench_incremental(step: &mut u32) {
     }
     let [shake, blake3] = out;
     let ratio = shake.as_nanos() as f64 / blake3.as_nanos().max(1) as f64;
-    println!("  => {label}: blake3+blake3 is {ratio:.2}x faster than shake+blake2");
+    if ratio >= 1.0 {
+        println!("  => {label}: blake3+blake3 is {ratio:.2}x faster than shake+blake2");
+    } else {
+        println!(
+            "  => {label}: blake3+blake3 is {:.2}x slower than shake+blake2",
+            1.0 / ratio
+        );
+    }
 }
 
 /// Builds an accumulator covering every entry using `stack`'s expansion.
