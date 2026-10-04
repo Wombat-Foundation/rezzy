@@ -41,12 +41,12 @@ use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
 #[cfg(all(test, feature = "signing-dalek"))]
 use crate::basespec::rezzy_types::canonical_redacted_json;
 
-#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+#[cfg(feature = "signing-dalek")]
 mod dalek;
-#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+#[cfg(feature = "signing-dalek")]
 pub use dalek::{verify_sequential_strict, DalekVerifier};
 
-#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+#[cfg(feature = "signing-dalek")]
 pub mod attest;
 
 /// A backend able to verify one Ed25519 signature over a message.
