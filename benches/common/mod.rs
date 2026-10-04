@@ -425,15 +425,21 @@ pub fn generate_state_ops(
                 key,
                 format!("$event{}:example.org", rng.next_u64()),
             ));
-        } else if roll < 9 {
+        } else if roll < 9 && !existing_keys.is_empty() {
             let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
             ops.push(StateOp::Overwrite(
                 key,
                 format!("$event{}:example.org", rng.next_u64()),
             ));
-        } else {
+        } else if !existing_keys.is_empty() {
             let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
             ops.push(StateOp::Remove(key));
+        } else {
+            let key = random_member_key(rng);
+            ops.push(StateOp::Insert(
+                key,
+                format!("$event{}:example.org", rng.next_u64()),
+            ));
         }
     }
     ops
