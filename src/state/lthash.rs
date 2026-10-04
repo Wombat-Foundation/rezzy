@@ -46,7 +46,7 @@
 //! single-digit microseconds per seed rather than nanoseconds. Reproduce with
 //! `cargo bench --manifest-path benches/Cargo.toml -- lthash_comprehensive`,
 //! whose expansion section measures the XOF and the collapse separately, or
-//! with `-- lthash_backends`, which times this stack head to head against the
+//! with `cargo bench --manifest-path benches/Cargo.toml --bench rezzy -- lthash_backends`, which times this stack head to head against the
 //! retired SHAKE256 + `BLAKE2b` one after checking it against the published
 //! MSC4500 vectors.
 //!
