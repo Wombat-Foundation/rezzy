@@ -12,8 +12,8 @@ much narrower, and anything above it must not be signed as a JSON number.**
 | Range                    | Parse / `write_string_value` / permissive canonical | Strict canonical     | `ruma` canonical JSON    |
 | ------------------------ | --------------------------------------------------- | -------------------- | ------------------------ |
 | `\|n\| <= 2^53-1`        | exact                                               | accepted             | accepted                 |
-| `2^53-1 < n <= u64::MAX` | exact                                               | `Err(InvalidNumber)` | `Err` (`js_int::Int`)    |
-| `n > u64::MAX`           | exact                                               | `Err(InvalidNumber)` | `Err` (cannot serialize) |
+| `2^53-1 < \|n\| <= u64::MAX` | exact                                               | `Err(InvalidNumber)` | `Err` (`js_int::Int`)    |
+| `\|n\| > u64::MAX`           | exact                                               | `Err(InvalidNumber)` | `Err` (cannot serialize) |
 
 All three rows round-trip byte-exactly in the first column, including integers
 far wider than `u64`:
