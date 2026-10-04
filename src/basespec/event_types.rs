@@ -429,7 +429,7 @@ mod event_type_tests {
         // seed — `DefaultHashBuilder::default()` is randomized per
         // instance, so two separate builders would legitimately disagree
         // even for equal inputs.
-        fn hash_of(builder: DefaultHashBuilder, ev: &EventType) -> u64 {
+        fn hash_of(builder: &DefaultHashBuilder, ev: &EventType) -> u64 {
             builder.hash_one(ev)
         }
 
@@ -437,11 +437,11 @@ mod event_type_tests {
 
         let a = EventType::from(M_ROOM_MEMBER);
         let b = EventType::RoomMember;
-        assert_eq!(hash_of(builder, &a), hash_of(builder, &b));
+        assert_eq!(hash_of(&builder, &a), hash_of(&builder, &b));
 
         let c = EventType::from("org.example.foo");
         let d = EventType::from(String::from("org.example.foo"));
-        assert_eq!(hash_of(builder, &c), hash_of(builder, &d));
+        assert_eq!(hash_of(&builder, &c), hash_of(&builder, &d));
     }
 
     #[test]

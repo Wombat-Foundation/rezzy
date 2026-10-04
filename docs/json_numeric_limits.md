@@ -18,7 +18,7 @@ much narrower, and anything above it must not be signed as a JSON number.**
 All three rows round-trip byte-exactly in the first column, including integers
 far wider than `u64`:
 
-```
+```text
 9007199254740991                     permissive=9007199254740991                     strict=ok
 9007199254740992                     permissive=9007199254740992                     strict=ERR(InvalidNumber)
 175928847299117063                   permissive=175928847299117063                   strict=ERR(InvalidNumber)
@@ -42,7 +42,7 @@ that overflow `u64`, because `Number` holds the source digits rather than a
 parsed machine value. But exactness is not enough, because the signing paths
 refuse them:
 
-```
+```text
 175928847299117063   ERR  integer is out of the range of `js_int::Int`
 18446744073709551615 ERR  integer is out of the range of `js_int::Int`
 ```
@@ -53,10 +53,10 @@ strict canonicalization, depending on which code path signs it. Treat
 
 ### simd-json diverges above `u64`
 
-`simd-json` 0.14 **rejects** integers wider than `u64`, because its DOM stores
+`simd-json` **rejects** integers wider than `u64`, because its DOM stores
 numbers as machine floats:
 
-```
+```text
 18446744073709551616   simd-json: InvalidNumber
 ```
 

@@ -15,6 +15,7 @@
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |
 //! | `signing`   | ✗       | Signature-verification traits (`SignatureVerifier` et al.), backend-agnostic. |
+//! | `signing-core` | ✗    | Backend-agnostic signature verification (`SignatureVerifier` et al.). |
 //! | `signing-dalek` | ✗   | `ed25519-dalek`-backed `SignatureVerifier` implementation. |
 //!
 //! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
@@ -65,7 +66,7 @@ pub mod hamt;
 pub mod merkle;
 pub mod raw_event;
 pub mod resolve;
-#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+#[cfg(feature = "signing-core")]
 pub mod signing;
 pub mod state;
 pub mod warnings;

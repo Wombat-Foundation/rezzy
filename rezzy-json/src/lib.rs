@@ -2748,7 +2748,7 @@ mod tests {
         // Canonical range: exact everywhere, including through `f64`.
         for exact in [
             MAX_SAFE_INTEGER.to_string(),
-            format!("-{}", MAX_SAFE_INTEGER),
+            format!("-{MAX_SAFE_INTEGER}"),
             "0".to_string(),
             "42".to_string(),
         ] {
