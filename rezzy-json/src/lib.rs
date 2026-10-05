@@ -379,17 +379,96 @@ impl Value {
     }
 
     fn parse_scalar(input: &[u8]) -> Result<Self, Error> {
+        Self::parse_scalar_with(input, false).map_err(|e| e.kind)
+    }
+
+    fn parse_scalar_with(input: &[u8], strict: bool) -> Result<Self, ParseError> {
         let mut parser = Parser {
             input,
             pos: 0,
             depth: 0,
+            strict,
         };
-        let value = parser.value()?;
+        let located = |parser: &Parser<'_>, kind| ParseError {
+            kind,
+            offset: parser.pos,
+        };
+        let value = parser.value().map_err(|k| located(&parser, k))?;
         parser.ws();
         if parser.pos != parser.input.len() {
-            return Err(Error::TrailingCharacters);
+            return Err(located(&parser, Error::TrailingCharacters));
         }
         Ok(value)
+    }
+
+    /// Like [`Self::parse`], but rejects objects containing duplicate keys.
+    ///
+    /// # Errors
+    /// Returns [`Error::DuplicateKey`] on a repeated key, otherwise as [`Self::parse`].
+    pub fn parse_strict(input: &str) -> Result<Self, Error> {
+        Self::parse_scalar_with(input.as_bytes(), true).map_err(|e| e.kind)
+    }
+
+    /// Like [`Self::parse`], but reports the byte offset where parsing failed.
+    ///
+    /// The offset is where the scalar parser stopped, within the offending token.
+    ///
+    /// # Errors
+    /// Returns a [`ParseError`] carrying the [`Error`] kind and offset.
+    pub fn parse_located(input: &str) -> Result<Self, ParseError> {
+        Self::parse_scalar_with(input.as_bytes(), false)
+    }
+
+    #[must_use]
+    /// Replaces this value with `null` and returns the previous value.
+    pub fn take(&mut self) -> Self {
+        core::mem::take(self)
+    }
+
+    /// Mutable variant of `as_array`.
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Self>> {
+        match self {
+            Self::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    /// Returns `true` if the value is a string.
+    pub const fn is_string(&self) -> bool {
+        matches!(self, Self::String(_))
+    }
+    #[must_use]
+    /// Returns `true` if the value is a bool.
+    pub const fn is_bool(&self) -> bool {
+        matches!(self, Self::Bool(_))
+    }
+    #[must_use]
+    /// Returns `true` if the value is a number.
+    pub const fn is_number(&self) -> bool {
+        matches!(self, Self::Number(_))
+    }
+
+    /// Looks up a value by RFC 6901 JSON pointer (`""` is the value itself).
+    #[must_use]
+    pub fn pointer(&self, pointer: &str) -> Option<&Self> {
+        if pointer.is_empty() {
+            return Some(self);
+        }
+        let rest = pointer.strip_prefix('/')?;
+        rest.split('/').try_fold(self, |cur, raw| {
+            let token = raw.replace("~1", "/").replace("~0", "~");
+            match cur {
+                Self::Object(obj) => obj.get(token.as_str()),
+                Self::Array(items) => {
+                    if token.len() > 1 && token.starts_with('0') {
+                        return None;
+                    }
+                    items.get(token.parse::<usize>().ok()?)
+                }
+                _ => None,
+            }
+        })
     }
     /// Parses a complete JSON document from UTF-8 `input` bytes.
     ///
@@ -2083,11 +2162,48 @@ pub enum Error {
     TrailingCharacters,
     /// Nesting went deeper than `MAX_DEPTH`.
     DepthLimitExceeded,
+    /// An object repeated a key (only reported by strict parsing).
+    DuplicateKey,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid JSON: {self:?}")
+    }
+}
+
+impl core::error::Error for Error {}
+
+/// A parse failure together with the byte offset where it was detected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseError {
+    /// What went wrong.
+    pub kind: Error,
+    /// Byte offset into the input at which the parser stopped.
+    pub offset: usize,
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at byte {}", self.kind, self.offset)
+    }
+}
+
+impl core::error::Error for ParseError {}
+
+impl fmt::Display for Value {
+    /// Writes the compact canonical form.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = String::new();
+        write_value_into(&mut out, self);
+        f.write_str(&out)
+    }
+}
+
+impl core::str::FromStr for Value {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Self::parse(s)
     }
 }
 
@@ -2114,6 +2230,7 @@ struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
     depth: usize,
+    strict: bool,
 }
 
 // Parser cursor arithmetic is on `usize` offsets bounded by `input.len()`; each
@@ -2322,7 +2439,9 @@ impl Parser<'_> {
             }
             self.pos += 1;
             let value = self.value()?;
-            values.insert(key, value);
+            if values.insert(key, value).is_some() && self.strict {
+                return Err(Error::DuplicateKey);
+            }
             self.ws();
             match self.input.get(self.pos) {
                 Some(b',') => self.pos += 1,
@@ -2383,6 +2502,51 @@ fn valid_number(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn value_display_and_from_str_round_trip() {
+        let v: super::Value = r#"{"b":[1,true,null],"a":"x"}"#.parse().unwrap();
+        assert_eq!(v.to_string(), r#"{"a":"x","b":[1,true,null]}"#);
+    }
+
+    #[test]
+    fn strict_parse_rejects_duplicate_keys() {
+        assert_eq!(
+            super::Value::parse_strict(r#"{"a":1,"a":2}"#),
+            Err(super::Error::DuplicateKey)
+        );
+        assert!(super::Value::parse_strict(r#"{"a":1,"b":{"a":2}}"#).is_ok());
+        assert!(super::Value::parse(r#"{"a":1,"a":2}"#).is_ok());
+    }
+
+    #[test]
+    fn parse_located_reports_offset() {
+        let err = super::Value::parse_located(r#"{"a": ?}"#).unwrap_err();
+        assert_eq!(err.kind, super::Error::InvalidToken);
+        assert_eq!(err.offset, 6);
+        assert!(err.to_string().ends_with("at byte 6"));
+    }
+
+    #[test]
+    fn pointer_take_and_type_predicates() {
+        let mut v = super::Value::parse(r#"{"a":{"b/c":[10,"s"]},"t":true,"n":1}"#).unwrap();
+        assert_eq!(
+            v.pointer("/a/b~1c/0").and_then(super::Value::as_i64),
+            Some(10)
+        );
+        assert!(v.pointer("/a/b~1c/01").is_none());
+        assert!(v.pointer("/a/b~1c/1").unwrap().is_string());
+        assert!(v.pointer("/t").unwrap().is_bool());
+        assert!(v.pointer("/n").unwrap().is_number());
+        v.get_mut("a")
+            .and_then(|a| a.get_mut("b/c"))
+            .and_then(super::Value::as_array_mut)
+            .unwrap()
+            .clear();
+        assert_eq!(v.pointer("/a/b~1c").unwrap().to_string(), "[]");
+        assert!(v.take().is_object());
+        assert!(v.is_null());
+    }
+
     use super::{
         write_raw_canonical_filtered, write_raw_canonical_filtered_strict, write_string_pretty,
         write_string_value, write_string_value_filtered, Error, Value,
