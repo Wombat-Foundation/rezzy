@@ -280,7 +280,6 @@ where
 /// on `unreachable` (e.g. `audit.reachable.contains(&hash)`), instead of
 /// re-deriving it downstream as `universe - unreachable` or re-walking the
 /// roots a second time.
-
 pub struct NodeReachabilityAudit {
     /// Hashes in `universe` reachable from at least one audited root.
     pub reachable: HashSet<StructuralHash>,

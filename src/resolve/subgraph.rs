@@ -16,7 +16,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Result of conflicted subgraph computation.
-
 pub struct SubgraphResult<Id = String> {
     /// The computed conflicted subgraph — events at the intersection of
     /// backwards-reachable (ancestors) and forwards-reachable (descendants)

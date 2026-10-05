@@ -638,7 +638,6 @@ where
 /// Cached writers by state key. It is built once from the admitted set and
 /// updated only for synchronous round failures, avoiding a full conflict-map
 /// scan on every repair round.
-
 struct AdmittedWriterIndex<Id, K> {
     writers: alloc::collections::BTreeMap<(EventType, K), Vec<Id>>,
 }
@@ -686,7 +685,6 @@ impl<Id: EventId, K: StateKey> AdmittedWriterIndex<Id, K> {
 /// Reachability can be expensive even when the branch-auth provider has an
 /// efficient graph index. Each ordered pair is therefore queried at most once
 /// across all repair rounds.
-
 struct CausalRelationCache<Id> {
     precedes: alloc::collections::BTreeMap<(Id, Id), bool>,
 }

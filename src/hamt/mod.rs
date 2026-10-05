@@ -128,7 +128,6 @@ impl fmt::Display for DescendError {
 impl core::error::Error for DescendError {}
 
 /// A single step in a published state-group chain.
-
 pub struct ChainStep<K, V> {
     /// The resolved root at this step.
     pub root: NodePtr<K, V>,
@@ -634,18 +633,16 @@ fn lower_slot_mask(slot: usize) -> u32 {
 }
 
 fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
-    debug_assert!(
-        depth < HAMT_MAX_DEPTH,
-        "bucket_index called at or beyond HAMT_MAX_DEPTH ({depth} >= {HAMT_MAX_DEPTH})"
-    );
+    if cfg!(debug_assertions) && depth >= HAMT_MAX_DEPTH {
+        panic!("bucket_index called at or beyond HAMT_MAX_DEPTH ({depth} >= {HAMT_MAX_DEPTH})");
+    }
     let bit_offset = depth.saturating_mul(HAMT_BRANCH_BITS);
     let byte_index = bit_offset / 8;
     let bit_shift = bit_offset % 8;
     let hash_len = hash.len();
-    debug_assert!(
-        byte_index < hash_len,
-        "byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",
-    );
+    if cfg!(debug_assertions) && byte_index >= hash_len {
+        panic!("byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",);
+    }
 
     let mut word = u16::from(hash[byte_index]);
     // No checked_add: byte_index < hash_len (32, asserted above) always, so

@@ -128,7 +128,6 @@ pub trait Reachability {
 /// as a compressed bitmap. This makes repeated "which candidates are
 /// forward-reachable from these seeds?" queries fast: seed closures are `ORed`
 /// once, then candidate membership is a bitmap lookup.
-
 pub struct ForwardReachabilityIndex<Id> {
     index: DenseIndex<Id>,
     descendant_bitmaps: Vec<RoaringBitmap>,
@@ -215,7 +214,6 @@ where
 /// quadratic closure footprint of [`ForwardReachabilityIndex`]. Queries stay exact
 /// by pruning obviously impossible branches and falling back to bounded BFS over
 /// the stored adjacency.
-
 struct Segment {
     tail: u32,
 }
@@ -404,7 +402,6 @@ impl CandidateQuery {
 /// (`resolve::subgraph`) used to build a full-graph candidate list purely
 /// to recover reachable ids, which is exactly the `|C| ≈ |V|` shape above;
 /// it now uses `forward_reachable_ids` and pays none of this cost.
-
 pub struct RangePrefilterReachability<Id> {
     index: DenseIndex<Id>,
     children_by_index: Vec<Vec<u32>>,
@@ -1110,44 +1107,41 @@ fn reach_from_index(
     }
 }
 
-/// Generates the thin representation adapter around the shared reachability
-/// rules in [`reaches_with`]. Keeping this local avoids exposing a public
-/// extension trait just to support a blanket [`Reachability`] implementation.
-macro_rules! impl_reachability {
-    ($index_type:ident, $self_is_reachable:expr, |$this:ident, $from:ident, $to:ident| $contains:block) => {
-        impl<Id> Reachability for $index_type<Id>
-        where
-            Id: EventId + Ord,
-        {
-            type Id = Id;
+impl<Id> Reachability for RangePrefilterReachability<Id>
+where
+    Id: EventId + Ord,
+{
+    type Id = Id;
 
-            fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
-                reaches_with(
-                    &self.index,
-                    &self.cyclic_nodes,
-                    from,
-                    to,
-                    $self_is_reachable,
-                    |from_idx, to_idx| {
-                        let $this = self;
-                        let $from = from_idx;
-                        let $to = to_idx;
-                        $contains
-                    },
-                )
-            }
-        }
-    };
+    fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
+        reaches_with(
+            &self.index,
+            &self.cyclic_nodes,
+            from,
+            to,
+            false,
+            |from_idx, to_idx| self.reaches_index(from_idx, to_idx),
+        )
+    }
 }
 
-impl_reachability!(
-    RangePrefilterReachability,
-    false,
-    |this, from_idx, to_idx| { this.reaches_index(from_idx, to_idx) }
-);
-impl_reachability!(ForwardReachabilityIndex, true, |this, from_idx, to_idx| {
-    this.descendant_bitmaps[from_idx as usize].contains(to_idx)
-});
+impl<Id> Reachability for ForwardReachabilityIndex<Id>
+where
+    Id: EventId + Ord,
+{
+    type Id = Id;
+
+    fn reaches(&self, from: &Self::Id, to: &Self::Id) -> Reach {
+        reaches_with(
+            &self.index,
+            &self.cyclic_nodes,
+            from,
+            to,
+            true,
+            |from_idx, to_idx| self.descendant_bitmaps[from_idx as usize].contains(to_idx),
+        )
+    }
+}
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

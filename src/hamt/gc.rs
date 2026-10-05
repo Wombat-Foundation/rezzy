@@ -108,7 +108,6 @@ use super::StructuralHash;
 /// let zeroed = chain.advance(&delta_b, root_b_hash)?;
 /// // `zeroed` contains hashes safe to delete (subject to branching check).
 /// ```
-
 pub struct LinearRootChain {
     table: RefcountTable,
     /// The currently live root's hash. `None` before bootstrap.
@@ -428,13 +427,14 @@ impl RefcountTable {
         other_live_roots_reachable: &HashSet<StructuralHash>,
     ) {
         for hash in zeroed {
-            debug_assert!(
-                !other_live_roots_reachable.contains(hash),
-                "GC branching hazard: {hash:?} was reported zeroed by \
-                 apply_superseded but is still reachable from another \
-                 live root -- see the module docs' \"Branching hazard\" \
-                 section"
-            );
+            if cfg!(debug_assertions) && other_live_roots_reachable.contains(hash) {
+                panic!(
+                    "GC branching hazard: {hash:?} was reported zeroed by \
+                     apply_superseded but is still reachable from another \
+                     live root -- see the module docs' \"Branching hazard\" \
+                     section"
+                );
+            }
         }
     }
 

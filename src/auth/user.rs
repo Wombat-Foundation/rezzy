@@ -87,57 +87,57 @@ fn meets_threshold<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     get_sender_power_level(user, state, version) >= threshold
 }
 
-/// Generates a public `user_can_*` threshold query. The doc comment on each
-/// invocation is preserved verbatim on the generated function.
-macro_rules! threshold_query {
-    ($(#[$meta:meta])* $name:ident, $level:path) => {
-        $(#[$meta])*
-        #[must_use]
-        pub fn $name<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
-            user: &str,
-            state: &impl StateProvider<Id, C, E>,
-            version: StateResVersion,
-        ) -> bool {
-            meets_threshold(user, state, version, $level(state))
-        }
-    };
+/// Whether a user's power level meets the invite threshold.
+///
+/// **Threshold-only** — does not check target membership, sender≠target, or
+/// 3PI rules. Use [`check_auth`](super::check_auth) for full authorization.
+#[must_use]
+pub fn user_can_invite<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+    user: &str,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+) -> bool {
+    meets_threshold(user, state, version, super::get_invite_power_level(state))
 }
 
-threshold_query!(
-    /// Whether a user's power level meets the invite threshold.
-    ///
-    /// **Threshold-only** — does not check target membership, sender≠target, or
-    /// 3PI rules. Use [`check_auth`](super::check_auth) for full authorization.
-    user_can_invite,
-    super::get_invite_power_level
-);
+/// Whether a user's power level meets the ban threshold.
+///
+/// **Threshold-only** — does not check `sender_pl > target_pl`.
+/// Use [`check_auth`](super::check_auth) for full authorization.
+#[must_use]
+pub fn user_can_ban<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+    user: &str,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+) -> bool {
+    meets_threshold(user, state, version, super::get_ban_power_level(state))
+}
 
-threshold_query!(
-    /// Whether a user's power level meets the ban threshold.
-    ///
-    /// **Threshold-only** — does not check `sender_pl > target_pl`.
-    /// Use [`check_auth`](super::check_auth) for full authorization.
-    user_can_ban,
-    super::get_ban_power_level
-);
+/// Whether a user's power level meets the kick threshold.
+///
+/// **Threshold-only** — does not check `sender_pl > target_pl`.
+/// Use [`check_auth`](super::check_auth) for full authorization.
+#[must_use]
+pub fn user_can_kick<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+    user: &str,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+) -> bool {
+    meets_threshold(user, state, version, super::get_kick_power_level(state))
+}
 
-threshold_query!(
-    /// Whether a user's power level meets the kick threshold.
-    ///
-    /// **Threshold-only** — does not check `sender_pl > target_pl`.
-    /// Use [`check_auth`](super::check_auth) for full authorization.
-    user_can_kick,
-    super::get_kick_power_level
-);
-
-threshold_query!(
-    /// Whether a user's power level meets the redact threshold.
-    ///
-    /// **Threshold-only** — does not check room version redaction rules or
-    /// creator status. Use [`check_auth`](super::check_auth) for full authorization.
-    user_can_redact,
-    super::get_redact_power_level
-);
+/// Whether a user's power level meets the redact threshold.
+///
+/// **Threshold-only** — does not check room version redaction rules or
+/// creator status. Use [`check_auth`](super::check_auth) for full authorization.
+#[must_use]
+pub fn user_can_redact<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+    user: &str,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+) -> bool {
+    meets_threshold(user, state, version, super::get_redact_power_level(state))
+}
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
