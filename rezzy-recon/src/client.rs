@@ -1702,7 +1702,7 @@ mod tests {
             panic!("expected a partially drained request round");
         };
 
-        assert!(accumulated_roots.is_empty());
+        assert_eq!(accumulated_roots, [] as [u64; 0]);
         assert_eq!(requests, vec![BucketRequest::new(0, 0, 18)]);
         assert_eq!(exchange.pending_len(), 1);
         assert_eq!(exchange.rounds_emitted(), 1);
@@ -1934,7 +1934,7 @@ mod tests {
                 .unwrap();
             assert!(matches!(action, ClientAction::BucketSketches { .. }));
         }
-        assert!(exchange.ladder_failed().is_empty());
+        assert_eq!(exchange.ladder_failed(), []);
     }
 
     /// A node verified with equal summaries on both sides and no roots.
@@ -2066,7 +2066,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(exchange.ladder_failed().is_empty());
+        assert_eq!(exchange.ladder_failed(), []);
     }
 
     /// The children of a split may arrive in different rounds. When they do not
@@ -2100,7 +2100,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exchange.classified().len(), 1);
-        assert!(exchange.ladder_failed().is_empty());
+        assert_eq!(exchange.ladder_failed(), []);
         // Round 3: the sibling arrives and the pair no longer sums to the parent.
         let action = exchange
             .advance_verified(
@@ -2149,7 +2149,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(exchange.ladder_failed().is_empty());
+        assert_eq!(exchange.ladder_failed(), []);
         assert_eq!(exchange.classified().len(), 2);
     }
 

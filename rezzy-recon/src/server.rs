@@ -1113,15 +1113,15 @@ mod tests {
         // Equal h64 values sort by h128, so the order is input-independent.
         assert_eq!(population.candidates(7), &[0x1, 0x9]);
         assert_eq!(population.candidates(3), &[0x5]);
-        assert!(population.candidates(8).is_empty());
-        assert!(population.candidates(u64::MAX).is_empty());
+        assert_eq!(population.candidates(8), []);
+        assert_eq!(population.candidates(u64::MAX), []);
     }
 
     #[test]
     fn empty_sorted_population_has_no_candidates_and_empty_nodes() {
         let population = SortedPopulation::default();
         assert!(population.is_empty());
-        assert!(population.candidates(1).is_empty());
+        assert_eq!(population.candidates(1), []);
         let nodes = build_bucket_nodes(&population, &[BucketRequest::new(0, 0, 4)]).unwrap();
         assert_eq!(nodes[0].1, NodeSummary::default());
     }
