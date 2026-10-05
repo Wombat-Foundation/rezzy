@@ -304,7 +304,7 @@ impl Value {
         }
     }
     /// Returns the value as `object_mut`, or `None` if it is not that type.
-    pub fn as_object_mut(&mut self) -> Option<&mut Object> {
+    pub const fn as_object_mut(&mut self) -> Option<&mut Object> {
         match self {
             Self::Object(obj) => Some(obj),
             _ => None,
@@ -432,7 +432,7 @@ impl Value {
     }
 
     /// Mutable variant of `as_array`.
-    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Self>> {
+    pub const fn as_array_mut(&mut self) -> Option<&mut Vec<Self>> {
         match self {
             Self::Array(items) => Some(items),
             _ => None,
@@ -1264,7 +1264,7 @@ impl fmt::Display for TokenizerError {
 
 impl<'a> Tokenizer<'a> {
     /// Pushes a container frame and consumes its opening bracket.
-    fn open_container(&mut self, is_object: bool) -> Result<(), TokenizerError> {
+    const fn open_container(&mut self, is_object: bool) -> Result<(), TokenizerError> {
         if self.depth >= Self::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
         }
@@ -1276,7 +1276,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     /// Pops a container frame and consumes its closing bracket.
-    fn close_container(&mut self) {
+    const fn close_container(&mut self) {
         self.depth = self.depth.saturating_sub(1);
         self.pos = self.pos.saturating_add(1);
     }

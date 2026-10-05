@@ -84,7 +84,7 @@ struct Plan {
 
 impl Plan {
     /// The number of elements that will be summed into the lattice.
-    fn element_count(&self) -> usize {
+    const fn element_count(&self) -> usize {
         self.state
             .len()
             .saturating_add(self.events.len())
@@ -93,7 +93,7 @@ impl Plan {
     }
 
     /// Whether the run requested any work at all.
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.state.is_empty()
             && self.events.is_empty()
             && self.fields.is_empty()
@@ -273,7 +273,7 @@ fn report<const LANES: usize>(hash: &LtLattice<LANES>, plan: &Plan) -> rezzy::Js
 }
 
 /// The `(event_type, state_key, event_id)` view `insert_batch_with_dst` expects.
-fn element_triple(element: &Element) -> (&str, &str, &str) {
+const fn element_triple(element: &Element) -> (&str, &str, &str) {
     (
         element.event_type.as_str(),
         element.state_key.as_str(),

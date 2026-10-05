@@ -441,7 +441,7 @@ impl SyndromeSketch {
 
     #[must_use]
     /// Number of coordinates, i.e. the sketch's capacity.
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.coordinates.len()
     }
     #[must_use]
@@ -534,7 +534,7 @@ impl SyndromeSketch {
         self.validate_decoded_elements(decoded)
     }
 
-    fn validate_decode_capacity(
+    const fn validate_decode_capacity(
         &self,
         max_elements: usize,
         limit: usize,

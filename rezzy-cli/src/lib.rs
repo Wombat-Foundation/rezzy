@@ -645,6 +645,12 @@ fn open_output(path: Option<PathBuf>) -> Box<dyn Write> {
     ))
 }
 
+/// Runs the `rezzy` command line: parses arguments, dispatches subcommands and
+/// prints the JSON result.
+///
+/// # Panics
+/// Panics if a required argument is missing after clap validation, or if the
+/// output file cannot be created or written.
 pub fn main_entry() {
     let mut command = cli_command();
     let matches = command.get_matches_mut();
