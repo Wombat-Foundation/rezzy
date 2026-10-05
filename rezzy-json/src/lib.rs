@@ -408,10 +408,10 @@ impl Value {
             let mut input = input.to_vec();
             // On failure, re-parse with the scalar parser so callers still get
             // precise errors (`InvalidEscape`, `TrailingCharacters`, ...).
-            match simd_json::to_owned_value(&mut input) {
-                Ok(value) => Ok(Self::from_simd_value(value)),
-                Err(_) => Self::parse_scalar(&original),
-            }
+            simd_json::to_owned_value(&mut input).map_or_else(
+                |_| Self::parse_scalar(original),
+                |value| Ok(Self::from_simd_value(value)),
+            )
         }
 
         #[cfg(not(feature = "simd"))]
@@ -1801,7 +1801,16 @@ impl FieldMask<'_> {
         self.matches_path(segments)
     }
 
-    fn matches_path<S: AsRef<str>>(&self, segments: &[S]) -> bool {
+    fn matches_path(&self, segments: &[&str]) -> bool {
+        self.matches_path_by(segments, |segment, part| segment == part)
+    }
+
+    /// Like [`Self::matches_path`], but `segments` are raw escaped keys.
+    fn matches_raw_path(&self, segments: &[&str]) -> bool {
+        self.matches_path_by(segments, raw_key_eq)
+    }
+
+    fn matches_path_by(&self, segments: &[&str], eq: impl Fn(&str, &str) -> bool) -> bool {
         if self.paths.is_empty() || segments.is_empty() {
             return true;
         }
@@ -1809,25 +1818,46 @@ impl FieldMask<'_> {
             segments
                 .iter()
                 .zip(path.split('.'))
-                .all(|(segment, part)| segment.as_ref() == part)
+                .all(|(segment, part)| eq(segment, part))
         })
     }
 }
 
-/// Decodes a raw (still escaped) object key; borrows when it has no escapes.
-fn decode_key(raw: &str) -> Result<Cow<'_, str>, TokenizerError> {
-    if !raw.contains('\\') {
-        return Ok(Cow::Borrowed(raw));
+/// Feeds each decoded scalar of a raw (still escaped) object key to `visit`
+/// without allocating, validating every escape along the way.
+fn walk_key(raw: &str, mut visit: impl FnMut(char)) -> Result<(), TokenizerError> {
+    let bytes = raw.as_bytes();
+    let mut pos = 0;
+    while pos < bytes.len() {
+        if bytes[pos] != b'\\' {
+            // Unescaped runs are valid UTF-8 (`raw` is a `str`), and a `\\` byte
+            // never occurs inside a multi-byte sequence.
+            let rest = &raw[pos..];
+            let Some(c) = rest.chars().next() else {
+                break;
+            };
+            visit(c);
+            pos = pos.saturating_add(c.len_utf8());
+            continue;
+        }
+        pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
+        let esc = *bytes.get(pos).ok_or(TokenizerError::UnexpectedEnd)?;
+        pos = pos.checked_add(1).ok_or(TokenizerError::UnexpectedEnd)?;
+        if esc == b'u' {
+            visit(decode_unicode_escape(bytes, &mut pos)?);
+        } else {
+            visit(simple_escape(esc).ok_or(TokenizerError::InvalidEscape)?);
+        }
     }
-    match Value::parse_bytes(alloc::format!("\"{raw}\"").as_bytes()) {
-        Ok(Value::String(decoded)) => Ok(Cow::Owned(decoded)),
-        _ => Err(TokenizerError::InvalidString),
-    }
+    Ok(())
 }
 
-/// Whether the raw object key `raw` decodes to `key`.
+/// Whether the raw object key `raw` decodes to `key`; allocation-free.
 fn raw_key_eq(raw: &str, key: &str) -> bool {
-    decode_key(raw).is_ok_and(|decoded| decoded == key)
+    let mut expected = key.chars();
+    let mut equal = true;
+    let decoded = walk_key(raw, |c| equal &= expected.next() == Some(c));
+    decoded.is_ok() && equal && expected.next().is_none()
 }
 
 /// Zero-copy borrowed JSON value for selective parsing.
@@ -1859,7 +1889,7 @@ impl<'a> ValueRef<'a> {
     /// paths are invalid.
     pub fn parse_masked(input: &'a [u8], mask: &FieldMask<'_>) -> Result<Self, TokenizerError> {
         let mut tokenizer = Tokenizer::new(input);
-        let mut segments: Vec<Cow<'a, str>> = Vec::new();
+        let mut segments: Vec<&'a str> = Vec::new();
         let value = Self::parse_masked_value(&mut tokenizer, mask, &mut segments)?;
         tokenizer.ws();
         if tokenizer.position() != tokenizer.input.len() {
@@ -1871,7 +1901,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_value(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        segments: &mut Vec<Cow<'a, str>>,
+        segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
         tokenizer.ws();
         match tokenizer
@@ -1911,7 +1941,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_array(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        segments: &mut Vec<Cow<'a, str>>,
+        segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
         if tokenizer.depth >= Tokenizer::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
@@ -1944,7 +1974,7 @@ impl<'a> ValueRef<'a> {
     fn parse_masked_object(
         tokenizer: &mut Tokenizer<'a>,
         mask: &FieldMask<'_>,
-        segments: &mut Vec<Cow<'a, str>>,
+        segments: &mut Vec<&'a str>,
     ) -> Result<Self, TokenizerError> {
         if tokenizer.depth >= Tokenizer::MAX_DEPTH {
             return Err(TokenizerError::DepthLimitExceeded);
@@ -1966,8 +1996,9 @@ impl<'a> ValueRef<'a> {
             let key_bytes = tokenizer.string_raw()?;
             let key = core::str::from_utf8(key_bytes).map_err(|_| TokenizerError::InvalidString)?;
 
-            segments.push(decode_key(key)?);
-            let should_extract = mask.matches_path(segments);
+            walk_key(key, |_| {})?;
+            segments.push(key);
+            let should_extract = mask.matches_raw_path(segments);
 
             tokenizer.ws();
             if tokenizer.input.get(tokenizer.pos) != Some(&b':') {

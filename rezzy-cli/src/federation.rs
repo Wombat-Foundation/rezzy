@@ -70,10 +70,8 @@ fn federation_agent() -> &'static ureq::Agent {
     })
 }
 
-#[must_use]
-/// Builds the federation subcommand-line interface.
 /// The `--signing-key` path and `--signing-key-keyring` account, when given.
-fn signing_key_args(m: &ArgMatches) -> (Option<&Path>, Option<&str>) {
+fn signing_key_values(m: &ArgMatches) -> (Option<&Path>, Option<&str>) {
     (
         m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
         m.get_one::<String>("signing-key-keyring")
@@ -81,6 +79,8 @@ fn signing_key_args(m: &ArgMatches) -> (Option<&Path>, Option<&str>) {
     )
 }
 
+#[must_use]
+/// Builds the federation subcommand-line interface.
 pub fn command() -> Command {
     Command::new("federation")
         .about("Make signed Matrix server-server requests")
@@ -207,7 +207,7 @@ fn signing_key_args() -> [Arg; 2] {
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
         let origin = m.get_one::<String>("origin").expect("default");
-        load_signing_key(origin, signing_key_args(m).0, signing_key_args(m).1)?;
+        load_signing_key(origin, signing_key_values(m).0, signing_key_values(m).1)?;
     }
     match matches.subcommand() {
         Some(("request", m)) => {
@@ -222,8 +222,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 m.get_one::<String>("method").expect("default"),
                 m.get_one::<String>("path").expect("required"),
                 &body,
-                signing_key_args(m).0,
-                signing_key_args(m).1,
+                signing_key_values(m).0,
+                signing_key_values(m).1,
             )
         }
         Some(("get-remote-dag", m)) => {
@@ -244,8 +244,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 room_version: m.get_one::<String>("room-version").expect("default"),
                 limit: *m.get_one::<i64>("limit").expect("default"),
                 output: m.get_one::<PathBuf>("output").expect("default"),
-                key_path: signing_key_args(m).0,
-                keyring_account: signing_key_args(m).1,
+                key_path: signing_key_values(m).0,
+                keyring_account: signing_key_values(m).1,
                 no_fallback: m.get_flag("no-fallback"),
                 emit_missing: m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
             })
@@ -264,8 +264,8 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 room_version: m.get_one::<String>("room-version").expect("default"),
                 rounds: *m.get_one::<u32>("rounds").expect("default"),
                 output_dir: m.get_one::<PathBuf>("output-dir").expect("required"),
-                key_path: signing_key_args(m).0,
-                keyring_account: signing_key_args(m).1,
+                key_path: signing_key_values(m).0,
+                keyring_account: signing_key_values(m).1,
                 no_fallback: m.get_flag("no-fallback"),
             })
         }
@@ -455,40 +455,63 @@ fn resolve_delegation(destination: &str) -> Option<String> {
             return cached.clone();
         }
     }
-    let resolved = well_known_lookup(destination).or_else(|| srv_lookup(destination));
+    // `Err` marks a transient failure (network, missing `dig`): the answer is
+    // still unknown, so it must not be cached as "no delegation".
+    let (resolved, definitive) = match well_known_lookup(destination) {
+        Ok(Some(endpoint)) => (Some(endpoint), true),
+        well_known => match srv_lookup(destination) {
+            Ok(found) => (found, well_known.is_ok()),
+            Err(()) => (None, false),
+        },
+    };
     if let Some(ref endpoint) = resolved {
         eprintln!("[info] federation delegation: {destination} -> {endpoint}");
     }
-    if let Ok(mut cache) = delegation_cache().lock() {
-        cache.insert(destination.to_owned(), resolved.clone());
+    if definitive {
+        if let Ok(mut cache) = delegation_cache().lock() {
+            cache.insert(destination.to_owned(), resolved.clone());
+        }
     }
     resolved
 }
 
 /// Query `_matrix-fed._tcp` / `_matrix._tcp` SRV records via the system
-/// resolver (`dig`). Best effort: absent `dig` or no record yields `None`.
-fn srv_lookup(destination: &str) -> Option<String> {
+/// resolver (`dig`). `Ok(None)` means no record; `Err` means the lookup itself
+/// failed (absent `dig`, resolver error) and may succeed later.
+fn srv_lookup(destination: &str) -> Result<Option<String>, ()> {
+    let mut failed = false;
     for service in ["_matrix-fed._tcp", "_matrix._tcp"] {
         let name = format!("{service}.{destination}");
-        if let Some((target, port)) = dig_srv(&name) {
+        let found = match dig_srv(&name) {
+            Ok(found) => found,
+            Err(()) => {
+                failed = true;
+                None
+            }
+        };
+        if let Some((target, port)) = found {
             if let Ok(mut targets) = srv_targets().lock() {
                 targets.insert(format!("{destination}:443"), format!("{target}:{port}"));
             }
             // Keep the logical name in the URL so `Host` and the certificate
             // check use it; `SrvResolver` supplies the SRV target's address.
-            return Some(format!("https://{destination}"));
+            return Ok(Some(format!("https://{destination}")));
         }
     }
-    None
+    if failed {
+        Err(())
+    } else {
+        Ok(None)
+    }
 }
 
-fn dig_srv(name: &str) -> Option<(String, u16)> {
+fn dig_srv(name: &str) -> Result<Option<(String, u16)>, ()> {
     let output = std::process::Command::new("dig")
         .args(["+short", "SRV", name])
         .output()
-        .ok()?;
+        .map_err(|_| ())?;
     if !output.status.success() {
-        return None;
+        return Err(());
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut best: Option<(u16, String, u16)> = None;
@@ -509,28 +532,38 @@ fn dig_srv(name: &str) -> Option<(String, u16)> {
             best = Some((priority, target.trim_end_matches('.').to_owned(), port));
         }
     }
-    best.map(|(_, target, port)| (target, port))
+    Ok(best.map(|(_, target, port)| (target, port)))
 }
 
 /// Fetch `https://<destination>/.well-known/matrix/server` and use `m.server`.
-fn well_known_lookup(destination: &str) -> Option<String> {
+///
+/// `Ok(None)` means the server answered without usable delegation; `Err` means
+/// the request failed transiently (transport error or 5xx).
+fn well_known_lookup(destination: &str) -> Result<Option<String>, ()> {
     let url = format!("https://{destination}/.well-known/matrix/server");
-    let response = ureq::get(&url)
+    let response = match ureq::get(&url)
         .timeout(std::time::Duration::from_secs(5))
         .call()
-        .ok()?;
-    let body = response.into_string().ok()?;
-    let value = JsonValue::parse(&body).ok()?;
-    let delegated = value.get("m.server")?.as_str()?;
-    if delegated.is_empty() {
-        return None;
-    }
-    if delegated.contains(':') {
-        Some(format!("https://{delegated}"))
-    } else {
-        // Per the spec, `m.server` without a port defaults to 8448.
-        Some(format!("https://{delegated}:8448"))
-    }
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, _)) if code < 500 => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let Ok(body) = response.into_string() else {
+        return Err(());
+    };
+    let delegated = JsonValue::parse(&body)
+        .ok()
+        .and_then(|value| value.get("m.server")?.as_str().map(str::to_owned))
+        .filter(|delegated| !delegated.is_empty());
+    Ok(delegated.map(|delegated| {
+        if delegated.contains(':') {
+            format!("https://{delegated}")
+        } else {
+            // Per the spec, `m.server` without a port defaults to 8448.
+            format!("https://{delegated}:8448")
+        }
+    }))
 }
 
 fn base_url(destination: &str) -> String {
