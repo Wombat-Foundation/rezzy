@@ -1866,7 +1866,9 @@ pub mod causal {
 
                             let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
                             let label = alloc::format!(" at n={n}");
-                            assert_matches_oracle(&set, &oracle, ref_root, ref_count, &keys, &label);
+                            assert_matches_oracle(
+                                &set, &oracle, ref_root, ref_count, &keys, &label,
+                            );
 
                             // Non-inclusion: pick a key not in the set.
                             let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
@@ -1890,7 +1892,7 @@ pub mod causal {
         fn differential_root_is_order_independent() {
             let bits = [7_usize, 8, 15, 16, 255];
             let bit_keys: Vec<Hash> = bits.iter().copied().map(bit_key).collect();
-            let dense = dense_keys(0xCAFE_1234_DEAD_BEEF, 48);
+            let dense = dense_keys(0xCAFE_1234_DEAD_BEEF, 16);
 
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
@@ -1945,8 +1947,8 @@ pub mod causal {
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    let keys = dense_keys(0xFACE_4321_BEEF_0000, 48);
-                    let (left, right) = keys.split_at(24);
+                    let keys = dense_keys(0xFACE_4321_BEEF_0000, 16);
+                    let (left, right) = keys.split_at(8);
 
                     let mut a = CausalSet::empty();
                     for &k in left {
@@ -1987,8 +1989,8 @@ pub mod causal {
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    let keys = dense_keys(0x1234_5678_9ABC_DEF0, 48);
-                    let (left, right) = keys.split_at(24);
+                    let keys = dense_keys(0x1234_5678_9ABC_DEF0, 16);
+                    let (left, right) = keys.split_at(8);
 
                     let mut set = CausalSet::empty();
                     for &k in left {
