@@ -1,4 +1,8 @@
-//! Small `alloc`-only JSON value and parser used by the no-std core.
+            let mut simd_input = input.to_vec();
+            match simd_json::to_owned_value(&mut simd_input) {
+                Ok(value) => Ok(Self::from_simd_value(value)),
+                Err(_) => Self::parse_scalar(input),
+            }
 //!
 //! Objects use `BTreeMap` so iteration is deterministic and already suitable
 //! for Matrix canonical JSON. Numbers retain their source spelling; canonical
