@@ -1840,34 +1840,44 @@ pub mod causal {
         /// tail-zeroing loop (`child_prefix[(byte_idx + 1)..32] = 0`) on
         /// keys where those bytes are non-trivial — the exact gap left by
         /// single-bit keys. Tests n=1, n=2 (trivial degeneracies), and
-        /// n=32, n=64 (dense enough that Phase 2 recurses through many
+        /// n=16, n=32 (dense enough that Phase 2 recurses through many
         /// non-trivial prefixes). The memoized [`CausalOracle`] keeps the
         /// per-key proof descent `O(depth)` regardless of `n`.
+        ///
+        /// The sizes are independent and each pays a 256-deep descent per
+        /// key, so they run concurrently and wall time is the slowest case
+        /// rather than their sum. Every worker takes its own oversized stack
+        /// because `subtree_root` recurses to [`CAUSAL_DEPTH`].
         #[test]
         fn differential_root_and_proofs_dense_random() {
-            let child = std::thread::Builder::new()
-                .stack_size(16 * 1024 * 1024)
-                .spawn(move || {
-                    for &n in &[1, 2, 32, 64] {
-                        let keys = dense_keys(0xDEAD_BEEF_CAFE_1234, n);
-                        let oracle = CausalOracle::new(&keys);
+            let workers: Vec<_> = [1, 2, 16, 32]
+                .into_iter()
+                .map(|n| {
+                    std::thread::Builder::new()
+                        .stack_size(16 * 1024 * 1024)
+                        .spawn(move || {
+                            let keys = dense_keys(0xDEAD_BEEF_CAFE_1234, n);
+                            let oracle = CausalOracle::new(&keys);
 
-                        let mut set = CausalSet::empty();
-                        for &k in &keys {
-                            set.insert_mut(k);
-                        }
+                            let mut set = CausalSet::empty();
+                            for &k in &keys {
+                                set.insert_mut(k);
+                            }
 
-                        let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
-                        let label = alloc::format!(" at n={n}");
-                        assert_matches_oracle(&set, &oracle, ref_root, ref_count, &keys, &label);
+                            let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                            let label = alloc::format!(" at n={n}");
+                            assert_matches_oracle(&set, &oracle, ref_root, ref_count, &keys, &label);
 
-                        // Non-inclusion: pick a key not in the set.
-                        let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
-                        assert_non_inclusion_matches_oracle(&set, &oracle, &absent, &label);
-                    }
+                            // Non-inclusion: pick a key not in the set.
+                            let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
+                            assert_non_inclusion_matches_oracle(&set, &oracle, &absent, &label);
+                        })
+                        .unwrap()
                 })
-                .unwrap();
-            child.join().unwrap();
+                .collect();
+            for worker in workers {
+                worker.join().unwrap();
+            }
         }
 
         /// Same cross-check, insertion-order independence: the oracle takes
