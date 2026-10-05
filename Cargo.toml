@@ -70,7 +70,7 @@ members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 [workspace.package]
 version = "0.6.0-rc.1"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.85"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
@@ -92,8 +92,8 @@ sha3 = { version = "0.10", default-features = false }
 simd-json = { version = "0.15", default-features = false, features = ["runtime-detection", "swar-number-parsing"] }
 
 # CLI-only
-clap = { version = "=4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
-clap_complete = { version = "=4.5.48", default-features = false }
+clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
+clap_complete = { version = "4.5.48", default-features = false }
 mimalloc = { version = "0.1.52" }
 ureq = { version = "2.9", default-features = false }
 
@@ -107,7 +107,7 @@ rand_08 = { package = "rand", version = "0.8" }
 similar = "2.7.0"
 test-case = "3.3.1"
 test-log = "0.2.20"
-zeroize = "=1.8.1"
+zeroize = "1.8.1"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
