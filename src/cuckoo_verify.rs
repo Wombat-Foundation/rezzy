@@ -57,7 +57,7 @@ impl VerifyError {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct CuckooVerifier {
     keys: SipHashKeys,
 }
@@ -86,7 +86,7 @@ impl CuckooVerifier {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct MintingPow<'a> {
     pub algorithm: &'a str,
     pub nonce: u64,
@@ -334,7 +334,7 @@ fn base64url_no_pad(bytes: &[u8]) -> String {
     out
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct SipHashKeys {
     k0: u64,
     k1: u64,
@@ -360,7 +360,7 @@ impl SipHashKeys {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct SipHashState {
     v0: u64,
     v1: u64,

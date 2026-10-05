@@ -334,7 +334,7 @@ impl<Id: EventId, C: EventContent> EventProvider<Id, C> for LeanEventCache<Id, C
 }
 
 /// Collects cache hit/miss statistics for monitoring.
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct CacheStats {
     /// Number of cache hits.
     pub hits: u32,

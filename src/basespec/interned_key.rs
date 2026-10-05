@@ -27,7 +27,7 @@ use crate::basespec::rezzy_types::LeanEvent;
 /// Each interned string is allocated exactly once, as an `Rc<str>`; both
 /// `id_to_str` and `str_to_id` hold clones of that same `Rc` (a refcount
 /// bump, not a fresh allocation).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Interner {
     id_to_str: alloc::vec::Vec<Rc<str>>,
     str_to_id: crate::HashMap<Rc<str>, u32>,

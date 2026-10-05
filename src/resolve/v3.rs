@@ -81,7 +81,7 @@ use core::hash::BuildHasher;
 /// derived from the event's branch-auth snapshot, never from cached power
 /// level, depth, timestamp, or arrival order. `event_id` is used only as the
 /// final deterministic residue when two ranks are equal.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct V3Rank {
     /// Authority established by the event's certified branch-auth snapshot.
     pub authority: i64,
@@ -162,7 +162,7 @@ where
 /// This is metadata, not a claim inferred from raw event fields. Implementors
 /// of [`V3AdmissionProvider`] only return it after signature/hash verification
 /// and branch-local authorization.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct BranchAuthSnapshot<Id, K: Ord> {
     /// Canonical state selected from this event's verified causal history.
     /// `imbl::OrdMap` makes snapshot clones structural, so certificates may
@@ -171,7 +171,7 @@ pub struct BranchAuthSnapshot<Id, K: Ord> {
 }
 
 /// Verified metadata and its immutable branch-auth snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct V3Admission<Id, K: Ord> {
     rank: V3Rank,
     branch_auth: BranchAuthSnapshot<Id, K>,
@@ -193,7 +193,7 @@ pub struct V3Admission<Id, K: Ord> {
 /// grant <math><mi>g</mi></math>, and witness <math><mi>w</mi></math>:
 ///
 /// <math display="block"><semantics><mtext>GrantAdmin(g,b,w) ⇔ PL_θ(g)(sender(g)) ≥ PL_g(b) ∧ member_θ(g)(b)=w=join(b) ∧ PL_g(b)&gt;PL_θ(g)(b)</mtext><annotation encoding="application/x-tex">\operatorname{GrantAdmin}(g,b,w) \iff \operatorname{PL}_{\theta(g)}(\operatorname{sender}(g)) \ge \operatorname{PL}_g(b) \land \operatorname{member}_{\theta(g)}(b)=w=\operatorname{join}(b) \land \operatorname{PL}_g(b)&gt;\operatorname{PL}_{\theta(g)}(b)</annotation></semantics></math>
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct CertifiedPromotionGrant<Id, K: Ord> {
     grant_id: Id,
     target: K,
@@ -276,7 +276,7 @@ pub trait V3RankPolicy<Id, C, K: Ord> {
 /// neither timestamp, depth, nor arrival order.
 ///
 /// <math display="block"><semantics><mtext>r_tk.nutra.cdo.12(e) = (PL_θ(e)(sender(e)), polarity(e), specificity(e), id(e))</mtext><annotation encoding="application/x-tex">r_{\texttt{tk.nutra.cdo.12}}(e) = (\operatorname{PL}_{\theta(e)}(\operatorname{sender}(e)), \operatorname{polarity}(e), \operatorname{specificity}(e), \operatorname{id}(e))</annotation></semantics></math>
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub struct TkNutraCdo12RankPolicy;
 
 impl<Id, C, K> V3RankPolicy<Id, C, K> for TkNutraCdo12RankPolicy
@@ -312,7 +312,7 @@ where
 /// conflict-stances table. Widening who can mint one widens who can shield a
 /// target from a peer's moderation action, so this is an explicit, named
 /// choice rather than a silent default.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum PromotionScope {
     /// Only the room creator (or a v12+ additional creator) may issue a
     /// certified grant — the original, narrower behavior. A single trusted
@@ -475,7 +475,7 @@ where
 }
 
 /// V3 cannot resolve when a required certified fact is absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum V3ResolveError<Id> {
     /// A conflicted state event did not have verified-admission evidence.
     MissingVerifiedAdmission { event_id: Id },
@@ -530,14 +530,14 @@ pub trait V3AdmissionProvider<Id, C, K: Ord> {
 }
 
 /// A selected candidate for one state key in an immutable V3 repair round.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct RoundSelection<Id, K> {
     pub key: (EventType, K),
     pub event_id: Id,
 }
 
 /// Auditable result of one synchronous repair round.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct RepairRound<Id, K> {
     pub selections: Vec<RoundSelection<Id, K>>,
     /// Every entry was evaluated against the same immutable state. Callers
@@ -638,7 +638,6 @@ where
 /// Cached writers by state key. It is built once from the admitted set and
 /// updated only for synchronous round failures, avoiding a full conflict-map
 /// scan on every repair round.
-#[derive(Debug)]
 struct AdmittedWriterIndex<Id, K> {
     writers: alloc::collections::BTreeMap<(EventType, K), Vec<Id>>,
 }
@@ -686,7 +685,6 @@ impl<Id: EventId, K: StateKey> AdmittedWriterIndex<Id, K> {
 /// Reachability can be expensive even when the branch-auth provider has an
 /// efficient graph index. Each ordered pair is therefore queried at most once
 /// across all repair rounds.
-#[derive(Debug)]
 struct CausalRelationCache<Id> {
     precedes: alloc::collections::BTreeMap<(Id, Id), bool>,
 }

@@ -139,7 +139,7 @@ impl clap::ValueEnum for OutputFormat {
 }
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ResolvedStateEntry<Id = String, K = String> {
     pub event_type: EventType,
     pub state_key: K,

@@ -1480,7 +1480,7 @@ pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), alloc::string:
 }
 
 /// Result of Kahn's topological sort with diagnostic information.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum KahnSortResult<Id = String> {
     /// All events were successfully sorted.
     Ok(Vec<Id>),
@@ -2319,7 +2319,7 @@ impl<Id, C> LeanEvent<Id, C, String> {
 /// This is useful for host adapters that already own native event storage and
 /// want to expose event data to rezzy without materializing a fresh owned
 /// `LeanEvent` up front.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub event_id: &'a Id,
     pub event_type: &'a str,

@@ -48,7 +48,7 @@ use core::fmt;
 use core::hash::BuildHasher;
 
 /// Status of a State DAG traversal starting from one or more events.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum StateDagCompleteness<Id> {
     /// The state DAG is fully connected back to `m.room.create` along all paths.
     Complete {
@@ -74,7 +74,7 @@ pub enum StateDagCompleteness<Id> {
 }
 
 /// Traversal options for State DAG queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StateDagWalkOptions {
     /// Maximum number of events to visit before halting (defense-in-depth against runaway graphs).
     pub max_steps: Option<usize>,
@@ -92,7 +92,7 @@ impl Default for StateDagWalkOptions {
 }
 
 /// Validation error for MSC4242 State DAG rules.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StateDagValidationError<Id = String> {
     /// `prev_state_events` exceeds the maximum allowed fanout limit (20).
     FanoutExceeded { count: usize, limit: usize },
@@ -283,7 +283,7 @@ mod validation_error_display_tests {
 }
 
 /// Error during State DAG computation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StateDagError<Id = String> {
     /// Validation of `prev_state_events` failed.
     Validation(StateDagValidationError<Id>),

@@ -72,7 +72,7 @@ impl core::error::Error for UniverseTooLarge {}
 /// Backed by the crate-wide generic [`DenseIndex`] primitive (indexed type
 /// `StructuralHash`, `u32` width); this wrapper keeps the hash-specific
 /// [`hash_at`](Self::hash_at) naming and the [`UniverseTooLarge`] error type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct IndexedUniverse(DenseIndex<StructuralHash>);
 
 impl From<IndexTooLarge> for UniverseTooLarge {
@@ -143,7 +143,7 @@ impl IndexedUniverse {
 /// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
 /// is not. `universe` is the only place `StructuralHash` identity lives;
 /// `reachable`/`unreachable` are addressed purely through its dense indexes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(PartialEq)]
 pub struct BitmapNodeReachabilityAudit {
     pub universe: IndexedUniverse,
     pub reachable: RoaringBitmap,
@@ -152,7 +152,7 @@ pub struct BitmapNodeReachabilityAudit {
 
 /// Errors from [`bitmap_node_reachability_audit`]: either the traversal itself
 /// failed, or `universe` could not be given a dense index.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum BitmapAuditError<E> {
     /// `universe` had more than `u32::MAX` distinct hashes.
     Universe(UniverseTooLarge),
@@ -280,7 +280,6 @@ where
 /// on `unreachable` (e.g. `audit.reachable.contains(&hash)`), instead of
 /// re-deriving it downstream as `universe - unreachable` or re-walking the
 /// roots a second time.
-#[derive(Debug, Clone)]
 pub struct NodeReachabilityAudit {
     /// Hashes in `universe` reachable from at least one audited root.
     pub reachable: HashSet<StructuralHash>,

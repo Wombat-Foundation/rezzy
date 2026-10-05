@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 pub use super::lthash::{compute_state_hash, LtHash};
 
 /// Which phase of state resolution produced a delta.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ResolvePhase {
     /// Power events: `m.room.create`, `m.room.power_levels`, `m.room.join_rules`,
     /// bans, and kicks. Sorted by reverse topological order (Kahn's algorithm).
@@ -38,7 +38,7 @@ pub enum ResolvePhase {
 /// [`resolve_iterative_sort_with_deltas`](crate::resolve_iterative_sort_with_deltas) emits one of
 /// these for every conflicted event that is auth-checked, regardless of whether
 /// it was accepted or rejected.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K = String> {
     /// The event that was auth-checked.
     pub event_id: Id,
@@ -54,7 +54,7 @@ pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K
 }
 
 /// A single state delta entry — an addition, modification, or deletion.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StateDelta<Id, K = String>
 where
     Id: crate::basespec::rezzy_types::EventId,
@@ -188,7 +188,7 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// the checkpoint stores the full state map as `snapshot` instead of a delta.
 /// Readers walk backwards from any checkpoint, applying deltas, until they
 /// hit a snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = String> {
     /// 256-bit hash of the state map at this point.
     pub state_hash: [u8; 32],

@@ -96,7 +96,7 @@ impl core::error::Error for IndexTooLarge {}
 /// through [`Self::item_at`]/[`Self::items`] to the full item — the dense
 /// index is a local, single-call addressing scheme, not an identifier of its
 /// own.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DenseIndex<T, Idx = u32> {
     /// `items[i]` is the `T` assigned to dense index `i`.
     items: Vec<T>,

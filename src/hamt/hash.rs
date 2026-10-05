@@ -69,7 +69,7 @@ pub const HAMT_ROUTING_VERSION: u8 = 1;
 /// `[u8; 16]` to `[u8; 32]`, version fields were prepended), and bincode's
 /// position-dependent decoding would silently misparse legacy payloads. If binary
 /// persistence is needed, use a versioned envelope with an explicit format tag.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RootHandle {
     pub codec_version: u8,
     pub routing_version: u8,

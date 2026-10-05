@@ -74,7 +74,7 @@ impl From<Hash> for UnsignedRoot {
 }
 
 /// Errors returned by MSC4511 Merkle and canonical JSON operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MerkleError {
     EmptyFieldName,
     InvalidFieldName,
@@ -102,7 +102,7 @@ impl fmt::Display for MerkleError {
 impl core::error::Error for MerkleError {}
 
 /// One named metadata value. The value is Matrix Canonical JSON encoded before hashing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Field {
     pub name: String,
     pub value: Value,
@@ -124,7 +124,7 @@ impl Field {
 /// (rather than a single combined `sender` leaf) so that a proof can disclose
 /// and verify the sending server's identity without disclosing the sender's
 /// localpart.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Header {
     pub room_id: String,
     pub sender_localpart: String,
@@ -137,26 +137,25 @@ pub struct Header {
 }
 
 /// Typed wrapper for the `prev_events` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PrevEventsHash(pub Hash);
 
 /// Typed wrapper for the `auth_events` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct AuthEventsHash(pub Hash);
 
 /// Typed wrapper for the event header root component in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct EventHeaderRoot(pub Hash);
 
 /// Typed wrapper for the `content` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ContentHash(pub Hash);
 
 /// Typed wrapper for the `other_signed_fields` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct OtherSignedFieldsHash(pub Hash);
 
-#[derive(Debug)]
 struct Leaf {
     name: String,
     hash: Hash,
@@ -730,7 +729,7 @@ pub mod causal {
     /// `root()` is O(log n) (`BTreeMap` lookup), `inclusion_proof()` and
     /// `non_inclusion_proof()` are O(256 · log n) — 256 cache lookups
     /// rather than O(n·256).
-    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    #[derive(Clone, Default, PartialEq, Eq)]
     pub struct CausalSet {
         keys: BTreeSet<Hash>,
         /// `(depth, key_prefix) → (hash, count)`. `key_prefix` at depth `d`
@@ -746,7 +745,7 @@ pub mod causal {
     /// This is derived from the key during verification — it is not part of
     /// the wire format. The type exists only for internal use in
     /// [`verify_causal_path`] and the causal-trie oracle's descent.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     enum CausalSide {
         Left,
         Right,
@@ -927,7 +926,7 @@ pub mod causal {
     /// Runs of consecutive canonical-empty siblings are collapsed into a
     /// single `EmptyRun` entry; non-empty steps are emitted individually
     /// as `Step`.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub enum CompressedCausalStep {
         /// A non-empty sibling step (hash and count are explicit).
         Step(CausalProofStep),
@@ -942,7 +941,7 @@ pub mod causal {
     }
 
     /// Error type for compressed causal-trie proof operations.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub enum CausalProofError {
         /// A compressed step references a sibling depth outside
         /// `1..=CAUSAL_DEPTH`, or `terminal_depth` itself exceeds
