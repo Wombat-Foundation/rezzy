@@ -267,6 +267,7 @@ required-features = ["cli"]
 
 [profile.release-max-perf]
 inherits = "release"
+opt-level = 2
 strip = "symbols"
 lto = "fat"
 codegen-units = 1

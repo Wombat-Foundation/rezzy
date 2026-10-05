@@ -459,10 +459,10 @@ fn resolve_delegation(destination: &str) -> Option<String> {
     // still unknown, so it must not be cached as "no delegation".
     let (resolved, definitive) = match well_known_lookup(destination) {
         Ok(Some(endpoint)) => (Some(endpoint), true),
-        well_known => match srv_lookup(destination) {
-            Ok(found) => (found, well_known.is_ok()),
-            Err(()) => (None, false),
-        },
+        well_known => {
+            let (found, srv_definitive) = srv_lookup(destination);
+            (found, srv_definitive && well_known.is_ok())
+        }
     };
     if let Some(ref endpoint) = resolved {
         eprintln!("[info] federation delegation: {destination} -> {endpoint}");
@@ -476,9 +476,13 @@ fn resolve_delegation(destination: &str) -> Option<String> {
 }
 
 /// Query `_matrix-fed._tcp` / `_matrix._tcp` SRV records via the system
-/// resolver (`dig`). `Ok(None)` means no record; `Err` means the lookup itself
-/// failed (absent `dig`, resolver error) and may succeed later.
-fn srv_lookup(destination: &str) -> Result<Option<String>, ()> {
+/// resolver (`dig`).
+///
+/// Returns the endpoint found, if any, and whether that answer is definitive.
+/// A failed `_matrix-fed._tcp` lookup makes the answer non-definitive even
+/// when the legacy `_matrix._tcp` record is found, since the preferred record
+/// might exist once the resolver recovers.
+fn srv_lookup(destination: &str) -> (Option<String>, bool) {
     let mut failed = false;
     for service in ["_matrix-fed._tcp", "_matrix._tcp"] {
         let name = format!("{service}.{destination}");
@@ -495,14 +499,10 @@ fn srv_lookup(destination: &str) -> Result<Option<String>, ()> {
             }
             // Keep the logical name in the URL so `Host` and the certificate
             // check use it; `SrvResolver` supplies the SRV target's address.
-            return Ok(Some(format!("https://{destination}")));
+            return (Some(format!("https://{destination}")), !failed);
         }
     }
-    if failed {
-        Err(())
-    } else {
-        Ok(None)
-    }
+    (None, !failed)
 }
 
 fn dig_srv(name: &str) -> Result<Option<(String, u16)>, ()> {
@@ -538,7 +538,7 @@ fn dig_srv(name: &str) -> Result<Option<(String, u16)>, ()> {
 /// Fetch `https://<destination>/.well-known/matrix/server` and use `m.server`.
 ///
 /// `Ok(None)` means the server answered without usable delegation; `Err` means
-/// the request failed transiently (transport error or 5xx).
+/// the request failed transiently (transport error, 5xx, 408 or 429).
 fn well_known_lookup(destination: &str) -> Result<Option<String>, ()> {
     let url = format!("https://{destination}/.well-known/matrix/server");
     let response = match ureq::get(&url)
@@ -546,7 +546,10 @@ fn well_known_lookup(destination: &str) -> Result<Option<String>, ()> {
         .call()
     {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, _)) if code < 500 => return Ok(None),
+        // 408 and 429 are retryable, not a statement that no delegation exists.
+        Err(ureq::Error::Status(code, _)) if code < 500 && code != 408 && code != 429 => {
+            return Ok(None)
+        }
         Err(_) => return Err(()),
     };
     let Ok(body) = response.into_string() else {
