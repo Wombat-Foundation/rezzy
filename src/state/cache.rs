@@ -270,9 +270,10 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
             return arc;
         }
         let event = f();
-        if cfg!(debug_assertions) && event.event_id.borrow() != id {
-            panic!("get_or_insert: closure produced event with mismatched event_id");
-        }
+        assert!(
+            !(cfg!(debug_assertions) && event.event_id.borrow() != id),
+            "get_or_insert: closure produced event with mismatched event_id"
+        );
         self.insert(event)
     }
 

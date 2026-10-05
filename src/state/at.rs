@@ -2063,12 +2063,11 @@ where
     let all_ids: Vec<&Id> = events_map.keys().collect();
     let (index, sorted) = ancestor_index_and_topo(&all_ids, events_map);
 
-    if cfg!(debug_assertions) && sorted.len() != index.len() {
-        panic!(
-            "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
+    assert!(
+        !(cfg!(debug_assertions) && sorted.len() != index.len()),
+        "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
              the input graph contains a cycle"
-        );
-    }
+    );
 
     // Kahn sort gives a valid topological order; apply tiebreak within
     // each topological level for deterministic output.

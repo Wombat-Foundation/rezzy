@@ -633,16 +633,18 @@ fn lower_slot_mask(slot: usize) -> u32 {
 }
 
 fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
-    if cfg!(debug_assertions) && depth >= HAMT_MAX_DEPTH {
-        panic!("bucket_index called at or beyond HAMT_MAX_DEPTH ({depth} >= {HAMT_MAX_DEPTH})");
-    }
+    assert!(
+        !(cfg!(debug_assertions) && depth >= HAMT_MAX_DEPTH),
+        "bucket_index called at or beyond HAMT_MAX_DEPTH ({depth} >= {HAMT_MAX_DEPTH})"
+    );
     let bit_offset = depth.saturating_mul(HAMT_BRANCH_BITS);
     let byte_index = bit_offset / 8;
     let bit_shift = bit_offset % 8;
     let hash_len = hash.len();
-    if cfg!(debug_assertions) && byte_index >= hash_len {
-        panic!("byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",);
-    }
+    assert!(
+        !(cfg!(debug_assertions) && byte_index >= hash_len),
+        "byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",
+    );
 
     let mut word = u16::from(hash[byte_index]);
     // No checked_add: byte_index < hash_len (32, asserted above) always, so

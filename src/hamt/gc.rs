@@ -427,14 +427,13 @@ impl RefcountTable {
         other_live_roots_reachable: &HashSet<StructuralHash>,
     ) {
         for hash in zeroed {
-            if cfg!(debug_assertions) && other_live_roots_reachable.contains(hash) {
-                panic!(
-                    "GC branching hazard: {hash:?} was reported zeroed by \
+            assert!(
+                !(cfg!(debug_assertions) && other_live_roots_reachable.contains(hash)),
+                "GC branching hazard: {hash:?} was reported zeroed by \
                      apply_superseded but is still reachable from another \
                      live root -- see the module docs' \"Branching hazard\" \
                      section"
-                );
-            }
+            );
         }
     }
 

@@ -1384,9 +1384,10 @@ where
             let pe_idx = index
                 .index_of(&pe)
                 .expect("state DAG ancestor index contains every referenced parent");
-            if cfg!(debug_assertions) && out_degree[pe_idx] == 0 {
-                panic!("state DAG: parent event has no outgoing edges to decrement");
-            }
+            assert!(
+                !(cfg!(debug_assertions) && out_degree[pe_idx] == 0),
+                "state DAG: parent event has no outgoing edges to decrement"
+            );
             take_finalized_parent(
                 pe_idx,
                 &mut out_degree,
