@@ -103,7 +103,6 @@ getrandom = { version = "0.4", default-features = false }
 rpassword = "7.5"
 
 # Dev dependencies
-test-case = "3.3.1"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
@@ -195,7 +194,6 @@ imbl.workspace = true
 rezzy-recon.workspace = true
 roaring.workspace = true
 sha2.workspace = true
-test-case.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

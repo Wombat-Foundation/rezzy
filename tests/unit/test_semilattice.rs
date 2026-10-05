@@ -11,7 +11,6 @@ use rezzy::resolve::semilattice::{
 };
 use rezzy::{LeanEvent, StateResVersion};
 use std::collections::HashMap;
-use test_case::test_case;
 
 const FIXTURE: &str = r#"
 {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:a.com","depth":0,"origin_server_ts":1000,"content":{"creator":"@alice:a.com","room_version":"11"},"prev_events":[],"auth_events":[]}
@@ -167,9 +166,6 @@ fn test_lattice_fold_resolves_conflicting_topics() {
     assert_topic_b(&resolved, "Lattice fold should pick topic_b (later ts)");
 }
 
-#[test_case(StateResVersion::V2; "v2")]
-#[test_case(StateResVersion::V2_1; "v2_1")]
-#[test_case(StateResVersion::V2_1_1; "v2_1_1")]
 fn test_supplemental_key_does_not_overwrite_resolved_state(version: StateResVersion) {
     let events = utils::parse_jsonl_events(FIXTURE);
     let map = to_event_map(&events);
@@ -209,6 +205,12 @@ fn test_supplemental_key_does_not_overwrite_resolved_state(version: StateResVers
         "semilattice and iterative resolution must agree"
     );
 }
+
+cases!(test_supplemental_key_does_not_overwrite_resolved_state:
+    v2 = StateResVersion::V2,
+    v2_1 = StateResVersion::V2_1,
+    v2_1_1 = StateResVersion::V2_1_1,
+);
 
 #[test]
 fn test_lattice_fold_parity_with_iterative() {

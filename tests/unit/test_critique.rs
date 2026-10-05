@@ -3,7 +3,6 @@ use crate::utils::to_event_map;
 use crate::utils_extra;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::{HashMap, HashSet};
-use test_case::test_case;
 
 type ResolvedStateMap = HashMap<(String, String), String>;
 type EventMap = HashMap<String, LeanEvent>;
@@ -274,10 +273,6 @@ fn assert_benign_join_pair(jsonl_filename: &str) -> (ResolvedStateMap, EventMap)
 /// A's backdated kick while B is still low-power, discarding B's legitimate
 /// competing-branch actions. `tk.nutra.cdo.12` is intentionally tested through
 /// `resolve_v3`, not this V2 iterative entry point.
-#[test_case(StateResVersion::V2; "v2")]
-#[test_case(StateResVersion::V2_1; "v2_1")]
-#[test_case(StateResVersion::V2_1_1; "v2_1_1")]
-#[test_case(StateResVersion::V2_2; "v2_2")]
 fn test_dueling_admins_backdated_kick(version: StateResVersion) {
     let events = utils::parse_jsonl_events(
         r#"
@@ -342,6 +337,13 @@ fn test_dueling_admins_backdated_kick(version: StateResVersion) {
         "xfail ({version:?}): B's locally-authorised ban of D is discarded"
     );
 }
+
+cases!(test_dueling_admins_backdated_kick:
+    v2 = StateResVersion::V2,
+    v2_1 = StateResVersion::V2_1,
+    v2_1_1 = StateResVersion::V2_1_1,
+    v2_2 = StateResVersion::V2_2,
+);
 
 #[test]
 fn test_anomaly_01_state_reset() {

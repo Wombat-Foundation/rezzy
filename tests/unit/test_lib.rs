@@ -3384,9 +3384,6 @@ fn test_types_validate_syntactic() {
     assert!(ev.validate_syntactic("11").is_ok());
 }
 
-#[test_case::test_case("11"; "v11")]
-#[test_case::test_case("12"; "v12")]
-#[test_case::test_case("12.1"; "v12_1")]
 fn test_types_validate_syntactic_accepts_historical_sender_localparts(room_version: &str) {
     let mut ev: LeanEvent = LeanEvent {
         event_id: "$valid_event_id:example.com".to_string(),
@@ -3427,6 +3424,12 @@ fn test_types_validate_syntactic_accepts_historical_sender_localparts(room_versi
         "NUL is never legal in an MXID localpart"
     );
 }
+
+cases!(test_types_validate_syntactic_accepts_historical_sender_localparts:
+    v11 = "11",
+    v12 = "12",
+    v12_1 = "12.1",
+);
 
 #[test]
 fn test_types_validate_syntactic_create_rules() {
