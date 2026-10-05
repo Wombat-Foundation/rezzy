@@ -890,7 +890,7 @@ mod cli_tests {
         let mut buffer = Vec::new();
         clap_complete::generate(clap_complete::Shell::Bash, &mut command, name, &mut buffer);
         let script = String::from_utf8(buffer).expect("completion output is UTF-8");
-        assert!(!script.is_empty());
+        assert_ne!(script.len(), 0);
         assert!(script.contains("rezzy"));
     }
 

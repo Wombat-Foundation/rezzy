@@ -415,7 +415,7 @@ mod tests {
         events.insert("A".into(), super::cycle_member_with_prev("A", "B"));
         events.insert("B".into(), super::cycle_member_with_prev("B", "A"));
         let sorted = super::kahn_sort(&events, rezzy::StateResVersion::V2);
-        assert!(!sorted.is_empty());
+        assert_ne!(sorted.len(), 0);
         assert_eq!(sorted, vec!["A", "B"]);
     }
 
@@ -1116,7 +1116,7 @@ mod tests {
         let result = super::kahn_sort_diag(&events, rezzy::StateResVersion::V2);
         match result {
             KahnSortResult::CycleDetected { sorted, stuck } => {
-                assert!(sorted.is_empty());
+                assert_eq!(sorted.len(), 0);
                 assert_eq!(stuck.len(), 2);
                 let mut stuck_sorted = stuck.clone();
                 stuck_sorted.sort();
@@ -1151,7 +1151,7 @@ mod tests {
             stuck: vec!["A".into(), "B".into()],
         };
         assert!(!cycle.is_ok());
-        assert!(cycle.into_sorted().is_empty());
+        assert_eq!(cycle.into_sorted().len(), 0);
     }
 
     #[test]
@@ -1373,7 +1373,7 @@ mod tests {
         );
         let result = compute_v2_1_conflicted_subgraph_bounded(&graph, &[], Some(1));
         assert!(result.subgraph.is_empty());
-        assert!(result.missing_auth_events.is_empty());
+        assert_eq!(result.missing_auth_events.len(), 0);
     }
 
     fn default_test_event(id: &str, pl: i64, ts: u64, auth: Vec<&str>) -> LeanEvent {
@@ -6257,7 +6257,7 @@ fn test_parsed_event_full_coverage() {
     let parsed_default_flags = rezzy::ParsedEvent::try_new(&raw).expect("valid content");
     assert!(!parsed_default_flags.rejected());
     assert!(!parsed_default_flags.soft_fail());
-    assert!(RawEvent::raw_prev_state_events(&raw).is_empty());
+    assert_eq!(RawEvent::raw_prev_state_events(&raw).len(), 0);
 
     // ParsedEvent::try_new (line 502-508)
     // Use a PL-like event so we can test all EventLike default methods
@@ -6292,7 +6292,7 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.depth(), 42);
     assert_eq!(parsed.prev_events(), &["$prev1"]);
     assert_eq!(parsed.auth_events().len(), 2);
-    assert!(parsed.prev_state_events().is_empty());
+    assert_eq!(parsed.prev_state_events().len(), 0);
 
     // EventLike required methods (lines 534-556)
     assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");
@@ -6549,7 +6549,7 @@ fn test_event_like_default_rejection_flags() {
 
     assert!(!event.rejected());
     assert!(!event.soft_fail());
-    assert!(DagNode::prev_state_events(&event).is_empty());
+    assert_eq!(DagNode::prev_state_events(&event).len(), 0);
 }
 
 // ── Coverage: EventLike default methods + LeanEvent pl/ts ───────────

@@ -353,7 +353,7 @@ mod tests {
 
         // Empty conflicted — nothing returned
         let diff = graph.auth_difference(&["A".into()], &[]);
-        assert!(diff.is_empty());
+        assert_eq!(diff.len(), 0);
     }
 
     #[test]

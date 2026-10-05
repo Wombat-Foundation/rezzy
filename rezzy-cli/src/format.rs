@@ -1936,7 +1936,7 @@ mod tests {
         assert_eq!(roots[2]["root_hash"], roots[1]["root_hash"]);
 
         let nodes = hamt_output["nodes"].as_array().expect("nodes array");
-        assert!(!nodes.is_empty());
+        assert_ne!(nodes.len(), 0);
 
         let deltas_args = test_args(OutputFormat::Deltas);
         let deltas_ctx = formatting_context(

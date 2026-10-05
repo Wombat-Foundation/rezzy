@@ -167,7 +167,7 @@ fn causal_non_inclusion_proof_rejects_member() {
 #[test]
 fn causal_non_inclusion_proof_on_empty_set() {
     let (d, path, terminal_depth, root, count) = empty_non_inclusion();
-    assert!(path.is_empty());
+    assert_eq!(path.len(), 0);
     assert_eq!(terminal_depth, 0);
     assert!(verify_causal_non_inclusion(
         &d,
@@ -181,7 +181,7 @@ fn causal_non_inclusion_proof_on_empty_set() {
 #[test]
 fn verify_causal_inclusion_rejects_tampered_sibling() {
     let (_s, a, _b, mut path, root, count) = two_key_inclusion();
-    assert!(!path.is_empty());
+    assert_ne!(path.len(), 0);
     path[0].hash[0] ^= 0xFF;
     assert!(!verify_causal_inclusion(&a, &path, root, count));
 }
@@ -320,7 +320,7 @@ fn compress_inclusion_roundtrip_root_level_sibling() {
     let compressed = compress_causal_path(CAUSAL_DEPTH, &path);
     // At least the root-level sibling should be a Step (the other
     // branch), but deeper levels may be EmptyRun.
-    assert!(!compressed.is_empty());
+    assert_ne!(compressed.len(), 0);
     let decompressed = decompress_causal_path(CAUSAL_DEPTH, &compressed).unwrap();
     assert_eq!(decompressed.len(), path.len());
     assert!(verify_causal_inclusion(&k1, &decompressed, root, count));
@@ -377,12 +377,12 @@ fn compress_non_inclusion_on_empty_set() {
     let d = key(0xd4);
     let s = CausalSet::empty();
     let (path, terminal_depth, root, count) = non_inclusion_proof_of(&s, &d);
-    assert!(path.is_empty());
+    assert_eq!(path.len(), 0);
     assert_eq!(terminal_depth, 0);
     let compressed = compress_causal_path(terminal_depth, &path);
-    assert!(compressed.is_empty());
+    assert_eq!(compressed.len(), 0);
     let decompressed = decompress_causal_path(terminal_depth, &compressed).unwrap();
-    assert!(decompressed.is_empty());
+    assert_eq!(decompressed.len(), 0);
     assert!(verify_causal_non_inclusion(
         &d,
         terminal_depth,

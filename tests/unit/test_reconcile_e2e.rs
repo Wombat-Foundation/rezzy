@@ -529,7 +529,7 @@ fn collision_in_one_bucket_leaves_siblings_resolved() {
         assert!(roots.contains(root), "sibling root {root:#x} lost");
     }
     assert!(roots.iter().all(|&r| !in_node(r, ladder_failed[0])));
-    assert!(!exchange.classified().is_empty());
+    assert_ne!(exchange.classified().len(), 0);
 }
 
 /// Whether `h64` falls in the node `(depth, prefix)`.
@@ -684,7 +684,7 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
         passes <= 3,
         "phase-2 narrowing must stop under the give-up rule, took {passes} passes"
     );
-    assert!(!lost.is_empty());
+    assert_ne!(lost.len(), 0);
     assert!(lost.iter().all(|&l| l.0 > node.0), "narrower than {node:?}");
     assert!(lost.iter().any(|&l| in_node(x.h64, l)));
 
