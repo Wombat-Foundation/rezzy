@@ -130,7 +130,7 @@ impl<Id> From<crate::state::at::BackwardExtremity<Id>> for Warning<Id> {
 /// returns; `Outcome` only ever wraps the `Ok` payload, so a caller that
 /// doesn't care about warnings can ignore `.warnings` entirely and still
 /// get correct pass/fail behavior from the `Result`.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Outcome<T, Id> {
     /// The successful result.
     pub value: T,

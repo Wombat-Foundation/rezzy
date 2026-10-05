@@ -695,7 +695,7 @@ where
 ///
 /// Returned by [`compute_merge_bases`]. Each junction records which extremities
 /// are reachable (via `mask`), the event at the convergence point, and its depth.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct MergeBase<Id> {
     /// The event ID at the junction point.
     pub event_id: Id,
@@ -1791,7 +1791,7 @@ where
 ///
 /// - `event_id`: The known event that has missing parents.
 /// - `missing_prev_events`: The specific parent IDs that are unknown locally.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct BackwardExtremity<Id> {
     /// The event that has one or more missing parents.
     pub event_id: Id,
@@ -1901,7 +1901,7 @@ where
 /// "incomplete timeline, backfill needed"), a missing auth event means
 /// "can't verify authorization — potentially unsafe state." Different
 /// severity, different remediation, different logging.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct MissingAuthEvent<Id> {
     /// The event that references missing auth events.
     pub event_id: Id,

@@ -343,7 +343,7 @@ pub fn event_id(event_root: Hash) -> String {
 
 /// Which side a sibling hash sits on relative to the running hash in a
 /// [`ProofStep`].
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Left,
     Right,
@@ -352,7 +352,7 @@ pub enum Side {
 /// One sibling hash in a header-tree Merkle path, ordered leaf-to-root:
 /// applying each step in order (combining the running hash with `hash` on
 /// the named `side`) reconstructs the tree root.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ProofStep {
     pub side: Side,
     pub hash: Hash,
@@ -730,7 +730,7 @@ pub mod causal {
     /// `root()` is O(log n) (`BTreeMap` lookup), `inclusion_proof()` and
     /// `non_inclusion_proof()` are O(256 · log n) — 256 cache lookups
     /// rather than O(n·256).
-    #[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
     pub struct CausalSet {
         keys: BTreeSet<Hash>,
         /// `(depth, key_prefix) → (hash, count)`. `key_prefix` at depth `d`
@@ -746,7 +746,7 @@ pub mod causal {
     /// This is derived from the key during verification — it is not part of
     /// the wire format. The type exists only for internal use in
     /// [`verify_causal_path`] and the causal-trie oracle's descent.
-    #[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
     enum CausalSide {
         Left,
         Right,
@@ -927,7 +927,7 @@ pub mod causal {
     /// Runs of consecutive canonical-empty siblings are collapsed into a
     /// single `EmptyRun` entry; non-empty steps are emitted individually
     /// as `Step`.
-    #[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
     pub enum CompressedCausalStep {
         /// A non-empty sibling step (hash and count are explicit).
         Step(CausalProofStep),
@@ -942,7 +942,7 @@ pub mod causal {
     }
 
     /// Error type for compressed causal-trie proof operations.
-    #[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
     pub enum CausalProofError {
         /// A compressed step references a sibling depth outside
         /// `1..=CAUSAL_DEPTH`, or `terminal_depth` itself exceeds

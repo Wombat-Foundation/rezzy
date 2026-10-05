@@ -373,7 +373,7 @@ fn parse_dst(spec: &str) -> Result<Vec<u8>, AppError> {
 /// Decodes an even-length hex string.
 fn decode_hex(spec: &str) -> Result<Vec<u8>, AppError> {
     let cleaned: String = spec.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-    if cleaned.len() % 2 != 0 {
+    if !cleaned.len().is_multiple_of(2) {
         return Err(AppError::new(
             ErrorCode::UnrecognisedStructure,
             format!("hex input {spec} must have an even number of digits"),

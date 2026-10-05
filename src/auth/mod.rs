@@ -461,7 +461,7 @@ fn reject_flagged_auth_state<Id: EventId, C: EventContent, E: EventLike<Id = Id,
 }
 
 /// The result of validating a new forward extremity event.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ForwardExtremityResult<Id = String> {
     /// The event is fully valid and updates the room state.
     Valid,

@@ -153,7 +153,7 @@ const HAMT_MAX_DEPTH: usize =
     (core::mem::size_of::<StructuralHash>() * 8).div_ceil(HAMT_BRANCH_BITS);
 
 /// A reference to a child node in the HAMT.
-
+#[derive(Clone, Debug)]
 pub enum NodeRef<K, V> {
     /// A fully loaded child node.
     Resolved(NodePtr<K, V>),
@@ -173,7 +173,7 @@ impl<K, V> NodeRef<K, V> {
 }
 
 /// A node in the 32-way CHAMP (Compressed Hash Array Mapped Prefix) trie.
-
+#[derive(Debug)]
 pub struct HamtNode<K, V> {
     /// Bitmap marking which of the 32 slots contain leaf data.
     pub datamap: u32,
@@ -1408,7 +1408,7 @@ where
 }
 
 /// What remains of a subtree after a leaf was removed from it.
-
+#[derive(Debug)]
 enum RemoveOutcome<K, V> {
     /// The subtree has no entries left.
     Empty,

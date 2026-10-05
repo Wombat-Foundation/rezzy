@@ -56,7 +56,7 @@ pub const M_EMPTY_STATE_KEY: &str = "";
 /// `Ord` to `Display`/`as_str` also keeps `SharedState` iteration order
 /// identical to the old plain-`String` key, so nothing downstream that
 /// depends on sorted-by-type-string order shifts.
-
+#[derive(Clone, Debug)]
 pub enum EventType {
     RoomCreate,
     RoomMember,

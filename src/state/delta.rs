@@ -54,7 +54,7 @@ pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K
 }
 
 /// A single state delta entry — an addition, modification, or deletion.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StateDelta<Id, K = String>
 where
     Id: crate::basespec::rezzy_types::EventId,

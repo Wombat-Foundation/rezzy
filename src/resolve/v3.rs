@@ -110,7 +110,7 @@ pub struct V3Rank {
 /// Higher values win only after authority ties. This intentionally is not an
 /// add-wins rule: a concurrent ban is more restrictive than a join, while a
 /// higher-authority creator grant still outranks a lower-authority kick.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i8)]
 pub enum V3Polarity {
     Grant = 0,
@@ -120,7 +120,7 @@ pub enum V3Polarity {
 }
 
 /// The event-family component of the V3 semantic rank.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum V3Specificity {
     GenericState = 0,
