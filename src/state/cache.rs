@@ -252,11 +252,10 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
     /// });
     /// ```
     ///
-    /// # Panics
+    /// # Panics (debug only)
     ///
     /// In debug builds, panics if the closure returns a `LeanEvent` whose
-    /// `event_id` does not match the requested `id`. In release builds the
-    /// check is compiled out.
+    /// `event_id` does not match the requested `id`.
     pub fn get_or_insert<Q>(
         &mut self,
         id: &Q,
@@ -270,8 +269,8 @@ impl<Id: EventId, C: EventContent> LeanEventCache<Id, C> {
             return arc;
         }
         let event = f();
-        assert!(
-            !(cfg!(debug_assertions) && event.event_id.borrow() != id),
+        debug_assert!(
+            event.event_id.borrow() == id,
             "get_or_insert: closure produced event with mismatched event_id"
         );
         self.insert(event)

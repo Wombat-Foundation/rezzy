@@ -633,16 +633,16 @@ fn lower_slot_mask(slot: usize) -> u32 {
 }
 
 fn bucket_index(hash: &StructuralHash, depth: usize) -> usize {
-    assert!(
-        !(cfg!(debug_assertions) && depth >= HAMT_MAX_DEPTH),
+    debug_assert!(
+        depth < HAMT_MAX_DEPTH,
         "bucket_index called at or beyond HAMT_MAX_DEPTH ({depth} >= {HAMT_MAX_DEPTH})"
     );
     let bit_offset = depth.saturating_mul(HAMT_BRANCH_BITS);
     let byte_index = bit_offset / 8;
     let bit_shift = bit_offset % 8;
     let hash_len = hash.len();
-    assert!(
-        !(cfg!(debug_assertions) && byte_index >= hash_len),
+    debug_assert!(
+        byte_index < hash_len,
         "byte_index out of bounds for StructuralHash ({byte_index} >= {hash_len})",
     );
 

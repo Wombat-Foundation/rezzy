@@ -2034,12 +2034,6 @@ where
 /// gets a unique position). The latter is what a homeserver needs for
 /// its `roomid_topologicalorder_pducount` index.
 ///
-/// # Panics
-///
-/// In debug builds, panics if the Kahn sort returns fewer nodes than the
-/// ancestor index reports, which would mean the input graph contains a
-/// cycle. In release builds the check is compiled out.
-///
 /// # Complexity
 ///
 /// - **Time**: `O(V log V + E)` — Kahn sort plus a comparison sort for
@@ -2063,10 +2057,11 @@ where
     let all_ids: Vec<&Id> = events_map.keys().collect();
     let (index, sorted) = ancestor_index_and_topo(&all_ids, events_map);
 
-    assert!(
-        !(cfg!(debug_assertions) && sorted.len() != index.len()),
+    debug_assert_eq!(
+        sorted.len(),
+        index.len(),
         "compute_topo_positions: Kahn sort returned fewer nodes than expected — \
-             the input graph contains a cycle"
+         the input graph contains a cycle"
     );
 
     // Kahn sort gives a valid topological order; apply tiebreak within
