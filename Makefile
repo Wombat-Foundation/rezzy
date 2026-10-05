@@ -34,6 +34,11 @@ check:	##H Cargo check and code dupe
 	-jscpd $$(git ls-files '*.rs')
 	# $(CARGO) fix --all-targets --allow-dirty
 
+.PHONY: macro
+macro: ##H See macro expansion costs
+	$(CARGO) +nightly rustc -- -Zmacro-stats
+
+
 .PHONY: lint
 lint: ##H Run all linters
 	-shellcheck $(LINT_LOCS_SH)
