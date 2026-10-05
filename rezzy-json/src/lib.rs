@@ -194,52 +194,6 @@ fn normalize_exponent(formatted: &str) -> String {
     formatted.to_string()
 }
 
-#[cfg(feature = "simd")]
-fn simd_safe_for_input(input: &[u8]) -> bool {
-    let mut depth = 0usize;
-    let mut digits = 0usize;
-    let mut index = 0usize;
-    while let Some(&byte) = input.get(index) {
-        if byte == b'\\' && input.get(index.saturating_add(1)) == Some(&b'u') {
-            return false;
-        }
-        if matches!(byte, b'e' | b'E') {
-            let mut exponent_index = index.saturating_add(1);
-            if matches!(input.get(exponent_index), Some(b'+' | b'-')) {
-                exponent_index = exponent_index.saturating_add(1);
-            }
-            let mut exponent_digits = 0usize;
-            while input
-                .get(exponent_index.saturating_add(exponent_digits))
-                .is_some_and(u8::is_ascii_digit)
-            {
-                exponent_digits = exponent_digits.saturating_add(1);
-            }
-            if exponent_digits >= 3 {
-                return false;
-            }
-        }
-        if matches!(byte, b'{' | b'[') {
-            depth = depth.saturating_add(1);
-            if depth > Tokenizer::MAX_DEPTH {
-                return false;
-            }
-        } else if matches!(byte, b'}' | b']') {
-            depth = depth.saturating_sub(1);
-        }
-        if byte.is_ascii_digit() {
-            digits = digits.saturating_add(1);
-        } else {
-            digits = 0;
-        }
-        if digits > 19 {
-            return false;
-        }
-        index = index.saturating_add(1);
-    }
-    true
-}
-
 impl From<u64> for Number {
     fn from(v: u64) -> Self {
         Self(v.to_string())
@@ -377,10 +331,6 @@ impl Value {
     /// # Errors
     /// Returns [`Error`] if `input` is not valid JSON or has trailing content.
     pub fn parse(input: &str) -> Result<Self, Error> {
-        #[cfg(feature = "simd")]
-        return Self::parse_bytes(input.as_bytes());
-
-        #[cfg(not(feature = "simd"))]
         Self::parse_scalar(input.as_bytes())
     }
 
@@ -481,52 +431,7 @@ impl Value {
     /// # Errors
     /// Returns [`Error`] if `input` is not valid UTF-8 or not valid JSON.
     pub fn parse_bytes(input: &[u8]) -> Result<Self, Error> {
-        #[cfg(feature = "simd")]
-        {
-            // simd-json parses numbers into machine values and therefore loses
-            // the Matrix-significant `-0` spelling. Preserve the scalar path
-            // for that rare case.
-            if input.windows(2).any(|window| window == b"-0") || !simd_safe_for_input(input) {
-                return Self::parse_scalar(input);
-            }
-            let original = input;
-            let mut input = input.to_vec();
-            // On failure, re-parse with the scalar parser so callers still get
-            // precise errors (`InvalidEscape`, `TrailingCharacters`, ...).
-            simd_json::to_owned_value(&mut input).map_or_else(
-                |_| Self::parse_scalar(original),
-                |value| Ok(Self::from_simd_value(value)),
-            )
-        }
-
-        #[cfg(not(feature = "simd"))]
         Self::parse_scalar(input)
-    }
-
-    #[cfg(feature = "simd")]
-    fn from_simd_value(value: simd_json::OwnedValue) -> Self {
-        match value {
-            simd_json::OwnedValue::Static(value) => match value {
-                simd_json::StaticNode::Null => Self::Null,
-                simd_json::StaticNode::Bool(value) => Self::Bool(value),
-                simd_json::StaticNode::I64(value) => Self::Number(Number(value.to_string())),
-                simd_json::StaticNode::U64(value) => Self::Number(Number(value.to_string())),
-                simd_json::StaticNode::F64(value) => {
-                    let mut buffer = ryu::Buffer::new();
-                    Self::Number(Number(normalize_exponent(buffer.format_finite(value))))
-                }
-            },
-            simd_json::OwnedValue::String(value) => Self::String(value),
-            simd_json::OwnedValue::Array(values) => {
-                Self::Array(values.into_iter().map(Self::from_simd_value).collect())
-            }
-            simd_json::OwnedValue::Object(values) => Self::Object(
-                values
-                    .into_iter()
-                    .map(|(key, value)| (key, Self::from_simd_value(value)))
-                    .collect(),
-            ),
-        }
     }
 }
 

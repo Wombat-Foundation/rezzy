@@ -61,9 +61,7 @@ numbers as machine floats:
 ```
 
 `rezzy-json` preserves them instead. This divergence is intentional and pinned
-by `wide_integers_are_preserved_where_simd_json_rejects_them` in
-`src/basespec/rezzy_types.rs`, which also asserts that simd-json still errors —
-so if upstream ever adds support, the test tells us to re-check the divergence.
+by `wide_integers_are_preserved` in `src/basespec/rezzy_types.rs`.
 
 An earlier revision of this crate rewrote such integers through `f64`, turning
 `18446744073709551616` into `1.8446744073709552e+19`. That silently changed the
@@ -134,9 +132,7 @@ through the strict canonical writer, which rejects floats.
 
 The scalar path maps the source spelling `-0` to `-0.0` and preserves the sign
 of negative zero through `as_f64` (`Some(-0.0)`), because `-0` is
-distinguishable and Matrix-significant. Under the `simd` feature, inputs
-containing `-0` fall back to the scalar parser, since `simd-json` collapses
-numbers to machine values and would lose the spelling.
+distinguishable and Matrix-significant.
 
 ## Strict versus non-strict
 
@@ -156,9 +152,10 @@ or by `ruma`.
 
 ## Verifying changes to this behaviour
 
-Behaviour in the tables above was established differentially — the same corpus
-run through a build with the `simd` feature and a build with
-`--no-default-features`, comparing canonical output byte-for-byte.
+Behaviour in the tables above was first established differentially against
+`simd-json` as an oracle. `simd-json` is no longer a dependency of the
+workspace (only of `benches/`), so the behaviour is now pinned by explicit
+tests in `src/basespec/rezzy_types.rs` and `rezzy-json/src/lib.rs`.
 
 A caution learned the hard way: **a golden corpus of realistic Matrix payloads
 detects none of this.** Real events carry `origin_server_ts` and depth integers
@@ -171,36 +168,8 @@ regression harness for this crate needs the boundary values as explicit cases:
 `numeric_range_boundaries_are_pinned` in `rezzy-json/src/lib.rs` covers the
 integer and `f64` rows.
 
-## Known divergence: error variants under `simd`
-
-A differential probe of 40 boundary cases across the `simd` and
-`--no-default-features` builds currently shows **four** divergences, and all
-four are the _name_ of the error returned for malformed input, never a value or
-a canonical output:
-
-| input                      | scalar               | `simd`         |
-| -------------------------- | -------------------- | -------------- |
-| `"\\x"`                    | `InvalidEscape`      | `InvalidToken` |
-| raw control char in string | `InvalidString`      | `InvalidToken` |
-| `1 2`                      | `TrailingCharacters` | `InvalidToken` |
-| `{} extra`                 | `TrailingCharacters` | `InvalidToken` |
-
-Every numeric and string boundary value agrees. The practical effect is
-diagnostic: under the default feature a caller cannot distinguish a bad escape
-from trailing garbage. The cheap fix is to retry the parse with the scalar
-parser whenever the SIMD path returns an error, so the precise variant survives
-while the fast path still handles the success case.
-
 ## Open items
 
-- **Error variants are flattened under `simd`** — see above.
 - **`as_f64` has no guard.** It is lossy from `2^53 + 1` by construction, and it
   answers `Some(rounded)` rather than `None`, so it reads as trustworthy at the
   call site. Documented, but not defended against.
-- **The `simd` fast-path gate is coarser than it needs to be.** It scans raw
-  bytes without tracking string context, so braces, long digit runs, and `e` /
-  `E` inside ordinary message bodies count as JSON syntax and force the scalar
-  path. Correct, but it silently gives up the SIMD win on exactly the
-  prose-heavy events that dominate a real `/sync`. Floats must keep deferring to
-  the scalar path so that `1e400` keeps yielding `as_f64() == None`; tracking
-  string context in the gate would let everything else stay on SIMD.

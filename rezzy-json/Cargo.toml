@@ -11,13 +11,8 @@ description = "Small alloc-only JSON value, parser, and canonical writer for Rez
 keywords = ["json", "canonical-json", "matrix"]
 categories = ["encoding"]
 
-[features]
-default = []
-simd = ["dep:simd-json"]
-
 [dependencies]
 ryu.workspace = true
-simd-json = { workspace = true, optional = true }
 
 [lints]
 workspace = true

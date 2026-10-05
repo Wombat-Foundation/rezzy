@@ -4128,7 +4128,6 @@ mod canonical_parity_tests {
     use super::*;
     use crate::json;
     use alloc::string::String;
-    use simd_json::prelude::Writable;
 
     fn content_hash_writer(v: &Value) -> String {
         let mut out = String::new();
@@ -4136,25 +4135,11 @@ mod canonical_parity_tests {
         out
     }
 
-    fn simd_json_string(v: &Value) -> String {
-        let mut input = crate::json::write_string_value(v)
-            .expect("infallible")
-            .into_bytes();
-        let parsed: simd_json::OwnedValue =
-            simd_json::to_owned_value(&mut input).expect("valid JSON");
-        parsed.encode()
-    }
-
-    fn normalize_simd_number(mut value: String) -> String {
-        if let Some(index) = value.find('e') {
-            let exponent = index.saturating_add(1);
-            if value.as_bytes().get(exponent) != Some(&b'+')
-                && value.as_bytes().get(exponent) != Some(&b'-')
-            {
-                value.insert(exponent, '+');
-            }
-        }
-        value
+    /// Reference form: the DOM writer over a parse round trip of the tree.
+    fn dom_string(v: &Value) -> String {
+        let text = crate::json::write_string_value(v).expect("infallible");
+        let parsed = Value::parse(&text).expect("valid JSON");
+        crate::json::write_string_value(&parsed).expect("infallible")
     }
 
     fn content_hash_reference(v: &Value) -> String {
@@ -4164,7 +4149,7 @@ mod canonical_parity_tests {
             o.remove("signatures");
             o.remove("hashes");
         }
-        simd_json_string(&c)
+        dom_string(&c)
     }
 
     fn redacted_writer(v: &Value, rv: &str) -> String {
@@ -4179,14 +4164,14 @@ mod canonical_parity_tests {
             o.remove("unsigned");
             o.remove("signatures");
         }
-        simd_json_string(&r)
+        dom_string(&r)
     }
 
-    /// The zero-copy writers must be byte-identical to what the SIMD JSON DOM emits
+    /// The zero-copy writers must be byte-identical to what the DOM writer emits
     /// for the same logical canonical form — hashes/signatures cover these exact
     /// bytes, so any divergence is a federation-breaking bug.
     #[test]
-    fn content_hash_writer_is_byte_identical_to_simd_json() {
+    fn content_hash_writer_is_byte_identical_to_dom_writer() {
         let cases = [
             json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}} }),
             json!({ "a":1,"b":{"c":[1,2,3],"d":"x\ny\tz\u{0001}\u{000c}\u{000d}"},"e":1.5,"f":null,"g":true }),
@@ -4229,34 +4214,31 @@ mod canonical_parity_tests {
     }
 
     #[test]
-    fn parsed_number_spellings_match_simd_json() {
-        for number in ["-0", "1.0", "1e3", "1E+3", "1e-7", "1e20"] {
+    fn parsed_number_spellings_are_pinned() {
+        // Integers keep their spelling; floats are re-rendered through `ryu`
+        // with an explicit exponent sign; `-0` keeps its protocol spelling.
+        for (number, expected) in [
+            ("-0", "-0.0"),
+            ("1.0", "1.0"),
+            ("1e3", "1000.0"),
+            ("1E+3", "1000.0"),
+            ("1e-7", "1e-7"),
+            ("1e20", "1e+20"),
+        ] {
             let value = crate::json::Value::parse(number).unwrap();
             let ours = crate::json::write_string_value(&value).unwrap();
-            // `rezzy-json` preserves JSON negative zero as `-0.0`; simd-json's
-            // numeric DOM normalizes it to `0`, so keep the protocol spelling
-            // expected by our canonical writer for this one edge case.
-            let oracle = if number == "-0" {
-                "-0.0".to_string()
-            } else {
-                let mut input = number.as_bytes().to_vec();
-                let parsed: simd_json::OwnedValue =
-                    simd_json::to_owned_value(&mut input).expect("valid JSON");
-                normalize_simd_number(parsed.encode())
-            };
-            assert_eq!(ours, oracle, "number spelling {number}");
+            assert_eq!(ours, expected, "number spelling {number}");
         }
     }
 
-    /// Integers wider than `u64` deliberately diverge from simd-json.
+    /// Integers wider than `u64` round-trip byte-exactly.
     ///
-    /// simd-json 0.14 rejects them outright (`InvalidNumber`), because its DOM
-    /// stores numbers as machine floats. `rezzy-json` keeps the source spelling
-    /// instead, so the value survives byte-exactly and the canonical bytes that
-    /// get signed are the ones the event actually contained. Rewriting such a
-    /// value through `f64` would change both the value and the hash.
+    /// `rezzy-json` keeps the source spelling, so the value survives and the
+    /// canonical bytes that get signed are the ones the event actually
+    /// contained. Rewriting such a value through `f64` would change both the
+    /// value and the hash (`simd-json` rejects them outright for that reason).
     #[test]
-    fn wide_integers_are_preserved_where_simd_json_rejects_them() {
+    fn wide_integers_are_preserved() {
         for number in ["18446744073709551616", "1267650600228229401496703205376"] {
             let value = crate::json::Value::parse(number).unwrap();
             assert_eq!(
@@ -4264,18 +4246,11 @@ mod canonical_parity_tests {
                 number,
                 "wide integer must round-trip byte-exactly: {number}"
             );
-
-            let mut input = number.as_bytes().to_vec();
-            let oracle = simd_json::to_owned_value(&mut input);
-            assert!(
-                oracle.is_err(),
-                "if simd-json ever supports this, re-check our divergence: {number}"
-            );
         }
     }
 
     #[test]
-    fn redacted_writer_is_byte_identical_to_simd_json() {
+    fn redacted_writer_is_byte_identical_to_dom_writer() {
         let cases = [
             (
                 json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi","extra":"x"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}},"unknown_key":9 }),
