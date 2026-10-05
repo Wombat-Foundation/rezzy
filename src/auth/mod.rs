@@ -38,7 +38,7 @@ use crate::basespec::rezzy_types::{
 };
 
 /// An error indicating why an event failed authorization.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AuthError<Id = String> {
     /// The sender is not a member of the room (or membership is not "join").
     NotMember { sender: String, event_id: Id },
@@ -461,7 +461,7 @@ fn reject_flagged_auth_state<Id: EventId, C: EventContent, E: EventLike<Id = Id,
 }
 
 /// The result of validating a new forward extremity event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum ForwardExtremityResult<Id = String> {
     /// The event is fully valid and updates the room state.
     Valid,
@@ -1262,7 +1262,7 @@ where
 /// Reports, for each `m.room.redaction` event in the batch, what happened to
 /// its target so callers can surface or re-drive the redaction work without
 /// re-deriving the authorization decision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RedactionReport<Id> {
     /// `(redaction_id, target_id)` pairs whose redaction was authorized and the
     /// target stripped in place.

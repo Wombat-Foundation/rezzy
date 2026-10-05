@@ -116,7 +116,7 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str>> StateKey for T {}
 ///
 /// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
 /// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(non_camel_case_types)]
 pub enum StateResVersion {
     /// State Resolution V1 (room version 1).
@@ -1480,7 +1480,7 @@ pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), alloc::string:
 }
 
 /// Result of Kahn's topological sort with diagnostic information.
-#[derive(Debug, Clone)]
+
 pub enum KahnSortResult<Id = String> {
     /// All events were successfully sorted.
     Ok(Vec<Id>),
@@ -2234,7 +2234,7 @@ impl From<String> for RoomId {
 /// numeric intern id would need a shared table threaded through every call
 /// site (since `AsRef<str>` takes no external context to resolve an id back
 /// to its string), which is real new plumbing, not a drop-in type swap.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InternedKey(alloc::sync::Arc<str>);
 
 impl InternedKey {
@@ -2319,7 +2319,7 @@ impl<Id, C> LeanEvent<Id, C, String> {
 /// This is useful for host adapters that already own native event storage and
 /// want to expose event data to rezzy without materializing a fresh owned
 /// `LeanEvent` up front.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub event_id: &'a Id,
     pub event_type: &'a str,
@@ -3738,7 +3738,7 @@ impl<Id: Ord, C, K> LeanEvent<Id, C, K> {
 ///   lower-PL events overwrite for same-key conflicts).
 ///
 /// See the [`Ord`] implementation for the full tie-breaking cascade.
-#[derive(Debug)]
+
 pub struct SortPriority<'a, E = LeanEvent<String, Value>> {
     /// Reference to the event being sorted.
     pub event: &'a E,

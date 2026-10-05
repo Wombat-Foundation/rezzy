@@ -97,7 +97,7 @@ pub trait HamtValue: Clone + HamtCodec {}
 impl<V: Clone + HamtCodec> HamtValue for V {}
 
 /// The outcome of descending one level of a HAMT with a batch of requested keys.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DescendResult<V> {
     /// Keys found at this level with their associated value.
     pub found: Vec<(KeyPathHash, V)>,
@@ -108,7 +108,7 @@ pub struct DescendResult<V> {
 }
 
 /// Errors that can occur during level-synchronous descent over persisted node bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DescendError {
     /// Node decoding failed (invalid version or truncated buffer).
     Decode(&'static str),
@@ -128,7 +128,7 @@ impl fmt::Display for DescendError {
 impl core::error::Error for DescendError {}
 
 /// A single step in a published state-group chain.
-#[derive(Clone, Debug)]
+
 pub struct ChainStep<K, V> {
     /// The resolved root at this step.
     pub root: NodePtr<K, V>,
@@ -153,7 +153,7 @@ const HAMT_MAX_DEPTH: usize =
     (core::mem::size_of::<StructuralHash>() * 8).div_ceil(HAMT_BRANCH_BITS);
 
 /// A reference to a child node in the HAMT.
-#[derive(Clone, Debug)]
+
 pub enum NodeRef<K, V> {
     /// A fully loaded child node.
     Resolved(NodePtr<K, V>),
@@ -173,7 +173,7 @@ impl<K, V> NodeRef<K, V> {
 }
 
 /// A node in the 32-way CHAMP (Compressed Hash Array Mapped Prefix) trie.
-#[derive(Clone, Debug)]
+
 pub struct HamtNode<K, V> {
     /// Bitmap marking which of the 32 slots contain leaf data.
     pub datamap: u32,
@@ -563,7 +563,7 @@ enum Slot<'a, K, V> {
 }
 
 /// Errors that can occur while building a HAMT from an entry iterator.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HamtBuildError {
     /// Too many entries collided into the same slot after exhausting the
     /// available hash depth.
@@ -827,7 +827,7 @@ where
 
 /// Errors that can occur while incrementally mutating a HAMT via
 /// [`insert`] or [`remove`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HamtMutateError<E> {
     /// Too many entries collided into the same slot after exhausting the
     /// available hash depth.
@@ -1408,7 +1408,7 @@ where
 }
 
 /// What remains of a subtree after a leaf was removed from it.
-#[derive(Debug)]
+
 enum RemoveOutcome<K, V> {
     /// The subtree has no entries left.
     Empty,

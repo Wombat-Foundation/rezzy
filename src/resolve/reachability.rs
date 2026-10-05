@@ -128,7 +128,7 @@ pub trait Reachability {
 /// as a compressed bitmap. This makes repeated "which candidates are
 /// forward-reachable from these seeds?" queries fast: seed closures are `ORed`
 /// once, then candidate membership is a bitmap lookup.
-#[derive(Debug, Clone)]
+
 pub struct ForwardReachabilityIndex<Id> {
     index: DenseIndex<Id>,
     descendant_bitmaps: Vec<RoaringBitmap>,
@@ -215,13 +215,13 @@ where
 /// quadratic closure footprint of [`ForwardReachabilityIndex`]. Queries stay exact
 /// by pruning obviously impossible branches and falling back to bounded BFS over
 /// the stored adjacency.
-#[derive(Debug, Clone)]
+
 struct Segment {
     tail: u32,
 }
 
 /// Coarse build-time summary used to decide whether segment jumps are worth it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SegmentStats {
     node_count: usize,
     segment_count: usize,
@@ -260,7 +260,7 @@ pub enum TraversalMode {
 /// (zero or one occurrence) is stored inline and never heap-allocates; only
 /// a node that appears more than once in the candidate list falls back to a
 /// `Vec`.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 enum CandidatePositions {
     #[default]
     None,
@@ -404,7 +404,7 @@ impl CandidateQuery {
 /// (`resolve::subgraph`) used to build a full-graph candidate list purely
 /// to recover reachable ids, which is exactly the `|C| ≈ |V|` shape above;
 /// it now uses `forward_reachable_ids` and pays none of this cost.
-#[derive(Debug, Clone)]
+
 pub struct RangePrefilterReachability<Id> {
     index: DenseIndex<Id>,
     children_by_index: Vec<Vec<u32>>,

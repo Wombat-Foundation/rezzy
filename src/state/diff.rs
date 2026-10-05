@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 ///
 /// Generic over the state-key type `K` (defaults to `String`); see
 /// [`crate::basespec::rezzy_types::StateKey`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum StateDiffEntry<Id, K = String> {
     /// Key exists in `new` but not in `old`.
     Added { key: (EventType, K), event_id: Id },
@@ -40,7 +40,7 @@ pub enum StateDiffEntry<Id, K = String> {
 }
 
 /// The result of diffing two state snapshots.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct StateDiff<Id, K = String> {
     /// All differences between old and new state.
     pub entries: Vec<StateDiffEntry<Id, K>>,

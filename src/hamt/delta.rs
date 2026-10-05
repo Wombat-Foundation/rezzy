@@ -311,7 +311,7 @@ where
 /// a cycle). Recursing on that without a bound risks exhausting the call
 /// stack and aborting the whole process; `MaxDepthExceeded` turns that into
 /// an ordinary `Result::Err` instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HamtTraversalError<E> {
     /// The resolver failed to load a lazy child the walk needed to descend
     /// into.
@@ -356,7 +356,7 @@ where
 /// swapping them at a call site would type-check silently while inverting
 /// refcount increments and decrements. See [`diff_node_hashes`] for the
 /// full timing contract these two lists are meant to be used under.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct NodeHashDelta {
     /// Node hashes present in `root_a` but not `root_b`. GC candidates once
     /// `root_a` is retired — never delete these while `root_a` is still

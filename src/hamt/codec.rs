@@ -346,7 +346,7 @@ impl HamtCodec for crate::basespec::event_types::EventType {
 ///
 /// Leaves are stored inline as `(K, V)` pairs in datamap order, while child
 /// references are stored separately in nodemap order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PersistedInternalNode<K, V> {
     pub datamap: u32,
     pub nodemap: u32,

@@ -108,7 +108,7 @@ use super::StructuralHash;
 /// let zeroed = chain.advance(&delta_b, root_b_hash)?;
 /// // `zeroed` contains hashes safe to delete (subject to branching check).
 /// ```
-#[derive(Debug, Clone)]
+
 pub struct LinearRootChain {
     table: RefcountTable,
     /// The currently live root's hash. `None` before bootstrap.
@@ -276,7 +276,7 @@ impl LinearRootChain {
 /// Never performs a full-universe scan — every operation's cost is
 /// proportional to the number of hashes passed to it, not to the table's
 /// total size. See the module docs for the full timing contract.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct RefcountTable {
     counts: HashMap<StructuralHash, u64>,
 }

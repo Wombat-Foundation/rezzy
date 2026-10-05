@@ -831,7 +831,7 @@ impl RedactionOverlay {
 /// One labelled element of the MSC4500 resolution-input set `I(P)`: an event
 /// record together with its outgoing `auth_events` and `prev_state_events`
 /// edges. The same event ID with different edges is a distinct element.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ResolutionInputRecord<'a> {
     pub event_id: &'a str,
     pub event_type: &'a str,
@@ -930,7 +930,7 @@ impl ResolutionInputs {
 /// [`PduLtHash::insert_field`] without repeating the tag. Two PDUs that carry the same
 /// field multiset under the same tag collapse to the same digest regardless of the order
 /// the fields were inserted in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PduLtHash {
     dst: Vec<u8>,
     inner: LtHash,
@@ -1041,14 +1041,14 @@ impl PduLtHash {
 /// type represents one such point; [`StateDigestTransition`] represents the
 /// pair. `overlay` is optional for wire compatibility and must never be
 /// interpreted as agreement when absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StateDigest {
     pub primary: [u8; 32],
     pub overlay: Option<[u8; 32]>,
 }
 
 /// The before/after digest pair carried for one MSC4500 state transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StateDigestTransition {
     pub before: StateDigest,
     pub after: StateDigest,

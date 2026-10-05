@@ -89,7 +89,7 @@ pub use warnings::{Outcome, Warning};
 /// This is a library-level input so downstream callers can choose between
 /// timeline-oriented output and the raw resolved-state view without depending
 /// on the CLI binary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
     #[default]
     Events,
@@ -139,7 +139,7 @@ impl clap::ValueEnum for OutputFormat {
 }
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ResolvedStateEntry<Id = String, K = String> {
     pub event_type: EventType,
     pub state_key: K,
