@@ -12,7 +12,7 @@ keywords = ["json", "canonical-json", "matrix"]
 categories = ["encoding"]
 
 [features]
-default = ["simd"]
+default = []
 simd = ["dep:simd-json"]
 
 [dependencies]

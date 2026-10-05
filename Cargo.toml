@@ -166,7 +166,7 @@ required-features = ["regen"]
 
 [features]
 default = ["std"]
-std = []
+std = ["rezzy-json/simd"]
 cli = ["std", "dep:clap"]
 regen = ["std"]
 # Backend-agnostic signature verification (`SignatureVerifier`, `verify_event_signatures`).

@@ -1,9 +1,4 @@
-if request.depth > crate::MAX_DEPTH
-        || request.prefix >= (1_u64 << request.depth)
-    {
-        return Err(AlgebraicError::InvalidBucketIndex);
-    }
-    let bounds = H64Index::bounds_unchecked(request);
+// Copyright 2026 Shane Jaroch
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

@@ -413,6 +413,11 @@ pub fn generate_state_ops(
     existing_keys: &[StateKey],
     steps: usize,
 ) -> Vec<StateOp> {
+    // Callers collect keys from a HashMap, whose order varies per process;
+    // sort so the same seed always targets the same keys.
+    let mut existing_keys = existing_keys.to_vec();
+    existing_keys.sort();
+    let existing_keys = existing_keys.as_slice();
     let mut ops = Vec::with_capacity(steps);
     for _ in 0..steps {
         let roll = rng.next_u64() % 10;

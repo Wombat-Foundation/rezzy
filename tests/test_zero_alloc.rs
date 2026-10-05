@@ -35,12 +35,22 @@ fn record_alloc() {
 /// Runs `body` `iterations` times with allocation tracking on and asserts it
 /// never touched the heap.
 fn assert_no_alloc(iterations: usize, message: &str, mut body: impl FnMut()) {
+    /// Turns tracking off on drop so a panic in `body` cannot leave it on.
+    struct TrackingGuard;
+    impl Drop for TrackingGuard {
+        fn drop(&mut self) {
+            set_tracking(false);
+        }
+    }
+
     reset_thread_alloc_count();
     set_tracking(true);
-    for _ in 0..iterations {
-        body();
+    {
+        let _guard = TrackingGuard;
+        for _ in 0..iterations {
+            body();
+        }
     }
-    set_tracking(false);
     assert_eq!(get_thread_alloc_count(), 0, "{message}");
 }
 
@@ -49,6 +59,8 @@ struct Expected<'a> {
     event_id: &'a str,
     room_id: &'a str,
     event_type: &'a str,
+    state_key: &'a str,
+    room_version: &'a str,
     prev_events: &'a [&'a str],
     auth_events: &'a [&'a str],
     relates_to: (&'a str, &'a str),
@@ -64,10 +76,10 @@ fn assert_zero_alloc_extraction(raw: &[u8], expected: &Expected<'_>, message: &s
         assert_eq!(view.event_id, Some(expected.event_id));
         assert_eq!(view.room_id, Some(expected.room_id));
         assert_eq!(view.event_type, Some(expected.event_type));
-        assert_eq!(view.state_key, Some(""));
+        assert_eq!(view.state_key, Some(expected.state_key));
         assert_eq!(view.prev_events, expected.prev_events);
         assert_eq!(view.auth_events, expected.auth_events);
-        assert_eq!(view.room_version, Some("10"));
+        assert_eq!(view.room_version, Some(expected.room_version));
         assert_eq!(view.relates_to, Some(expected.relates_to));
     });
 }
@@ -104,6 +116,8 @@ fn test_zero_alloc_extraction_steady_state() {
             event_id: "$e:example.com",
             room_id: "!r:example.com",
             event_type: "m.room.message",
+            state_key: "",
+            room_version: "10",
             prev_events: &["$p1", "$p2"],
             auth_events: &["$a1", "$a2"],
             relates_to: ("m.thread", "$root"),
@@ -117,7 +131,7 @@ fn test_zero_alloc_escaped_keys() {
     let raw = br#"{"\u0065vent_id":"$e","\u0072oom_id":"!r","\u0074ype":"m.room.message","\u0073tate_key":"","\u0070rev_events":["$p"],"\u0061uth_events":["$a"],"content":{"\u0072oom_version":"10","\u006d.relates_to":{"rel_type":"m.annotation","event_id":"$parent"}}}"#;
     assert_zero_alloc_extraction(
         raw,
-        &Expected { event_id: "$e", room_id: "!r", event_type: "m.room.message", prev_events: &["$p"], auth_events: &["$a"], relates_to: ("m.annotation", "$parent") },
+        &Expected { event_id: "$e", room_id: "!r", event_type: "m.room.message", state_key: "", room_version: "10", prev_events: &["$p"], auth_events: &["$a"], relates_to: ("m.annotation", "$parent") },
         "Expected exact 0 heap allocations during escaped-key extraction with preallocated key_buffer!",
     );
 }
@@ -127,7 +141,7 @@ fn test_zero_alloc_escaped_values() {
     let raw = br#"{"event_id":"\u0024escaped_event:example.com","room_id":"\u0021escaped_room:example.com","type":"\u006d.room.message","state_key":"","prev_events":["$p1"],"auth_events":["$a1"],"content":{"room_version":"\u0031\u0030","m.relates_to":{"rel_type":"\u006d.thread","event_id":"\u0024root"}}}"#;
     assert_zero_alloc_extraction(
         raw,
-        &Expected { event_id: "$escaped_event:example.com", room_id: "!escaped_room:example.com", event_type: "m.room.message", prev_events: &["$p1"], auth_events: &["$a1"], relates_to: ("m.thread", "$root") },
+        &Expected { event_id: "$escaped_event:example.com", room_id: "!escaped_room:example.com", event_type: "m.room.message", state_key: "", room_version: "10", prev_events: &["$p1"], auth_events: &["$a1"], relates_to: ("m.thread", "$root") },
         "Expected exact 0 heap allocations during escaped-value extraction with preallocated scratch buffers!",
     );
 }

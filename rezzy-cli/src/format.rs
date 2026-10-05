@@ -1035,6 +1035,12 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
         );
     }
 
+    // One reachability index and one cache set serve every merge, instead of
+    // rebuilding a subgraph over the whole event map per multi-parent event.
+    let reachability =
+        rezzy::resolve::reachability::RangePrefilterReachability::<String>::build(ctx.events_map);
+    let mut resolve_caches = rezzy::ForkResolveCaches::<String, rezzy::JsonValue>::new(ctx.version);
+
     let rank = |ev: &LeanEvent| (ev.depth, ev.origin_server_ts, ev.event_id.clone());
     for ev in &sorted_events {
         let mut parents: Vec<&LeanEvent> = ev
@@ -1065,17 +1071,23 @@ fn prepare_timeline_events(ctx: &FormattingContext<'_>) -> Vec<LeanEvent> {
                             .collect()
                     })
                     .collect();
-                rezzy::resolve_state_maps(&parent_maps, ctx.events_map, ctx.version)
-                    .iter()
-                    .filter_map(|((event_type, state_key), event_id)| {
-                        ctx.events_map.get(event_id).map(|event| {
-                            (
-                                (event_type.as_str().to_owned(), state_key.clone()),
-                                event.clone(),
-                            )
-                        })
+                rezzy::resolve_state_maps_cached(
+                    &parent_maps,
+                    ctx.events_map,
+                    ctx.version,
+                    &reachability,
+                    &mut resolve_caches,
+                )
+                .iter()
+                .filter_map(|((event_type, state_key), event_id)| {
+                    ctx.events_map.get(event_id).map(|event| {
+                        (
+                            (event_type.as_str().to_owned(), state_key.clone()),
+                            event.clone(),
+                        )
                     })
-                    .collect()
+                })
+                .collect()
             }
         };
         // Record state at this event's prev_events (before applying this event).

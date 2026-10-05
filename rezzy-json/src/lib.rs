@@ -1,8 +1,4 @@
-        if digits > 19
-            || digits == 19 && input.get(index.saturating_sub(19)) == Some(&b'-')
-        {
-            return false;
-        }
+//! Small `alloc`-only JSON value and parser used by the no-std core.
 //!
 //! Objects use `BTreeMap` so iteration is deterministic and already suitable
 //! for Matrix canonical JSON. Numbers retain their source spelling; canonical
@@ -408,10 +404,14 @@ impl Value {
             if input.windows(2).any(|window| window == b"-0") || !simd_safe_for_input(input) {
                 return Self::parse_scalar(input);
             }
+            let original = input;
             let mut input = input.to_vec();
-            simd_json::to_owned_value(&mut input)
-                .map(Self::from_simd_value)
-                .map_err(|_| Error::InvalidToken)
+            // On failure, re-parse with the scalar parser so callers still get
+            // precise errors (`InvalidEscape`, `TrailingCharacters`, ...).
+            match simd_json::to_owned_value(&mut input) {
+                Ok(value) => Ok(Self::from_simd_value(value)),
+                Err(_) => Self::parse_scalar(&original),
+            }
         }
 
         #[cfg(not(feature = "simd"))]
@@ -926,15 +926,15 @@ where
 fn emit_string(tokenizer: &mut Tokenizer<'_>, raw: &[u8], out: &mut String) -> Result<(), Error> {
     let span = tokenizer.string_raw().map_err(|_| Error::InvalidString)?;
     finish(tokenizer, raw)?;
-    out.push('"');
     if span.contains(&b'\\') {
         let mut decoded = String::new();
         unescape_raw_string(span, &mut decoded).map_err(Error::from)?;
         write_string_into(out, &decoded);
     } else {
+        out.push('"');
         out.push_str(core::str::from_utf8(span).map_err(|_| Error::InvalidString)?);
+        out.push('"');
     }
-    out.push('"');
     Ok(())
 }
 

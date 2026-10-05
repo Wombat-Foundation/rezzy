@@ -9,9 +9,9 @@ much narrower, and anything above it must not be signed as a JSON number.**
 
 ## The three ranges
 
-| Range                    | Parse / `write_string_value` / permissive canonical | Strict canonical     | `ruma` canonical JSON    |
-| ------------------------ | --------------------------------------------------- | -------------------- | ------------------------ |
-| `\|n\| <= 2^53-1`        | exact                                               | accepted             | accepted                 |
+| Range                        | Parse / `write_string_value` / permissive canonical | Strict canonical     | `ruma` canonical JSON    |
+| ---------------------------- | --------------------------------------------------- | -------------------- | ------------------------ |
+| `\|n\| <= 2^53-1`            | exact                                               | accepted             | accepted                 |
 | `2^53-1 < \|n\| <= u64::MAX` | exact                                               | `Err(InvalidNumber)` | `Err` (`js_int::Int`)    |
 | `\|n\| > u64::MAX`           | exact                                               | `Err(InvalidNumber)` | `Err` (cannot serialize) |
 
