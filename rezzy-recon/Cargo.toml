@@ -19,8 +19,5 @@ std = []
 base64.workspace = true
 sha2.workspace = true
 
-[dev-dependencies]
-test-case.workspace = true
-
 [lints]
 workspace = true

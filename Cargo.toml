@@ -100,12 +100,8 @@ ed25519-consensus = { version = "2.1", default-features = false }
 keyring = { version = "4", default-features = false, features = ["v1"] }
 
 # Dev dependencies
-insta = "1.47.2"
 rand_08 = { package = "rand", version = "0.10" }
-similar = "3.2"
 test-case = "3.3.1"
-test-log = "0.2.20"
-zeroize = "1.8.1"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
@@ -194,15 +190,11 @@ ed25519-consensus = { workspace = true, optional = true }
 base64.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
-insta.workspace = true
 rand_08.workspace = true
 rezzy-recon.workspace = true
 roaring.workspace = true
 sha2.workspace = true
-similar.workspace = true
 test-case.workspace = true
-test-log.workspace = true
-zeroize.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"
