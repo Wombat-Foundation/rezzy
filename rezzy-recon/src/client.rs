@@ -1096,7 +1096,7 @@ mod tests {
 
     use super::*;
 
-    fn hash(wide: u128, short: u64) -> ElementHash {
+    const fn hash(wide: u128, short: u64) -> ElementHash {
         ElementHash {
             h128: wide,
             h64: short,
@@ -1803,7 +1803,7 @@ mod tests {
         );
     }
 
-    fn fresh_exchange() -> BucketExchange {
+    const fn fresh_exchange() -> BucketExchange {
         BucketExchange::new(
             vec![],
             MAX_RECONCILIATION_ROUNDS,
@@ -1812,7 +1812,7 @@ mod tests {
         )
     }
 
-    fn summary(count: u64, digest: u128) -> NodeSummary {
+    const fn summary(count: u64, digest: u128) -> NodeSummary {
         NodeSummary { count, digest }
     }
 

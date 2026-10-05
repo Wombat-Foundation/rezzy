@@ -561,7 +561,7 @@ mod tests {
     }
 
     impl MockGraph {
-        fn new() -> Self {
+        const fn new() -> Self {
             Self {
                 forward_edges: BTreeMap::new(),
                 known_events: BTreeSet::new(),
@@ -612,7 +612,7 @@ mod tests {
         ElementHash::from_opaque_bytes(b"$2")
     }
 
-    fn four_entry_index() -> [u64; 4] {
+    const fn four_entry_index() -> [u64; 4] {
         [
             0x0000_0001_0000_0001,
             0x0000_0001_0000_0002,
@@ -621,7 +621,7 @@ mod tests {
         ]
     }
 
-    fn sketch_builder<'a>(
+    const fn sketch_builder<'a>(
         index: &'a H64Index<'a>,
         max_aggregate_work: usize,
         hard_fallback_threshold: usize,
@@ -1088,7 +1088,7 @@ mod tests {
         ));
     }
 
-    fn element(h128: u128, h64: u64) -> ElementHash {
+    const fn element(h128: u128, h64: u64) -> ElementHash {
         ElementHash { h128, h64 }
     }
 

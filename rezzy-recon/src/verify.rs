@@ -286,7 +286,7 @@ mod tests {
     use super::*;
     use crate::triage::BucketDecodeSuccess;
 
-    fn el(h128: u128, h64: u64) -> ElementHash {
+    const fn el(h128: u128, h64: u64) -> ElementHash {
         ElementHash { h128, h64 }
     }
 
@@ -304,7 +304,7 @@ mod tests {
         verify_follow_up(c, (0, 0), &digests)
     }
 
-    fn remote(digest: u128, count: u64) -> NodeSummary {
+    const fn remote(digest: u128, count: u64) -> NodeSummary {
         NodeSummary { count, digest }
     }
 

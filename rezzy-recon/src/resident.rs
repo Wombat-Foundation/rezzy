@@ -185,7 +185,7 @@ fn toggle_stratum(strata: &mut [[u64; STRATUM_CAPACITY]; STRATA_COUNT], value: u
 mod tests {
     use super::*;
 
-    fn hash(h128: u128, h64: u64) -> ElementHash {
+    const fn hash(h128: u128, h64: u64) -> ElementHash {
         ElementHash { h128, h64 }
     }
 

@@ -353,7 +353,7 @@ fn group_by_room(
 
 fn validate_event_ids(events: &[rezzy::JsonValue], label: &str) -> Result<(), AppError> {
     for event in events {
-        if event["event_id"].as_str().map_or(true, str::is_empty) {
+        if event["event_id"].as_str().is_none_or(str::is_empty) {
             return Err(AppError::new(
                 ErrorCode::MalformedJson,
                 format!("{label}: event is missing a non-empty string event_id"),

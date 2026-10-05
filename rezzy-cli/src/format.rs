@@ -1450,7 +1450,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn formatting_context<'a>(
+    const fn formatting_context<'a>(
         room_version: Option<&'a str>,
         duration: std::time::Duration,
         event_count: usize,

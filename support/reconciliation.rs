@@ -33,7 +33,7 @@ impl Xorshift128Hash {
         let low = self.next();
         let h64 = self.next() | 1;
         ElementHash {
-            h128: u128::from(high) << 64 | u128::from(low),
+            h128: (u128::from(high) << 64) | u128::from(low),
             h64,
         }
     }
