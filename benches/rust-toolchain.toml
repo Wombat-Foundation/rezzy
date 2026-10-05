@@ -1,6 +1,0 @@
-# Benches pull in `ruma-*` (rustc 1.89), above the workspace MSRV in the root
-# `rust-toolchain.toml`; the nearest toolchain file wins.
-[toolchain]
-channel = "1.89.0"
-components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
-profile = "minimal"

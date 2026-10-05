@@ -70,7 +70,7 @@ members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 [workspace.package]
 version = "0.6.0-rc.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
@@ -85,7 +85,7 @@ base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 blake3 = { version = "1.5", default-features = false }
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
 imbl = { version = "7.0", default-features = false }
-roaring = { version = "0.10", default-features = false }
+roaring = { version = "0.11", default-features = false }
 ryu = { version = "1.0", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 sha3 = { version = "0.12", default-features = false }
