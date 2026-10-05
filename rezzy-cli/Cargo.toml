@@ -12,9 +12,6 @@ keywords = ["matrix", "state-resolution", "federation", "cli"]
 categories = ["command-line-utilities"]
 autobins = false
 
-[package.metadata.cargo-machete]
-ignored = ["idna_adapter"]
-
 [[bin]]
 name = "rezzy"
 path = "src/main.rs"
@@ -23,16 +20,18 @@ path = "src/main.rs"
 default = ["std"]
 std = ["rezzy/std", "clap/std"]
 mimalloc = ["dep:mimalloc"]
-tls = ["ureq/tls", "dep:ed25519-consensus", "ed25519-consensus/std", "dep:keyring"]
+tls = [
+    "ureq/rustls",
+    "dep:ed25519-consensus",
+    "ed25519-consensus/std",
+    "dep:keyring",
+]
 
 [dependencies]
 base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 ed25519-consensus = { workspace = true, optional = true }
-# Direct version anchor for the `ureq` -> `url` -> `idna` -> `idna_adapter`
-# chain: idna_adapter >= 1.2 requires rustc 1.86, above our MSRV.
-idna_adapter = { version = ">=1.0, <1.2", default-features = false }
 imbl.workspace = true
 keyring = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }

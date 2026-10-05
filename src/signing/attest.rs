@@ -134,7 +134,7 @@ pub fn verify_attestation(
     .map_err(|e| alloc::format!("attestation envelope cannot be canonicalized: {e}"))?;
     let signature = Signature::from(attestation.signature);
     key.verify(&signature, &message)
-        .map_err(|e| alloc::format!("attestation signature verification failed: {e}"))
+        .map_err(|e| alloc::format!("attestation signature verification failed: {e:?}"))
 }
 
 #[cfg(test)]

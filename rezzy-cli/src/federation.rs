@@ -38,35 +38,64 @@ fn srv_targets() -> &'static Mutex<BTreeMap<String, String>> {
 }
 
 /// Resolver that dials an SRV target while the URL keeps the logical host.
+#[derive(Debug)]
 struct SrvResolver;
 
-impl ureq::Resolver for SrvResolver {
-    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+impl ureq::unversioned::resolver::Resolver for SrvResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        _config: &ureq::config::Config,
+        _timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
         use std::net::ToSocketAddrs;
+        let host = uri.host().ok_or(ureq::Error::HostNotFound)?;
+        let port = uri
+            .port_u16()
+            .unwrap_or(if uri.scheme_str() == Some("http") {
+                80
+            } else {
+                443
+            });
+        let netloc = format!("{host}:{port}");
         let target = srv_targets()
             .lock()
             .ok()
-            .and_then(|targets| targets.get(netloc).cloned());
-        target
+            .and_then(|targets| targets.get(&netloc).cloned());
+        let mut resolved = self.empty();
+        let addrs = target
             .as_deref()
-            .unwrap_or(netloc)
+            .unwrap_or(&netloc)
             .to_socket_addrs()
-            .map(Iterator::collect)
+            .map_err(ureq::Error::Io)?;
+        // `ArrayVec` holds at most 16 addresses; `push` panics past that.
+        for addr in addrs.take(16) {
+            resolved.push(addr);
+        }
+        if resolved.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(resolved)
     }
 }
 
 /// Process-wide `ureq` agent with the federation timeouts applied.
 ///
-/// Request-level `.timeout_connect()` is ignored by `ureq`'s global agent, so
-/// the timeouts must be configured on an explicit agent.
+/// HTTP error statuses are returned as responses (not `Err`) so callers can
+/// read the error body.
 fn federation_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
-            .resolver(SrvResolver)
-            .timeout_connect(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_global(Some(REQUEST_TIMEOUT))
+            .http_status_as_error(false)
+            .build();
+        ureq::Agent::with_parts(
+            config,
+            ureq::unversioned::transport::DefaultConnector::default(),
+            SrvResolver,
+        )
     })
 }
 
@@ -541,18 +570,24 @@ fn dig_srv(name: &str) -> Result<Option<(String, u16)>, ()> {
 /// the request failed transiently (transport error, 5xx, 408 or 429).
 fn well_known_lookup(destination: &str) -> Result<Option<String>, ()> {
     let url = format!("https://{destination}/.well-known/matrix/server");
-    let response = match ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .call()
-    {
-        Ok(response) => response,
-        // 408 and 429 are retryable, not a statement that no delegation exists.
-        Err(ureq::Error::Status(code, _)) if code < 500 && code != 408 && code != 429 => {
-            return Ok(None)
-        }
-        Err(_) => return Err(()),
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let Ok(mut response) = agent.get(&url).call() else {
+        return Err(());
     };
-    let Ok(body) = response.into_string() else {
+    let code = response.status().as_u16();
+    // 408 and 429 are retryable, not a statement that no delegation exists.
+    if code >= 400 {
+        return if code < 500 && code != 408 && code != 429 {
+            Ok(None)
+        } else {
+            Err(())
+        };
+    }
+    let Ok(body) = response.body_mut().read_to_string() else {
         return Err(());
     };
     let delegated = JsonValue::parse(&body)
@@ -621,43 +656,39 @@ pub fn request(
     }
     let agent = federation_agent();
     let method_upper = method.to_ascii_uppercase();
-    let mut req = match method_upper.as_str() {
-        "GET" => agent.get(&url),
-        "POST" => agent.post(&url),
-        "PUT" => agent.put(&url),
-        "DELETE" => agent.delete(&url),
-        other => {
-            return Err(AppError::new(
-                ErrorCode::NetworkError,
-                format!("unsupported HTTP method {other}"),
-            ))
-        }
-    };
-    req = req
-        .set("Authorization", &auth)
-        .set("User-Agent", crate::USER_AGENT)
-        .set("Content-Type", "application/json");
+    if !matches!(method_upper.as_str(), "GET" | "POST" | "PUT" | "DELETE") {
+        return Err(AppError::new(
+            ErrorCode::NetworkError,
+            format!("unsupported HTTP method {method_upper}"),
+        ));
+    }
+    let builder = ureq::http::Request::builder()
+        .method(method_upper.as_str())
+        .uri(&url)
+        .header("Authorization", &auth)
+        .header("User-Agent", crate::USER_AGENT)
+        .header("Content-Type", "application/json");
+    let bad_request = |e: ureq::http::Error| AppError::new(ErrorCode::NetworkError, e.to_string());
     let result = if method_upper == "GET" && matches!(body, JsonValue::Object(o) if o.is_empty()) {
-        req.call()
+        agent.run(builder.body(()).map_err(bad_request)?)
     } else {
         let body_text = rezzy::json::write_string_value(body)
             .map_err(|e| AppError::new(ErrorCode::NetworkError, e.to_string()))?;
-        req.send_string(&body_text)
+        agent.run(builder.body(body_text).map_err(bad_request)?)
     };
-    let response = match result {
-        Ok(r) => r,
-        Err(ureq::Error::Status(code, r)) => {
-            let detail = r.into_string().unwrap_or_default();
-            return Err(AppError::new(
-                ErrorCode::NetworkError,
-                format!("HTTP {code} from {destination}: {detail}"),
-            ));
-        }
-        Err(e) => return Err(AppError::new(ErrorCode::RemoteUnavailable, e.to_string())),
-    };
+    let mut response =
+        result.map_err(|e| AppError::new(ErrorCode::RemoteUnavailable, e.to_string()))?;
+    let code = response.status().as_u16();
     let text = response
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| AppError::new(ErrorCode::NetworkError, e.to_string()))?;
+    if code >= 400 {
+        return Err(AppError::new(
+            ErrorCode::NetworkError,
+            format!("HTTP {code} from {destination}: {text}"),
+        ));
+    }
     JsonValue::parse(&text).map_err(|e| {
         AppError::new(
             ErrorCode::NetworkError,

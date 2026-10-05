@@ -61,7 +61,7 @@ autobenches = false
 autotests = false
 
 [package.metadata.cargo-machete]
-ignored = ["idna_adapter", "zeroize"]
+ignored = ["zeroize"]
 
 [workspace]
 resolver = "2"
@@ -95,11 +95,11 @@ simd-json = { version = "0.18", default-features = false, features = ["runtime-d
 clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
 clap_complete = { version = "4.5.48", default-features = false }
 mimalloc = { version = "0.1.52" }
-ureq = { version = "2.9", default-features = false }
+ureq = { version = "3", default-features = false }
 
 # Signing
 ed25519-consensus = { version = "2.1", default-features = false }
-keyring = { version = "3.6.3", default-features = false, features = ["linux-native-sync-persistent", "apple-native", "windows-native"] }
+keyring = { version = "4", default-features = false, features = ["v1"] }
 
 # Dev dependencies
 insta = "1.47.2"

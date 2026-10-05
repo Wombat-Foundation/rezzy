@@ -37,22 +37,26 @@ pub fn fetch_room_state(
         );
     }
     eprintln!("Fetching {url}");
-    let mut request = ureq::get(&url).set("User-Agent", crate::USER_AGENT);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut request = agent.get(&url).header("User-Agent", crate::USER_AGENT);
     if let Some(t) = token {
-        request = request.set("Authorization", &format!("Bearer {t}"));
+        request = request.header("Authorization", format!("Bearer {t}"));
     }
 
-    let response = match request.call() {
+    let mut response = match request.call() {
         Ok(resp) => resp,
-        Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            bail_code!(crate::error::ErrorCode::NetworkError, "HTTP {code}: {body}");
-        }
         Err(e) => bail_code!(crate::error::ErrorCode::NetworkError, "Request failed: {e}"),
     };
-    let body = response.into_string().map_err(|e| {
+    let code = response.status().as_u16();
+    let body = response.body_mut().read_to_string().map_err(|e| {
         crate::error::AppError::new(crate::error::ErrorCode::NetworkError, e.to_string())
     })?;
+    if code >= 400 {
+        bail_code!(crate::error::ErrorCode::NetworkError, "HTTP {code}: {body}");
+    }
 
     let val: rezzy::JsonValue = rezzy::JsonValue::parse(&body).map_err(|e| {
         crate::error::AppError::new(

@@ -42,7 +42,7 @@ impl Ed25519ConsensusVerifier {
         key_id: &str,
         public_key: &[u8],
     ) -> Result<&mut Self, String> {
-        let key = VerificationKey::try_from(public_key).map_err(|e| alloc::format!("{e}"))?;
+        let key = VerificationKey::try_from(public_key).map_err(|e| alloc::format!("{e:?}"))?;
         Ok(self.insert(server_name, key_id, key))
     }
 
@@ -76,7 +76,7 @@ impl SignatureVerifier for Ed25519ConsensusVerifier {
             .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
         let sig = Signature::from(sig_bytes);
         key.verify(&sig, message)
-            .map_err(|e| alloc::format!("signature verification failed: {e}"))
+            .map_err(|e| alloc::format!("signature verification failed: {e:?}"))
     }
 }
 
@@ -150,7 +150,7 @@ pub fn verify_sequential(
                 let signature = Signature::from(sig_bytes);
                 // Sequential ZIP 215 verification, one signature at a time.
                 key.verify(&signature, &message)
-                    .map_err(|e| alloc::format!("signature verification failed: {e}"))?;
+                    .map_err(|e| alloc::format!("signature verification failed: {e:?}"))?;
                 event_verified_any = true;
             }
         }
