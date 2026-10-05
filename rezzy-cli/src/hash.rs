@@ -54,7 +54,7 @@ impl OutputMode {
 }
 
 /// One state element supplied on the command line or in a batch file.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Element {
     /// The Matrix event type.
     event_type: String,

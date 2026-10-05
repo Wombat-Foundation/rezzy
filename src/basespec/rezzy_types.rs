@@ -301,7 +301,7 @@ mod state_res_version_gate_tests {
 /// distinguish v6+ strict-number rules from v2–v5 legacy behavior. This enum
 /// retains either the numeric major version or an explicit named format,
 /// providing a single authoritative capability layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 enum RoomVersionFormat {
     /// A known numeric room version: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     /// or 12 (including the supported "12.1" variant).

@@ -1390,7 +1390,7 @@ impl_u64_hamt_codec!(CollidingKey);
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct InMemoryOnlyKey(u64);
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct InMemoryOnlyValue(u64);
 
 impl_u64_hamt_codec!(InMemoryOnlyKey);

@@ -546,7 +546,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::fmt;
 
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     struct MockId(String);
 
     impl fmt::Display for MockId {

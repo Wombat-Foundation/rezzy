@@ -156,7 +156,7 @@ pub struct ContentHash(pub Hash);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OtherSignedFieldsHash(pub Hash);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Leaf {
     name: String,
     hash: Hash,
