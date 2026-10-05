@@ -77,7 +77,6 @@ repository = "https://github.com/gamesguru/rezzy"
 
 [workspace.dependencies]
 rezzy = { path = ".", version = "0.6.0-rc.1" }
-rezzy-cli = { path = "rezzy-cli", version = "0.6.0-rc.1" }
 rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.1" }
 rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1" }
 
