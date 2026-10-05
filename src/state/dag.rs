@@ -48,7 +48,6 @@ use core::fmt;
 use core::hash::BuildHasher;
 
 /// Status of a State DAG traversal starting from one or more events.
-#[derive(PartialEq, Eq)]
 pub enum StateDagCompleteness<Id> {
     /// The state DAG is fully connected back to `m.room.create` along all paths.
     Complete {
@@ -74,7 +73,7 @@ pub enum StateDagCompleteness<Id> {
 }
 
 /// Traversal options for State DAG queries.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct StateDagWalkOptions {
     /// Maximum number of events to visit before halting (defense-in-depth against runaway graphs).
     pub max_steps: Option<usize>,
@@ -283,7 +282,7 @@ mod validation_error_display_tests {
 }
 
 /// Error during State DAG computation.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum StateDagError<Id = String> {
     /// Validation of `prev_state_events` failed.
     Validation(StateDagValidationError<Id>),

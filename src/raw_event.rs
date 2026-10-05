@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use rezzy_json::{FieldMask, Token, Tokenizer, TokenizerError, Value as JsonValue, ValueType};
 
 /// Byte slice range representing a raw event in an input buffer.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct RawEventSpan {
     pub start: usize,
     pub end: usize,
@@ -196,7 +196,6 @@ pub struct MatrixEventView<'buf, 'a> {
 /// Unlike `MatrixEventView`, this type owns all its data and has no lifetime
 /// dependency on a reusable scratch buffer. Suitable for collecting multiple
 /// events into a batch before processing (e.g., adjacency recording).
-#[derive(PartialEq, Eq)]
 pub struct OwnedMatrixEvent {
     pub event_id: Option<String>,
     pub room_id: Option<String>,
@@ -250,14 +249,14 @@ type RelationView<'a> = Option<(&'a str, &'a str)>;
 type ContentRelationResult<'a> = (Option<&'a str>, RelationView<'a>);
 
 /// Spans of `pdus` and `auth_chain` arrays discovered within a federation transaction payload.
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 pub struct FederationSpans {
     pub pdus: Vec<RawEventSpan>,
     pub auth_chain: Vec<RawEventSpan>,
 }
 
 /// Spans of `events` and extracted `heads` discovered within an envelope object.
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 pub struct EnvelopeSpans {
     pub events: Vec<RawEventSpan>,
     pub heads: Vec<String>,

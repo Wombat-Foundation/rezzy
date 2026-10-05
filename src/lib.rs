@@ -89,7 +89,7 @@ pub use warnings::{Outcome, Warning};
 /// This is a library-level input so downstream callers can choose between
 /// timeline-oriented output and the raw resolved-state view without depending
 /// on the CLI binary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum OutputFormat {
     #[default]
     Events,

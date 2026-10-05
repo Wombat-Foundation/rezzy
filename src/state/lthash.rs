@@ -1041,14 +1041,14 @@ impl PduLtHash {
 /// type represents one such point; [`StateDigestTransition`] represents the
 /// pair. `overlay` is optional for wire compatibility and must never be
 /// interpreted as agreement when absent.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct StateDigest {
     pub primary: [u8; 32],
     pub overlay: Option<[u8; 32]>,
 }
 
 /// The before/after digest pair carried for one MSC4500 state transition.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct StateDigestTransition {
     pub before: StateDigest,
     pub after: StateDigest,

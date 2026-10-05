@@ -31,7 +31,6 @@ use crate::merkle::UnsignedRoot;
 ///
 /// The signed envelope is `{"algorithm", "count", "root", "signer"}` as
 /// Matrix Canonical JSON -- see [`sign_attestation`].
-#[derive(PartialEq, Eq)]
 pub struct SignedAttestation {
     /// The attested root.
     pub root: UnsignedRoot,

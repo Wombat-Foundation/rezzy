@@ -162,7 +162,6 @@ where
 /// This is metadata, not a claim inferred from raw event fields. Implementors
 /// of [`V3AdmissionProvider`] only return it after signature/hash verification
 /// and branch-local authorization.
-#[derive(PartialEq, Eq)]
 pub struct BranchAuthSnapshot<Id, K: Ord> {
     /// Canonical state selected from this event's verified causal history.
     /// `imbl::OrdMap` makes snapshot clones structural, so certificates may
@@ -171,7 +170,6 @@ pub struct BranchAuthSnapshot<Id, K: Ord> {
 }
 
 /// Verified metadata and its immutable branch-auth snapshot.
-#[derive(PartialEq, Eq)]
 pub struct V3Admission<Id, K: Ord> {
     rank: V3Rank,
     branch_auth: BranchAuthSnapshot<Id, K>,
@@ -193,7 +191,6 @@ pub struct V3Admission<Id, K: Ord> {
 /// grant <math><mi>g</mi></math>, and witness <math><mi>w</mi></math>:
 ///
 /// <math display="block"><semantics><mtext>GrantAdmin(g,b,w) ⇔ PL_θ(g)(sender(g)) ≥ PL_g(b) ∧ member_θ(g)(b)=w=join(b) ∧ PL_g(b)&gt;PL_θ(g)(b)</mtext><annotation encoding="application/x-tex">\operatorname{GrantAdmin}(g,b,w) \iff \operatorname{PL}_{\theta(g)}(\operatorname{sender}(g)) \ge \operatorname{PL}_g(b) \land \operatorname{member}_{\theta(g)}(b)=w=\operatorname{join}(b) \land \operatorname{PL}_g(b)&gt;\operatorname{PL}_{\theta(g)}(b)</annotation></semantics></math>
-#[derive(PartialEq, Eq)]
 pub struct CertifiedPromotionGrant<Id, K: Ord> {
     grant_id: Id,
     target: K,
@@ -530,14 +527,12 @@ pub trait V3AdmissionProvider<Id, C, K: Ord> {
 }
 
 /// A selected candidate for one state key in an immutable V3 repair round.
-#[derive(PartialEq, Eq)]
 pub struct RoundSelection<Id, K> {
     pub key: (EventType, K),
     pub event_id: Id,
 }
 
 /// Auditable result of one synchronous repair round.
-#[derive(PartialEq, Eq)]
 pub struct RepairRound<Id, K> {
     pub selections: Vec<RoundSelection<Id, K>>,
     /// Every entry was evaluated against the same immutable state. Callers

@@ -38,7 +38,6 @@ pub enum ResolvePhase {
 /// [`resolve_iterative_sort_with_deltas`](crate::resolve_iterative_sort_with_deltas) emits one of
 /// these for every conflicted event that is auth-checked, regardless of whether
 /// it was accepted or rejected.
-#[derive(PartialEq, Eq)]
 pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K = String> {
     /// The event that was auth-checked.
     pub event_id: Id,
@@ -188,7 +187,6 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// the checkpoint stores the full state map as `snapshot` instead of a delta.
 /// Readers walk backwards from any checkpoint, applying deltas, until they
 /// hit a snapshot.
-#[derive(PartialEq, Eq)]
 pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = String> {
     /// 256-bit hash of the state map at this point.
     pub state_hash: [u8; 32],

@@ -356,7 +356,7 @@ where
 /// swapping them at a call site would type-check silently while inverting
 /// refcount increments and decrements. See [`diff_node_hashes`] for the
 /// full timing contract these two lists are meant to be used under.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct NodeHashDelta {
     /// Node hashes present in `root_a` but not `root_b`. GC candidates once
     /// `root_a` is retired — never delete these while `root_a` is still

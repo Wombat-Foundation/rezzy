@@ -62,7 +62,7 @@ impl DenseIndexWidth for usize {
 /// [`DenseIndex::try_build`]/[`DenseIndex::try_build_bounded`] was given more
 /// distinct items than the index width can address, so no dense index could be
 /// assigned to all of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct IndexTooLarge {
     /// The number of distinct items counted before construction stopped.
     /// When `allocation_failed` is false, this is the true total when the

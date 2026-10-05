@@ -82,13 +82,12 @@ fn empty_table() -> [Hash; STATE_DEPTH + 1] {
 }
 
 /// One sibling in a state-map proof, ordered leaf-to-root.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct StateProofStep {
     pub hash: Hash,
 }
 
 /// A sparse-Merkle commitment to a resolved state map.
-#[derive(PartialEq, Eq)]
 pub struct StateMap {
     leaves: BTreeMap<Hash, Hash>,
 }

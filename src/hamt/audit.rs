@@ -27,7 +27,7 @@ use super::{
 
 /// [`IndexedUniverse::try_build`] was given more than `u32::MAX` distinct
 /// hashes, so no dense index could be assigned to all of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct UniverseTooLarge {
     /// The number of distinct hashes counted before construction stopped.
     /// When `allocation_failed` is false, this is the true total (which
@@ -72,7 +72,6 @@ impl core::error::Error for UniverseTooLarge {}
 /// Backed by the crate-wide generic [`DenseIndex`] primitive (indexed type
 /// `StructuralHash`, `u32` width); this wrapper keeps the hash-specific
 /// [`hash_at`](Self::hash_at) naming and the [`UniverseTooLarge`] error type.
-#[derive(PartialEq, Eq)]
 pub struct IndexedUniverse(DenseIndex<StructuralHash>);
 
 impl From<IndexTooLarge> for UniverseTooLarge {
@@ -143,7 +142,6 @@ impl IndexedUniverse {
 /// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
 /// is not. `universe` is the only place `StructuralHash` identity lives;
 /// `reachable`/`unreachable` are addressed purely through its dense indexes.
-#[derive(PartialEq)]
 pub struct BitmapNodeReachabilityAudit {
     pub universe: IndexedUniverse,
     pub reachable: RoaringBitmap,
@@ -152,7 +150,7 @@ pub struct BitmapNodeReachabilityAudit {
 
 /// Errors from [`bitmap_node_reachability_audit`]: either the traversal itself
 /// failed, or `universe` could not be given a dense index.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum BitmapAuditError<E> {
     /// `universe` had more than `u32::MAX` distinct hashes.
     Universe(UniverseTooLarge),

@@ -2161,7 +2161,7 @@ where
 /// aren't in `events_map`), whereas an absolute check would require the
 /// full DAG back to `m.room.create` and would flag every legitimate
 /// partial batch as a false positive.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct DepthDivergence<Id> {
     /// The parent event (referenced via `prev_events`).
     pub parent: Id,
@@ -2310,7 +2310,7 @@ where
 }
 
 /// The kind of violation detected by [`verify_pagination`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum PaginationViolation<Id> {
     /// An event appeared on more than one page.
     Duplicate {
