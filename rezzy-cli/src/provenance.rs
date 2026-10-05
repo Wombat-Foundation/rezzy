@@ -78,7 +78,13 @@ pub fn sidecar_path(output: &Path) -> PathBuf {
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(bytes))
+    use std::fmt::Write as _;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 /// A `sha256:<hex>` identity string for `bytes`.

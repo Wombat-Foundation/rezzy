@@ -37,7 +37,7 @@ pub type Hash = [u8; HASH_SIZE];
 /// sender actually signed (a true MSC4511C Part C proof), or (b) signed
 /// after the fact by whoever computed it, standing behind it as a responder
 /// (a Part B attestation -- see `crate::signing::attest` when the
-/// `signing-dalek` feature is enabled). Neither case is automatic: this type
+/// `signing-consensus` feature is enabled). Neither case is automatic: this type
 /// exists so a caller cannot accidentally hand a bare computed root to code
 /// that presents it as authoritative without having gone through one of
 /// those two steps.

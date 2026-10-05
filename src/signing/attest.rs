@@ -20,7 +20,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use ed25519_consensus::{Signature, SigningKey, VerificationKey};
 
 use crate::json::json;
 use crate::merkle::UnsignedRoot;
@@ -74,7 +74,7 @@ fn envelope_bytes(
 }
 
 /// Signs `root` with `key`, producing a [`SignedAttestation`] a holder of
-/// the corresponding [`VerifyingKey`] can check with [`verify_attestation`].
+/// the corresponding [`VerificationKey`] can check with [`verify_attestation`].
 ///
 /// This is the tool (or whichever process holds `key`) vouching for `root`
 /// as a responder -- see the module docs for what that guarantees and, more
@@ -109,7 +109,7 @@ pub fn sign_attestation(
 }
 
 /// Verifies a [`SignedAttestation`] against the claimed signer's
-/// [`VerifyingKey`].
+/// [`VerificationKey`].
 ///
 /// This only checks the signature is valid over the envelope; it does not
 /// (and cannot) check that `attestation.root` is actually correct for
@@ -123,7 +123,7 @@ pub fn sign_attestation(
 /// envelope.
 pub fn verify_attestation(
     attestation: &SignedAttestation,
-    key: &VerifyingKey,
+    key: &VerificationKey,
 ) -> Result<(), String> {
     let message = envelope_bytes(
         attestation.root,
@@ -132,8 +132,8 @@ pub fn verify_attestation(
         &attestation.signer,
     )
     .map_err(|e| alloc::format!("attestation envelope cannot be canonicalized: {e}"))?;
-    let signature = Signature::from_bytes(&attestation.signature);
-    key.verify_strict(&message, &signature)
+    let signature = Signature::from(attestation.signature);
+    key.verify(&signature, &message)
         .map_err(|e| alloc::format!("attestation signature verification failed: {e}"))
 }
 
@@ -145,7 +145,7 @@ mod tests {
     const TEST_ROOT: UnsignedRoot = UnsignedRoot([7_u8; 32]);
 
     fn test_key() -> SigningKey {
-        SigningKey::from_bytes(&[42_u8; 32])
+        SigningKey::from([42_u8; 32])
     }
 
     fn signed_test_attestation(sk: &SigningKey) -> SignedAttestation {
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn round_trips() {
         let sk = test_key();
-        let vk = sk.verifying_key();
+        let vk = sk.verification_key();
         let att = signed_test_attestation(&sk);
         assert_eq!(att.root, TEST_ROOT);
         verify_attestation(&att, &vk).expect("valid attestation must verify");
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn rejects_tampered_root() {
         let sk = test_key();
-        let vk = sk.verifying_key();
+        let vk = sk.verification_key();
         let mut att = signed_test_attestation(&sk);
         att.root = UnsignedRoot([8_u8; 32]);
         verify_attestation(&att, &vk).expect_err("tampered root must not verify");
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn rejects_tampered_count() {
         let sk = test_key();
-        let vk = sk.verifying_key();
+        let vk = sk.verification_key();
         let mut att = signed_test_attestation(&sk);
         att.count = 101;
         verify_attestation(&att, &vk).expect_err("tampered count must not verify");
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn rejects_tampered_algorithm() {
         let sk = test_key();
-        let vk = sk.verifying_key();
+        let vk = sk.verification_key();
         let mut att = signed_test_attestation(&sk);
         att.algorithm = "msc4511c-state-root".to_string();
         verify_attestation(&att, &vk).expect_err("tampered algorithm must not verify");
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn rejects_tampered_signer() {
         let sk = test_key();
-        let vk = sk.verifying_key();
+        let vk = sk.verification_key();
         let mut att = signed_test_attestation(&sk);
         att.signer = "someone-else".to_string();
         verify_attestation(&att, &vk).expect_err("tampered signer must not verify");
@@ -208,7 +208,7 @@ mod tests {
         // envelope_bytes can actually canonicalize.
         let max_canonical: u64 = (1_u64 << 53) - 1;
         let sk = test_key();
-        let vk = sk.verifying_key();
+        let vk = sk.verification_key();
         let root = TEST_ROOT;
         let att = sign_attestation(
             root,
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn rejects_wrong_key() {
         let sk = test_key();
-        let other_vk = SigningKey::from_bytes(&[43_u8; 32]).verifying_key();
+        let other_vk = SigningKey::from([43_u8; 32]).verification_key();
         let att = signed_test_attestation(&sk);
         verify_attestation(&att, &other_vk).expect_err("wrong key must not verify");
     }

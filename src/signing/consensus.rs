@@ -1,23 +1,24 @@
-//! [`ed25519_dalek`]-backed (RFC 8032 strict) signature verification.
+//! [`ed25519_consensus`]-backed (ZIP 215) signature verification.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
 
 use crate::json::Value;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_consensus::{Signature, VerificationKey};
 
 use super::SignatureVerifier;
 
-/// Verifies Ed25519 signatures with [`ed25519_dalek`] (RFC 8032 strict).
+/// Verifies Ed25519 signatures with [`ed25519_consensus`] (ZIP 215).
 ///
-/// This backend is suitable for callers with an existing dalek keyring.
+/// ZIP 215 fixes one acceptance criterion for every signature, so the verdict
+/// is identical across implementations, which is what a federation needs.
 #[derive(Default)]
-pub struct DalekVerifier {
-    keys: BTreeMap<(String, String), VerifyingKey>,
+pub struct Ed25519ConsensusVerifier {
+    keys: BTreeMap<(String, String), VerificationKey>,
 }
 
-impl DalekVerifier {
+impl Ed25519ConsensusVerifier {
     /// Creates an empty verifier.
     #[must_use]
     pub fn new() -> Self {
@@ -25,7 +26,7 @@ impl DalekVerifier {
     }
 
     /// Registers a public key for `(server_name, key_id)`.
-    pub fn insert(&mut self, server_name: &str, key_id: &str, key: VerifyingKey) -> &mut Self {
+    pub fn insert(&mut self, server_name: &str, key_id: &str, key: VerificationKey) -> &mut Self {
         self.keys
             .insert((server_name.to_ascii_lowercase(), key_id.to_string()), key);
         self
@@ -41,19 +42,19 @@ impl DalekVerifier {
         key_id: &str,
         public_key: &[u8],
     ) -> Result<&mut Self, String> {
-        let key = VerifyingKey::try_from(public_key).map_err(|e| alloc::format!("{e}"))?;
+        let key = VerificationKey::try_from(public_key).map_err(|e| alloc::format!("{e}"))?;
         Ok(self.insert(server_name, key_id, key))
     }
 
-    /// Looks up the [`VerifyingKey`] for `(server_name, key_id)`.
+    /// Looks up the [`VerificationKey`] for `(server_name, key_id)`.
     #[must_use]
-    pub fn get_key(&self, server_name: &str, key_id: &str) -> Option<&VerifyingKey> {
+    pub fn get_key(&self, server_name: &str, key_id: &str) -> Option<&VerificationKey> {
         self.keys
             .get(&(server_name.to_ascii_lowercase(), key_id.to_string()))
     }
 }
 
-impl SignatureVerifier for DalekVerifier {
+impl SignatureVerifier for Ed25519ConsensusVerifier {
     fn has_key(&self, server_name: &str, key_id: &str) -> bool {
         self.keys
             .contains_key(&(server_name.to_ascii_lowercase(), key_id.to_string()))
@@ -73,32 +74,19 @@ impl SignatureVerifier for DalekVerifier {
         let sig_bytes: [u8; 64] = signature
             .try_into()
             .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
-        let sig = Signature::from_bytes(&sig_bytes);
-        key.verify_strict(message, &sig)
+        let sig = Signature::from(sig_bytes);
+        key.verify(&sig, message)
             .map_err(|e| alloc::format!("signature verification failed: {e}"))
     }
 }
 
 /// Verifies every signature on each event in `events` whose key is held by
-/// `keys`, one signature at a time via [`VerifyingKey::verify_strict`].
+/// `keys`, one signature at a time via [`VerificationKey::verify`].
 ///
-/// # Not real batch verification
-/// Despite the name this superseded, this is a sequential loop, not
-/// [`ed25519_dalek::verify_batch`]. That distinction is load-bearing, not
-/// cosmetic: `ed25519_dalek::verify_batch` checks the batched (cofactored)
-/// verification equation, which is a *different* acceptance criterion than
-/// per-signature RFC 8032 strict verification — the two can disagree on the
-/// same input (see Chalkias et al., "Taming the many `EdDSAs`", on
-/// batch/single-verification mismatches for non-canonical inputs). Matrix
-/// federation signature verification promises strict verification (this
-/// backend's rejection of non-canonical `S`/malleable signatures), so
-/// silently switching the batch to the non-strict batched equation would
-/// change what counts as a valid signature. This function keeps the strict
-/// per-signature guarantee and pays for it with `O(n)` scalar
-/// multiplications instead of the roughly `O(1)`-amortized cost real batch
-/// verification can offer; callers who need actual batch throughput and can
-/// accept the batched-equation semantics can build on
-/// [`ed25519_dalek::verify_batch`] directly.
+/// This is a sequential loop, not batch verification. It uses the same ZIP 215
+/// criterion as [`Ed25519ConsensusVerifier`], so a lone signature and a signature in a
+/// list always get the same verdict. Callers who want batch throughput can use
+/// `ed25519_consensus::batch` directly.
 ///
 /// For each event, **all** signatures whose key is held by `keys` are collected
 /// and must verify — if any held signature is invalid, the batch fails even if
@@ -108,10 +96,10 @@ impl SignatureVerifier for DalekVerifier {
 /// # Errors
 /// Returns `Err` if any event has no signature this verifier holds a key for,
 /// if a signature is malformed, or if verification fails for any signature.
-pub fn verify_sequential_strict(
+pub fn verify_sequential(
     events: &[Value],
     room_version: &str,
-    keys: &DalekVerifier,
+    keys: &Ed25519ConsensusVerifier,
 ) -> Result<(), String> {
     use base64::Engine as _;
 
@@ -159,12 +147,9 @@ pub fn verify_sequential_strict(
                 let sig_bytes: [u8; 64] = raw
                     .try_into()
                     .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
-                let signature = Signature::from_bytes(&sig_bytes);
-                // Sequential strict verification -- see the function doc's
-                // "Not real batch verification" section for why this calls
-                // `verify_strict` immediately per signature instead of
-                // buffering everything for `ed25519_dalek::verify_batch`.
-                key.verify_strict(&message, &signature)
+                let signature = Signature::from(sig_bytes);
+                // Sequential ZIP 215 verification, one signature at a time.
+                key.verify(&signature, &message)
                     .map_err(|e| alloc::format!("signature verification failed: {e}"))?;
                 event_verified_any = true;
             }

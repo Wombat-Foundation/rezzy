@@ -6,7 +6,7 @@ use base64::{
     Engine as _,
 };
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_consensus::SigningKey;
 use rezzy::JsonValue;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
@@ -397,7 +397,7 @@ fn parse_signing_key(text: &str) -> Result<SigningKeySpec, String> {
         .map_err(|_| "private key must decode to 32 bytes".to_owned())?;
     Ok(SigningKeySpec {
         key_id,
-        key: SigningKey::from_bytes(&bytes),
+        key: SigningKey::from(bytes),
     })
 }
 

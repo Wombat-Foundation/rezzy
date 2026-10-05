@@ -95,11 +95,11 @@ simd-json = { version = "0.18", default-features = false, features = ["runtime-d
 clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
 clap_complete = { version = "4.5.48", default-features = false }
 mimalloc = { version = "0.1.52" }
-ureq = { version = "3", default-features = false }
+ureq = { version = "2.9", default-features = false }
 
 # Signing
-ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "batch"] }
-keyring = { version = "4", default-features = false, features = ["linux-native-sync-persistent", "apple-native", "windows-native"] }
+ed25519-consensus = { version = "2.1", default-features = false }
+keyring = { version = "3.6.3", default-features = false, features = ["linux-native-sync-persistent", "apple-native", "windows-native"] }
 
 # Dev dependencies
 insta = "1.47.2"
@@ -171,8 +171,8 @@ cli = ["std", "dep:clap"]
 regen = ["std"]
 # Backend-agnostic signature verification (`SignatureVerifier`, `verify_event_signatures`).
 signing-core = []
-signing = ["signing-dalek"]
-signing-dalek = ["signing-core", "dep:ed25519-dalek"]
+signing = ["signing-consensus"]
+signing-consensus = ["signing-core", "dep:ed25519-consensus"]
 stress = []
 hashing = []
 unstable-refcount-gc = []
@@ -190,7 +190,7 @@ sha3.workspace = true
 
 # Optional
 clap = { workspace = true, optional = true }
-ed25519-dalek = { workspace = true, optional = true }
+ed25519-consensus = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true

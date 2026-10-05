@@ -28,7 +28,7 @@ use ruma_signatures::{verify_event, PublicKeyMap, PublicKeySet};
 use serde_json::Value;
 
 use rezzy::basespec::rezzy_types::{compute_content_hash, verify_content_hash};
-use rezzy::signing::{verify_event_signatures, DalekVerifier};
+use rezzy::signing::{verify_event_signatures, Ed25519ConsensusVerifier};
 use rezzy::{json, JsonValue};
 
 const ROOM_VERSION: &str = "10";
@@ -63,7 +63,7 @@ fn build_signed_event() -> (JsonValue, [u8; 32]) {
     (value, vk.to_bytes())
 }
 
-fn bench_rezzy(value: &JsonValue, keys: &DalekVerifier) -> Result<(), String> {
+fn bench_rezzy(value: &JsonValue, keys: &Ed25519ConsensusVerifier) -> Result<(), String> {
     verify_event_signatures(value, ROOM_VERSION, keys)?;
     verify_content_hash(value, ROOM_VERSION)?;
     Ok(())
@@ -95,7 +95,7 @@ fn main() {
     let iters = 10_000;
 
     // Build both key maps once, outside the timed loop.
-    let mut keys = DalekVerifier::new();
+    let mut keys = Ed25519ConsensusVerifier::new();
     keys.insert_public_key("example.com", "ed25519:0", &vk)
         .expect("valid public key");
     let mut set = PublicKeySet::new();
@@ -144,12 +144,12 @@ fn main() {
 /// Times verifying `n` distinct signed PDUs (same server key) two ways --
 /// neither is real batch verification (`ed25519_dalek::verify_batch`'s
 /// batched cofactored equation): one calls `verify_event_signatures` once
-/// per event in a loop, the other calls `verify_sequential_strict` once for
-/// the whole slice, but `verify_sequential_strict` is *itself* a per-signature
+/// per event in a loop, the other calls `verify_sequential` once for
+/// the whole slice, but `verify_sequential` is *itself* a per-signature
 /// `verify_strict` loop internally (see its doc comment for why it isn't a
 /// true batch), so this measures per-call/allocation overhead of the two
 /// entry points, not a batch-verification speedup.
-fn bench_sequential(value: &JsonValue, keys: &DalekVerifier, n: usize, iters: u32) {
+fn bench_sequential(value: &JsonValue, keys: &Ed25519ConsensusVerifier, n: usize, iters: u32) {
     let sk = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
     let events: Vec<JsonValue> = (0..n)
         .map(|i| {
@@ -169,7 +169,7 @@ fn bench_sequential(value: &JsonValue, keys: &DalekVerifier, n: usize, iters: u3
         .collect();
 
     println!(
-        "\nper-event loop vs verify_sequential_strict (both O(n) sequential): \
+        "\nper-event loop vs verify_sequential (both O(n) sequential): \
          {n} signed PDUs, 1 server sig each"
     );
     let per_event = time("verify_event_signatures xN (loop)", iters, || {
@@ -178,8 +178,8 @@ fn bench_sequential(value: &JsonValue, keys: &DalekVerifier, n: usize, iters: u3
                 .expect("every benchmark event verifies");
         }
     });
-    let one_call = time("verify_sequential_strict (1 call)", iters, || {
-        black_box(rezzy::signing::verify_sequential_strict(
+    let one_call = time("verify_sequential (1 call)", iters, || {
+        black_box(rezzy::signing::verify_sequential(
             &events,
             ROOM_VERSION,
             keys,
@@ -187,7 +187,7 @@ fn bench_sequential(value: &JsonValue, keys: &DalekVerifier, n: usize, iters: u3
         .expect("every benchmark event verifies");
     });
     println!(
-        "per-event loop / verify_sequential_strict = {:.2}x (call-site overhead only -- \
+        "per-event loop / verify_sequential = {:.2}x (call-site overhead only -- \
          neither is real batch verification)",
         per_event.as_secs_f64() / one_call.as_secs_f64()
     );

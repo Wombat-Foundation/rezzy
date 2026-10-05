@@ -4,9 +4,8 @@
 //! machinery. Enabling the `signing` feature pulls in the Ed25519 backend
 //! behind a [`SignatureVerifier`] trait:
 //!
-//! - `signing` (default) / `signing-dalek` — [`ed25519_dalek`] (RFC 8032
-//!   strict). Shares rezzy's `sha2 0.10`, so no duplicate hash crate is
-//!   pulled.
+//! - `signing` (default) / `signing-consensus` — [`ed25519_consensus`]
+//!   (ZIP 215, consensus-safe: every implementation agrees on every signature).
 //!
 //! Both backends verify over the canonical redacted JSON produced by
 //! [`crate::basespec::rezzy_types::canonical_redacted_json`] — the same
@@ -17,10 +16,10 @@
 //! ```
 //! # #[cfg(feature = "signing")]
 //! # fn example() -> Result<(), String> {
-//! use rezzy::signing::{verify_event_signatures, DalekVerifier};
+//! use rezzy::signing::{verify_event_signatures, Ed25519ConsensusVerifier};
 //! use rezzy::json;
 //!
-//! let mut keys = DalekVerifier::new();
+//! let mut keys = Ed25519ConsensusVerifier::new();
 //! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])?;
 //!
 //! let event = json!({
@@ -38,15 +37,15 @@ use alloc::string::ToString;
 
 use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
 
-#[cfg(all(test, feature = "signing-dalek"))]
+#[cfg(all(test, feature = "signing-consensus"))]
 use crate::basespec::rezzy_types::canonical_redacted_json;
 
-#[cfg(feature = "signing-dalek")]
-mod dalek;
-#[cfg(feature = "signing-dalek")]
-pub use dalek::{verify_sequential_strict, DalekVerifier};
+#[cfg(feature = "signing-consensus")]
+mod consensus;
+#[cfg(feature = "signing-consensus")]
+pub use consensus::{verify_sequential, Ed25519ConsensusVerifier};
 
-#[cfg(feature = "signing-dalek")]
+#[cfg(feature = "signing-consensus")]
 pub mod attest;
 
 /// A backend able to verify one Ed25519 signature over a message.
@@ -273,15 +272,15 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
     }
 }
 
-#[cfg(all(test, feature = "signing-dalek"))]
+#[cfg(all(test, feature = "signing-consensus"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod dalek_tests {
+mod consensus_tests {
     use super::*;
     use crate::json;
     use alloc::format;
     use alloc::vec::Vec;
     use base64::Engine as _;
-    use ed25519_dalek::{Signer as _, SigningKey};
+    use ed25519_consensus::SigningKey;
 
     fn signed_event(
         mut value: Value,
@@ -317,37 +316,37 @@ mod dalek_tests {
     }
 
     #[test]
-    fn dalek_verifies_round_trip() {
-        let sk = SigningKey::from_bytes(&[7_u8; 32]);
-        let vk = sk.verifying_key();
+    fn consensus_verifies_round_trip() {
+        let sk = SigningKey::from([7_u8; 32]);
+        let vk = sk.verification_key();
 
         let raw = signed_event(message_event(1), "10", "example.com", "ed25519:0", &sk);
 
-        let mut keys = DalekVerifier::new();
+        let mut keys = Ed25519ConsensusVerifier::new();
         keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         verify_event_signatures(&raw, "10", &keys).unwrap();
     }
 
     #[test]
-    fn dalek_rejects_tampered_preserved_field() {
-        let sk = SigningKey::from_bytes(&[8_u8; 32]);
-        let vk = sk.verifying_key();
+    fn consensus_rejects_tampered_preserved_field() {
+        let sk = SigningKey::from([8_u8; 32]);
+        let vk = sk.verification_key();
 
         let mut raw = signed_event(message_event(1), "10", "example.com", "ed25519:0", &sk);
         raw["origin_server_ts"] = json!(999);
 
-        let mut keys = DalekVerifier::new();
+        let mut keys = Ed25519ConsensusVerifier::new();
         keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         assert!(verify_event_signatures(&raw, "10", &keys).is_err());
     }
 
     #[test]
-    fn dalek_batch_verifies_many_events_at_once() {
-        let sk = SigningKey::from_bytes(&[9_u8; 32]);
-        let vk = sk.verifying_key();
-        let mut keys = DalekVerifier::new();
+    fn consensus_batch_verifies_many_events_at_once() {
+        let sk = SigningKey::from([9_u8; 32]);
+        let vk = sk.verification_key();
+        let mut keys = Ed25519ConsensusVerifier::new();
         keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
 
@@ -369,18 +368,18 @@ mod dalek_tests {
             })
             .collect();
 
-        verify_sequential_strict(&events, "10", &keys).unwrap();
+        verify_sequential(&events, "10", &keys).unwrap();
 
         // Tampering with one event's preserved field must fail the whole batch.
         let mut tampered = events.clone();
         tampered[3]["origin_server_ts"] = json!(999);
-        assert!(verify_sequential_strict(&tampered, "10", &keys).is_err());
+        assert!(verify_sequential(&tampered, "10", &keys).is_err());
     }
 
     #[test]
-    fn dalek_verifies_case_insensitive_server_name() {
-        let sk = SigningKey::from_bytes(&[10_u8; 32]);
-        let vk = sk.verifying_key();
+    fn consensus_verifies_case_insensitive_server_name() {
+        let sk = SigningKey::from([10_u8; 32]);
+        let vk = sk.verification_key();
 
         // 1. Signature map has uppercase server, keyring registered lowercase
         let raw_upper_sig = signed_event(
@@ -398,12 +397,12 @@ mod dalek_tests {
             &sk,
         );
 
-        let mut keys_lower = DalekVerifier::new();
+        let mut keys_lower = Ed25519ConsensusVerifier::new();
         keys_lower
             .insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         verify_event_signatures(&raw_upper_sig, "1", &keys_lower).unwrap();
-        verify_sequential_strict(core::slice::from_ref(&raw_upper_sig), "1", &keys_lower).unwrap();
+        verify_sequential(core::slice::from_ref(&raw_upper_sig), "1", &keys_lower).unwrap();
 
         // 2. Signature map has lowercase server, keyring registered uppercase
         let raw_lower_sig = signed_event(
@@ -421,18 +420,18 @@ mod dalek_tests {
             &sk,
         );
 
-        let mut keys_upper = DalekVerifier::new();
+        let mut keys_upper = Ed25519ConsensusVerifier::new();
         keys_upper
             .insert_public_key("EXAMPLE.COM", "ed25519:0", &vk.to_bytes())
             .unwrap();
         verify_event_signatures(&raw_lower_sig, "1", &keys_upper).unwrap();
-        verify_sequential_strict(&[raw_lower_sig], "1", &keys_upper).unwrap();
+        verify_sequential(&[raw_lower_sig], "1", &keys_upper).unwrap();
     }
 
     #[test]
-    fn dalek_uses_sender_domain_for_v3_and_later() {
-        let sender_key = SigningKey::from_bytes(&[12_u8; 32]);
-        let attacker_key = SigningKey::from_bytes(&[13_u8; 32]);
+    fn consensus_uses_sender_domain_for_v3_and_later() {
+        let sender_key = SigningKey::from([12_u8; 32]);
+        let attacker_key = SigningKey::from([13_u8; 32]);
         let event = json!({
             // v3+ PDUs do not carry event_id over federation. If an input does
             // include one, it must not change which homeserver is required to
@@ -452,38 +451,38 @@ mod dalek_tests {
             "ed25519:0",
             &attacker_key,
         );
-        let mut attacker_keys = DalekVerifier::new();
+        let mut attacker_keys = Ed25519ConsensusVerifier::new();
         attacker_keys
             .insert_public_key(
                 "attacker.example",
                 "ed25519:0",
-                &attacker_key.verifying_key().to_bytes(),
+                &attacker_key.verification_key().to_bytes(),
             )
             .unwrap();
         assert!(verify_event_signatures(&attacker_signed, "3", &attacker_keys).is_err());
-        assert!(verify_sequential_strict(&[attacker_signed], "3", &attacker_keys).is_err());
+        assert!(verify_sequential(&[attacker_signed], "3", &attacker_keys).is_err());
 
         let sender_signed = signed_event(event, "3", "sender.example", "ed25519:0", &sender_key);
-        let mut sender_keys = DalekVerifier::new();
+        let mut sender_keys = Ed25519ConsensusVerifier::new();
         sender_keys
             .insert_public_key(
                 "sender.example",
                 "ed25519:0",
-                &sender_key.verifying_key().to_bytes(),
+                &sender_key.verification_key().to_bytes(),
             )
             .unwrap();
         verify_event_signatures(&sender_signed, "3", &sender_keys).unwrap();
-        verify_sequential_strict(&[sender_signed], "3", &sender_keys).unwrap();
+        verify_sequential(&[sender_signed], "3", &sender_keys).unwrap();
     }
 
     #[test]
     fn native_verifier_rejects_unsupported_dotted_version() {
-        let sk = SigningKey::from_bytes(&[11_u8; 32]);
-        let vk = sk.verifying_key();
+        let sk = SigningKey::from([11_u8; 32]);
+        let vk = sk.verification_key();
         let raw = signed_event(message_event(1), "2.1", "example.com", "ed25519:0", &sk);
         let mut map = crate::HashMap::new();
         map.insert("$opaque:example.com".to_string(), raw);
-        let mut keys = DalekVerifier::new();
+        let mut keys = Ed25519ConsensusVerifier::new();
         keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
             .unwrap();
         let nv = NativeVerifier::new(map, "2.1", keys);
@@ -493,12 +492,12 @@ mod dalek_tests {
     }
 
     #[test]
-    fn dalek_rejects_event_with_invalid_known_signature_alongside_valid() {
+    fn consensus_rejects_event_with_invalid_known_signature_alongside_valid() {
         use base64::Engine as _;
-        let sk1 = SigningKey::from_bytes(&[1_u8; 32]);
-        let vk1 = sk1.verifying_key();
-        let sk2 = SigningKey::from_bytes(&[2_u8; 32]);
-        let vk2 = sk2.verifying_key();
+        let sk1 = SigningKey::from([1_u8; 32]);
+        let vk1 = sk1.verification_key();
+        let sk2 = SigningKey::from([2_u8; 32]);
+        let vk2 = sk2.verification_key();
 
         let mut event = signed_event(
             json!({
@@ -519,7 +518,7 @@ mod dalek_tests {
         let corrupt_sig = base64::engine::general_purpose::STANDARD_NO_PAD.encode([99_u8; 64]);
         event["signatures"]["example.com"]["ed25519:2"] = json!(corrupt_sig);
 
-        let mut verifier = DalekVerifier::new();
+        let mut verifier = Ed25519ConsensusVerifier::new();
         verifier
             .insert_public_key("example.com", "ed25519:1", &vk1.to_bytes())
             .unwrap();
@@ -527,8 +526,8 @@ mod dalek_tests {
             .insert_public_key("example.com", "ed25519:2", &vk2.to_bytes())
             .unwrap();
 
-        // Both verify_event_signatures and verify_sequential_strict must reject the event
+        // Both verify_event_signatures and verify_sequential must reject the event
         assert!(verify_event_signatures(&event, "1", &verifier).is_err());
-        assert!(verify_sequential_strict(&[event], "1", &verifier).is_err());
+        assert!(verify_sequential(&[event], "1", &verifier).is_err());
     }
 }

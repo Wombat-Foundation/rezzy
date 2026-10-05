@@ -16,7 +16,7 @@
 //! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |
 //! | `signing`   | ✗       | Signature-verification traits (`SignatureVerifier` et al.), backend-agnostic. |
 //! | `signing-core` | ✗    | Backend-agnostic signature verification (`SignatureVerifier` et al.). |
-//! | `signing-dalek` | ✗   | `ed25519-dalek`-backed `SignatureVerifier` implementation. |
+//! | `signing-consensus` | ✗   | `ed25519-consensus`-backed `SignatureVerifier` implementation. |
 //!
 //! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
 //! and [`verify_content_hash`].
