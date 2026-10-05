@@ -3,7 +3,7 @@
 How integers behave across the parse, permissive-canonical, and strict-canonical
 paths, where the boundaries are, and why they are where they are.
 
-The short version: **`Number` keeps the source spelling, so integers round-trip
+The short version: **`Number` keeps the source spelling of integers, so they round-trip
 byte-exactly across an enormous range — but the range that is _canonical_ is
 much narrower, and anything above it must not be signed as a JSON number.**
 
@@ -68,7 +68,7 @@ so if upstream ever adds support, the test tells us to re-check the divergence.
 An earlier revision of this crate rewrote such integers through `f64`, turning
 `18446744073709551616` into `1.8446744073709552e+19`. That silently changed the
 value _and_ the signed bytes, and contradicted the crate's own contract that
-numbers retain their source spelling. It is fixed; the behaviour is now covered
+integers retain their source spelling. It is fixed; the behaviour is now covered
 by tests rather than documentation alone.
 
 ## `as_f64` is lossy from `2^53 + 1`
@@ -120,6 +120,15 @@ write_raw_canonical_filtered_strict(br#"{"id":"175928847299117063"}"#, |_| false
 **Store external 64-bit identifiers as JSON strings.** That is the only encoding
 which is canonical, interoperable, and lossless. It costs a `Number::as_str()`
 at the read site and nothing at all in the signed bytes.
+
+## Floats are re-rendered
+
+Only integers keep their source spelling. A literal containing `.`, `e` or `E`
+is parsed as `f64` and re-rendered through `ryu`, so `1e2` becomes `100.0` and
+`1.0` stays `1.0`. Literals that overflow `f64` (`1e400`) are the exception and
+keep their spelling. Anything that parses a float, re-serializes it and then
+hashes or signs the result would see different bytes, so signing must go
+through the strict canonical writer, which rejects floats.
 
 ## `-0`
 

@@ -1,7 +1,8 @@
 //! Small `alloc`-only JSON value and parser used by the no-std core.
 //!
 //! Objects use `BTreeMap` so iteration is deterministic and already suitable
-//! for Matrix canonical JSON. Numbers retain their source spelling; canonical
+//! for Matrix canonical JSON. Integers retain their source spelling (floats
+//! are re-rendered); canonical
 //! validation and writing decide which spellings are acceptable.
 //!
 //! # Numeric ranges
@@ -105,7 +106,8 @@ impl PartialEq<&str> for Value {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// A JSON number, kept as its validated source spelling.
+/// A JSON number. Integers keep their validated source spelling; floats are
+/// re-rendered through `ryu` (`1e2` becomes `100.0`).
 pub struct Number(String);
 
 impl Number {
