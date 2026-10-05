@@ -176,7 +176,7 @@ where
     let mut queue: VecDeque<(Id, usize)> = conflicted_set.iter().map(|s| (s.clone(), 0)).collect();
     let mut visited_depth = HashMap::new();
     while let Some((node, depth)) = queue.pop_front() {
-        if visited_depth.get(&node).map_or(true, |&old| depth < old) {
+        if visited_depth.get(&node).is_none_or(|&old| depth < old) {
             visited_depth.insert(node.clone(), depth);
             backwards.insert(node.clone());
             if let Some(max_depth) = max_auth_depth {

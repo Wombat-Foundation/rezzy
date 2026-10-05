@@ -244,7 +244,7 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
                     && core::ptr::eq(sk.interner(), interner)
                     && ev
                         .state_key
-                        .map_or(true, |k| core::ptr::eq(k.interner(), interner)),
+                        .is_none_or(|k| core::ptr::eq(k.interner(), interner)),
                 "InternedRoomState::new: map contains InternId(s) from a \
                  different Interner than the one supplied"
             );

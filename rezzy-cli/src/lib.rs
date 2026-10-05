@@ -636,6 +636,15 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
 ///
 /// Panics if the output file cannot be created or written, or if the JSON
 /// output cannot be formatted.
+fn open_output(path: Option<PathBuf>) -> Box<dyn Write> {
+    let Some(path) = path else {
+        return Box::new(BufWriter::new(io::stdout()));
+    };
+    Box::new(BufWriter::new(
+        File::create(path).expect("Failed to create output file"),
+    ))
+}
+
 pub fn main_entry() {
     let mut command = cli_command();
     let matches = command.get_matches_mut();
@@ -700,13 +709,7 @@ pub fn main_entry() {
     let args = Args::from_matches(&matches);
     match run_cli(&args) {
         Ok(output) => {
-            let output_writer: Box<dyn Write> = match args.output {
-                Some(path) => Box::new(BufWriter::new(
-                    File::create(path).expect("Failed to create output file"),
-                )),
-                None => Box::new(BufWriter::new(io::stdout())),
-            };
-            let mut buffered_out = output_writer;
+            let mut buffered_out = open_output(args.output);
             let pretty =
                 rezzy::json::write_string_pretty(&output).expect("JSON formatting is infallible");
             buffered_out

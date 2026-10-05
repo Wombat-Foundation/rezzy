@@ -1142,7 +1142,7 @@ fn validate_canonical_number(n: &crate::json::Number) -> Result<(), Canonicaliza
     }
     // Range check: must fit within ±(2^53 − 1).
     if let Some(v) = n.as_i64() {
-        if !(-(1_i64 << 53) + 1..=(1_i64 << 53) - 1).contains(&v) {
+        if v.unsigned_abs() > (1_u64 << 53) - 1 {
             return Err(CanonicalizationError::OutOfRangeNumber);
         }
     } else if let Some(v) = n.as_u64() {
@@ -1376,9 +1376,9 @@ pub fn apply_redaction<Id: Clone + core::fmt::Display + 'static, K: Clone>(
 ) -> Option<LeanEvent<Id, Value, K>> {
     // Compares against a borrowed wire representation of target.event_id
     // instead of allocating a fresh String via to_string() on every call.
-    if !redaction
+    if redaction
         .get_redacts()
-        .is_some_and(|target_id| target_id == crate::auth::event_id_to_wire_cow(&target.event_id))
+        .is_none_or(|target_id| target_id != crate::auth::event_id_to_wire_cow(&target.event_id))
     {
         return None;
     }

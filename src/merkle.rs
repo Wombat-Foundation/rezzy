@@ -1328,7 +1328,7 @@ pub mod causal {
                 // Check if the child node on the key-directed path exists
                 // and is non-empty.
                 let child = self.nodes.get(&(child_depth, child_prefix));
-                let child_is_empty = child.map_or(true, |(_, c)| *c == 0);
+                let child_is_empty = child.is_none_or(|(_, c)| *c == 0);
                 if child_is_empty {
                     // Found the terminal: an empty subtree at depth d+1.
                     let root_hash = self.root();

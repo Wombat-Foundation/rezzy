@@ -2,7 +2,7 @@
 name = "rezzy-benches"
 version = "0.6.0-rc.0"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.88"
 publish = false
 autobenches = false
 

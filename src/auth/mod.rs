@@ -1084,7 +1084,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
 
     // Rule 10.7: entries changed or removed — current value must not exceed sender PL.
     for (key, &old_val) in &old_events {
-        let changed = new_events.get(key).map_or(true, |&nv| nv != old_val);
+        let changed = new_events.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot change events[{key}]: current value {old_val} > sender PL {sender_pl}"
@@ -1093,7 +1093,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     }
     // Rule 10.8: entries added or changed — new value must not exceed sender PL.
     for (key, &new_val) in &new_events {
-        let changed = old_events.get(key).map_or(true, |&ov| ov != new_val);
+        let changed = old_events.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot set events[{key}] to {new_val}: exceeds sender PL {sender_pl}"
@@ -1112,7 +1112,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     });
 
     for (key, &old_val) in &old_notifications {
-        let changed = new_notifications.get(key).map_or(true, |&nv| nv != old_val);
+        let changed = new_notifications.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot change notifications[{key}]: current value {old_val} > sender PL {sender_pl}"
@@ -1120,7 +1120,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
         }
     }
     for (key, &new_val) in &new_notifications {
-        let changed = old_notifications.get(key).map_or(true, |&ov| ov != new_val);
+        let changed = old_notifications.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot set notifications[{key}] to {new_val}: exceeds sender PL {sender_pl}"
@@ -1144,7 +1144,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
         if *key == sender {
             continue; // sender's own entry is exempt
         }
-        let changed = new_users.get(key).map_or(true, |&nv| nv != old_val);
+        let changed = new_users.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val >= sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot change users[{key}]: current PL {old_val} >= sender PL {sender_pl}"
@@ -1153,7 +1153,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     }
     // Rule 10.10: entries added or changed — new value must not exceed sender PL.
     for (key, &new_val) in &new_users {
-        let changed = old_users.get(key).map_or(true, |&ov| ov != new_val);
+        let changed = old_users.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "cannot set users[{key}] to {new_val}: exceeds sender PL {sender_pl}"
