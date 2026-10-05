@@ -4,7 +4,7 @@
 //! machinery. Enabling the `signing` feature pulls in the Ed25519 backend
 //! behind a [`SignatureVerifier`] trait:
 //!
-//! - `signing` (default) / `signing-consensus` — [`ed25519_consensus`]
+//! - `signing` (default) / `signing-consensus` — [`ed25519_zebra`]
 //!   (ZIP 215, consensus-safe: every implementation agrees on every signature).
 //!
 //! Both backends verify over the canonical redacted JSON produced by
@@ -280,7 +280,7 @@ mod consensus_tests {
     use alloc::format;
     use alloc::vec::Vec;
     use base64::Engine as _;
-    use ed25519_consensus::SigningKey;
+    use ed25519_zebra::SigningKey;
 
     fn signed_event(
         mut value: Value,
@@ -323,7 +323,7 @@ mod consensus_tests {
         let raw = signed_event(message_event(1), "10", "example.com", "ed25519:0", &sk);
 
         let mut keys = Ed25519ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+        keys.insert_public_key("example.com", "ed25519:0", vk.as_ref())
             .unwrap();
         verify_event_signatures(&raw, "10", &keys).unwrap();
     }
@@ -337,7 +337,7 @@ mod consensus_tests {
         raw["origin_server_ts"] = json!(999);
 
         let mut keys = Ed25519ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+        keys.insert_public_key("example.com", "ed25519:0", vk.as_ref())
             .unwrap();
         assert!(verify_event_signatures(&raw, "10", &keys).is_err());
     }
@@ -347,7 +347,7 @@ mod consensus_tests {
         let sk = SigningKey::from([9_u8; 32]);
         let vk = sk.verification_key();
         let mut keys = Ed25519ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+        keys.insert_public_key("example.com", "ed25519:0", vk.as_ref())
             .unwrap();
 
         let events: Vec<Value> = (0..8)
@@ -399,7 +399,7 @@ mod consensus_tests {
 
         let mut keys_lower = Ed25519ConsensusVerifier::new();
         keys_lower
-            .insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+            .insert_public_key("example.com", "ed25519:0", vk.as_ref())
             .unwrap();
         verify_event_signatures(&raw_upper_sig, "1", &keys_lower).unwrap();
         verify_sequential(core::slice::from_ref(&raw_upper_sig), "1", &keys_lower).unwrap();
@@ -422,7 +422,7 @@ mod consensus_tests {
 
         let mut keys_upper = Ed25519ConsensusVerifier::new();
         keys_upper
-            .insert_public_key("EXAMPLE.COM", "ed25519:0", &vk.to_bytes())
+            .insert_public_key("EXAMPLE.COM", "ed25519:0", vk.as_ref())
             .unwrap();
         verify_event_signatures(&raw_lower_sig, "1", &keys_upper).unwrap();
         verify_sequential(&[raw_lower_sig], "1", &keys_upper).unwrap();
@@ -456,7 +456,7 @@ mod consensus_tests {
             .insert_public_key(
                 "attacker.example",
                 "ed25519:0",
-                &attacker_key.verification_key().to_bytes(),
+                <[u8; 32]>::from(attacker_key.verification_key()).as_slice(),
             )
             .unwrap();
         assert!(verify_event_signatures(&attacker_signed, "3", &attacker_keys).is_err());
@@ -468,7 +468,7 @@ mod consensus_tests {
             .insert_public_key(
                 "sender.example",
                 "ed25519:0",
-                &sender_key.verification_key().to_bytes(),
+                <[u8; 32]>::from(sender_key.verification_key()).as_slice(),
             )
             .unwrap();
         verify_event_signatures(&sender_signed, "3", &sender_keys).unwrap();
@@ -483,7 +483,7 @@ mod consensus_tests {
         let mut map = crate::HashMap::new();
         map.insert("$opaque:example.com".to_string(), raw);
         let mut keys = Ed25519ConsensusVerifier::new();
-        keys.insert_public_key("example.com", "ed25519:0", &vk.to_bytes())
+        keys.insert_public_key("example.com", "ed25519:0", vk.as_ref())
             .unwrap();
         let nv = NativeVerifier::new(map, "2.1", keys);
         assert!(nv
@@ -520,10 +520,10 @@ mod consensus_tests {
 
         let mut verifier = Ed25519ConsensusVerifier::new();
         verifier
-            .insert_public_key("example.com", "ed25519:1", &vk1.to_bytes())
+            .insert_public_key("example.com", "ed25519:1", vk1.as_ref())
             .unwrap();
         verifier
-            .insert_public_key("example.com", "ed25519:2", &vk2.to_bytes())
+            .insert_public_key("example.com", "ed25519:2", vk2.as_ref())
             .unwrap();
 
         // Both verify_event_signatures and verify_sequential must reject the event

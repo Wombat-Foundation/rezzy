@@ -1,15 +1,15 @@
-//! [`ed25519_consensus`]-backed (ZIP 215) signature verification.
+//! [`ed25519_zebra`]-backed (ZIP 215) signature verification.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;
 
 use crate::json::Value;
-use ed25519_consensus::{Signature, VerificationKey};
+use ed25519_zebra::{Signature, VerificationKey};
 
 use super::SignatureVerifier;
 
-/// Verifies Ed25519 signatures with [`ed25519_consensus`] (ZIP 215).
+/// Verifies Ed25519 signatures with [`ed25519_zebra`] (ZIP 215).
 ///
 /// ZIP 215 fixes one acceptance criterion for every signature, so the verdict
 /// is identical across implementations, which is what a federation needs.
@@ -86,7 +86,7 @@ impl SignatureVerifier for Ed25519ConsensusVerifier {
 /// This is a sequential loop, not batch verification. It uses the same ZIP 215
 /// criterion as [`Ed25519ConsensusVerifier`], so a lone signature and a signature in a
 /// list always get the same verdict. Callers who want batch throughput can use
-/// `ed25519_consensus::batch` directly.
+/// `ed25519_zebra::batch` directly.
 ///
 /// For each event, **all** signatures whose key is held by `keys` are collected
 /// and must verify — if any held signature is invalid, the batch fails even if

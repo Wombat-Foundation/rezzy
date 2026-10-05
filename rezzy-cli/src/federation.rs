@@ -6,7 +6,7 @@ use base64::{
     Engine as _,
 };
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ed25519_consensus::SigningKey;
+use ed25519_zebra::SigningKey;
 use rezzy::JsonValue;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;

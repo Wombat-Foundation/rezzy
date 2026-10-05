@@ -511,6 +511,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed25519-zebra"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa764ad1bb0a84aaed1575b6d426ce927f610225bd9aeee88d02e08a6fea8215"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "rand_core 0.10.1",
+ "sha2 0.11.0",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1176,7 +1190,7 @@ version = "0.6.0-rc.1"
 dependencies = [
  "base64",
  "blake3",
- "ed25519-consensus",
+ "ed25519-zebra",
  "hashbrown 0.17.1",
  "imbl",
  "rezzy-json",

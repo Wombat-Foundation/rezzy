@@ -98,7 +98,7 @@ ureq = { version = "3", default-features = false }
 # Signing
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
-ed25519-consensus = { version = "2.1", default-features = false }
+ed25519-zebra = { version = "5", default-features = false }
 getrandom = { version = "0.4", default-features = false }
 rpassword = "7.5"
 
@@ -167,7 +167,7 @@ regen = ["std"]
 # Backend-agnostic signature verification (`SignatureVerifier`, `verify_event_signatures`).
 signing-core = []
 signing = ["signing-consensus"]
-signing-consensus = ["signing-core", "dep:ed25519-consensus"]
+signing-consensus = ["signing-core", "dep:ed25519-zebra"]
 stress = []
 hashing = []
 unstable-refcount-gc = []
@@ -185,7 +185,7 @@ sha3.workspace = true
 
 # Optional
 clap = { workspace = true, optional = true }
-ed25519-consensus = { workspace = true, optional = true }
+ed25519-zebra = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true

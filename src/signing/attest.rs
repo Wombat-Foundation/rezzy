@@ -20,7 +20,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_consensus::{Signature, SigningKey, VerificationKey};
+use ed25519_zebra::{Signature, SigningKey, VerificationKey};
 
 use crate::json::json;
 use crate::merkle::UnsignedRoot;

@@ -22,8 +22,8 @@ std = ["rezzy/std", "clap/std"]
 mimalloc = ["dep:mimalloc"]
 tls = [
     "ureq/rustls",
-    "dep:ed25519-consensus",
-    "ed25519-consensus/std",
+    "dep:ed25519-zebra",
+    "ed25519-zebra/std",
     "dep:argon2",
     "dep:chacha20poly1305",
     "dep:rpassword",
@@ -37,7 +37,7 @@ base64.workspace = true
 chacha20poly1305 = { workspace = true, optional = true }
 clap.workspace = true
 clap_complete.workspace = true
-ed25519-consensus = { workspace = true, optional = true }
+ed25519-zebra = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 imbl.workspace = true
 mimalloc = { workspace = true, optional = true }
