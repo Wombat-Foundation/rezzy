@@ -99,13 +99,9 @@ fn federation_agent() -> &'static ureq::Agent {
     })
 }
 
-/// The `--signing-key` path and `--signing-key-keyring` account, when given.
-fn signing_key_values(m: &ArgMatches) -> (Option<&Path>, Option<&str>) {
-    (
-        m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path),
-        m.get_one::<String>("signing-key-keyring")
-            .map(String::as_str),
-    )
+/// The `--signing-key` encrypted key-file path, when given.
+fn signing_key_path(m: &ArgMatches) -> Option<&Path> {
+    m.get_one::<PathBuf>("signing-key").map(PathBuf::as_path)
 }
 
 #[must_use]
@@ -177,6 +173,7 @@ pub fn command() -> Command {
                         .action(ArgAction::SetTrue),
                 ),
         )
+        .subcommand(encrypt_key_command())
         .subcommand(
             Command::new("gap-fill")
                 .about("Fetch missing room DAG and authentication events in bounded rounds")
@@ -210,6 +207,25 @@ pub fn command() -> Command {
         )
 }
 
+fn encrypt_key_command() -> Command {
+    Command::new("encrypt-key")
+        .about("Encrypt a plaintext signing key into a passphrase-protected file")
+        .arg(
+            Arg::new("input")
+                .long("input")
+                .short('i')
+                .required(true)
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("output")
+                .long("output")
+                .short('o')
+                .required(true)
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+}
+
 fn origin_arg() -> Arg {
     Arg::new("origin")
         .long("origin")
@@ -217,13 +233,11 @@ fn origin_arg() -> Arg {
         .default_value("matrix.org")
 }
 
-fn signing_key_args() -> [Arg; 2] {
-    [
-        Arg::new("signing-key")
-            .long("signing-key")
-            .value_parser(clap::value_parser!(PathBuf)),
-        Arg::new("signing-key-keyring").long("signing-key-keyring"),
-    ]
+fn signing_key_args() -> [Arg; 1] {
+    [Arg::new("signing-key")
+        .long("signing-key")
+        .help("Passphrase-encrypted signing key (see `federation encrypt-key`)")
+        .value_parser(clap::value_parser!(PathBuf))]
 }
 
 /// Runs the selected federation subcommand.
@@ -236,7 +250,7 @@ fn signing_key_args() -> [Arg; 2] {
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
         let origin = m.get_one::<String>("origin").expect("default");
-        load_signing_key(origin, signing_key_values(m).0, signing_key_values(m).1)?;
+        load_signing_key(origin, signing_key_path(m))?;
     }
     match matches.subcommand() {
         Some(("request", m)) => {
@@ -251,8 +265,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 m.get_one::<String>("method").expect("default"),
                 m.get_one::<String>("path").expect("required"),
                 &body,
-                signing_key_values(m).0,
-                signing_key_values(m).1,
+                signing_key_path(m),
             )
         }
         Some(("get-remote-dag", m)) => {
@@ -273,11 +286,15 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 room_version: m.get_one::<String>("room-version").expect("default"),
                 limit: *m.get_one::<i64>("limit").expect("default"),
                 output: m.get_one::<PathBuf>("output").expect("default"),
-                key_path: signing_key_values(m).0,
-                keyring_account: signing_key_values(m).1,
+                key_path: signing_key_path(m),
                 no_fallback: m.get_flag("no-fallback"),
                 emit_missing: m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
             })
+        }
+        Some(("encrypt-key", m)) => {
+            let out = m.get_one::<PathBuf>("output").expect("required");
+            encrypt_key_file(m.get_one::<PathBuf>("input").expect("required"), out)?;
+            Ok(rezzy::json!({ "written": out.display().to_string() }))
         }
         Some(("gap-fill", m)) => {
             let inputs = m
@@ -293,8 +310,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 room_version: m.get_one::<String>("room-version").expect("default"),
                 rounds: *m.get_one::<u32>("rounds").expect("default"),
                 output_dir: m.get_one::<PathBuf>("output-dir").expect("required"),
-                key_path: signing_key_values(m).0,
-                keyring_account: signing_key_values(m).1,
+                key_path: signing_key_path(m),
                 no_fallback: m.get_flag("no-fallback"),
             })
         }
@@ -327,78 +343,93 @@ fn domain_env_suffix(domain: &str) -> String {
     domain.to_ascii_uppercase().replace(['.', '-'], "_")
 }
 
-/// Resolve and parse a Matrix server signing key from the OS keyring.
+/// Read the key-file passphrase from `REZZY_KEY_PASSPHRASE` (unattended use,
+/// weaker: visible to the process environment) or prompt on the terminal.
+fn read_passphrase(path: &Path) -> Result<String, AppError> {
+    if let Ok(pw) = std::env::var("REZZY_KEY_PASSPHRASE") {
+        return Ok(pw);
+    }
+    rpassword::prompt_password(format!("Passphrase for {}: ", path.display())).map_err(|e| {
+        AppError::new(
+            ErrorCode::SigningKey,
+            format!("could not read passphrase (set REZZY_KEY_PASSPHRASE for unattended use): {e}"),
+        )
+    })
+}
+
+/// Resolve, decrypt and parse a Matrix server signing key.
 ///
-/// Private key files and `MATRIX_SERVER_SIGNING_KEY` are intentionally not
-/// accepted: federation credentials must be stored through the OS keyring.
+/// The key must be a passphrase-encrypted file (see `federation encrypt-key`),
+/// given by `--signing-key`, `MATRIX_SERVER_SIGNING_KEY_<DOMAIN>` or
+/// `MATRIX_SERVER_SIGNING_KEY`. Plaintext key files are not accepted.
 ///
 /// # Errors
 /// Returns an error when no usable key is configured or the configured key is invalid.
-pub fn load_signing_key(
-    origin: &str,
-    explicit: Option<&Path>,
-    keyring_account: Option<&str>,
-) -> Result<SigningKeySpec, AppError> {
-    let keyring_account = keyring_account
-        .map(str::to_owned)
-        .or_else(|| {
-            std::env::var(format!(
-                "MATRIX_SERVER_SIGNING_KEY_KEYRING_{}",
-                domain_env_suffix(origin)
-            ))
-            .ok()
-        })
-        .or_else(|| std::env::var("MATRIX_SERVER_SIGNING_KEY_KEYRING").ok());
-    if let Some(account) = keyring_account {
-        let cache_key = (origin.to_owned(), account.clone());
-        if let Ok(cache) = signing_key_cache().lock() {
-            if let Some(spec) = cache.get(&cache_key) {
-                return Ok(spec.clone());
-            }
-        }
-        let entry = keyring::Entry::new("rezzy", &account).map_err(|e| {
-            AppError::new(
-                ErrorCode::SigningKey,
-                format!("failed to open OS keyring entry rezzy/{account}: {e}"),
-            )
-        })?;
-        let text = entry.get_password().map_err(|e| {
-            AppError::new(
-                ErrorCode::SigningKey,
-                format!("failed to read OS keyring entry rezzy/{account}: {e}"),
-            )
-        })?;
-        let spec = parse_signing_key(&text).map_err(|message| {
-            AppError::new(
-                ErrorCode::SigningKey,
-                format!("OS keyring entry rezzy/{account}: {message}"),
-            )
-        })?;
-        if let Ok(mut cache) = signing_key_cache().lock() {
-            cache.insert(cache_key, spec.clone());
-        }
-        return Ok(spec);
-    }
-
-    let legacy_file_configured = explicit.is_some()
-        || std::env::var(format!(
-            "MATRIX_SERVER_SIGNING_KEY_{}",
-            domain_env_suffix(origin)
-        ))
-        .is_ok()
-        || std::env::var("MATRIX_SERVER_SIGNING_KEY").is_ok();
-    let detail = if legacy_file_configured {
-        "plaintext signing-key files and MATRIX_SERVER_SIGNING_KEY are not accepted"
-    } else {
-        "no OS keyring account configured"
+pub fn load_signing_key(origin: &str, explicit: Option<&Path>) -> Result<SigningKeySpec, AppError> {
+    let suffix = domain_env_suffix(origin);
+    let path = explicit.map(Path::to_path_buf).or_else(|| {
+        std::env::var_os(format!("MATRIX_SERVER_SIGNING_KEY_{suffix}"))
+            .or_else(|| std::env::var_os("MATRIX_SERVER_SIGNING_KEY"))
+            .map(PathBuf::from)
+    });
+    let Some(path) = path else {
+        return Err(AppError::new(
+            ErrorCode::SigningKey,
+            format!(
+                "no encrypted signing key configured; pass --signing-key or set \
+                 MATRIX_SERVER_SIGNING_KEY_{suffix} / MATRIX_SERVER_SIGNING_KEY to a file made \
+                 by `federation encrypt-key`"
+            ),
+        ));
     };
-    Err(AppError::new(
-        ErrorCode::SigningKey,
-        format!(
-            "{detail}; set MATRIX_SERVER_SIGNING_KEY_KEYRING_{} or MATRIX_SERVER_SIGNING_KEY_KEYRING",
-            domain_env_suffix(origin)
-        ),
-    ))
+    let cache_key = (origin.to_owned(), path.clone());
+    if let Ok(cache) = signing_key_cache().lock() {
+        if let Some(spec) = cache.get(&cache_key) {
+            return Ok(spec.clone());
+        }
+    }
+    let err = |message: String| {
+        AppError::new(
+            ErrorCode::SigningKey,
+            format!("signing key {}: {message}", path.display()),
+        )
+    };
+    let file = fs::read(&path).map_err(|e| err(e.to_string()))?;
+    let passphrase = read_passphrase(&path)?;
+    let plain = crate::keyfile::open(&file, passphrase.as_bytes()).map_err(err)?;
+    let text = String::from_utf8(plain).map_err(|_| err("decrypted key is not UTF-8".into()))?;
+    let spec = parse_signing_key(&text).map_err(err)?;
+    if let Ok(mut cache) = signing_key_cache().lock() {
+        cache.insert(cache_key, spec.clone());
+    }
+    Ok(spec)
+}
+
+/// Encrypt a plaintext signing key (read from `input`) into `output`, prompting for a
+/// passphrase twice (or using `REZZY_KEY_PASSPHRASE`).
+///
+/// # Errors
+/// Returns an error on I/O failure, mismatched passphrases, or an invalid key.
+pub fn encrypt_key_file(input: &Path, output: &Path) -> Result<(), AppError> {
+    let err = |m: String| AppError::new(ErrorCode::SigningKey, m);
+    let plain = fs::read_to_string(input)?;
+    parse_signing_key(&plain).map_err(|m| err(format!("{}: {m}", input.display())))?;
+    let pw = if let Ok(pw) = std::env::var("REZZY_KEY_PASSPHRASE") {
+        pw
+    } else {
+        let a = rpassword::prompt_password("New passphrase: ")?;
+        let b = rpassword::prompt_password("Repeat passphrase: ")?;
+        if a != b {
+            return Err(err("passphrases do not match".into()));
+        }
+        a
+    };
+    if pw.is_empty() {
+        return Err(err("empty passphrase".into()));
+    }
+    let sealed = crate::keyfile::seal(plain.as_bytes(), pw.as_bytes()).map_err(err)?;
+    fs::write(output, sealed)?;
+    Ok(())
 }
 
 fn parse_signing_key(text: &str) -> Result<SigningKeySpec, String> {
@@ -459,12 +490,12 @@ fn delegation_cache() -> &'static Mutex<BTreeMap<String, Option<String>>> {
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-/// Process-wide cache of parsed signing keys, keyed by `(origin, account)`.
+/// Process-wide cache of parsed signing keys, keyed by `(origin, key file)`.
 ///
-/// Each `(origin, account)` keyring value is read once per process. Changes to
-/// the keyring take effect after restarting the CLI.
-fn signing_key_cache() -> &'static Mutex<BTreeMap<(String, String), SigningKeySpec>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<(String, String), SigningKeySpec>>> = OnceLock::new();
+/// Each `(origin, key file)` is decrypted once per process; key-file changes
+/// take effect after restarting the CLI.
+fn signing_key_cache() -> &'static Mutex<BTreeMap<(String, PathBuf), SigningKeySpec>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<(String, PathBuf), SigningKeySpec>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -628,9 +659,8 @@ pub fn request(
     uri: &str,
     body: &JsonValue,
     key_path: Option<&Path>,
-    keyring_account: Option<&str>,
 ) -> Result<JsonValue, AppError> {
-    let key = load_signing_key(origin, key_path, keyring_account)?;
+    let key = load_signing_key(origin, key_path)?;
     let canonical = canonical_request(method, uri, origin, destination, body)?;
     let sig = STANDARD_NO_PAD.encode(key.key.sign(&canonical).to_bytes());
     let auth = format!(
@@ -747,8 +777,6 @@ pub struct DagRequest<'a> {
     pub output: &'a Path,
     /// Optional signing-key file.
     pub key_path: Option<&'a Path>,
-    /// Optional keyring account.
-    pub keyring_account: Option<&'a str>,
     /// Disable per-event fallback requests.
     pub no_fallback: bool,
     /// Optional unresolved-frontier output path.
@@ -920,7 +948,6 @@ fn fetch_events_individually(
             &event_uri,
             &rezzy::json!({}),
             dag_request.key_path,
-            dag_request.keyring_account,
         ) {
             Ok(v) => pdus.push(v.get("pdu").cloned().unwrap_or(v)),
             Err(e) if is_unreachable(&e) => return Err(e),
@@ -950,7 +977,6 @@ fn fetch_dag_batch(
         &uri,
         &rezzy::json!({}),
         dag_request.key_path,
-        dag_request.keyring_account,
     );
     let mut fell_back = false;
     let mut value = match response {
@@ -1060,7 +1086,6 @@ struct GapFillRequest<'a> {
     rounds: u32,
     output_dir: &'a Path,
     key_path: Option<&'a Path>,
-    keyring_account: Option<&'a str>,
     no_fallback: bool,
 }
 
@@ -1105,7 +1130,6 @@ fn fetch_gap_round(
             limit: -1,
             output: &path,
             key_path: request.key_path,
-            keyring_account: request.keyring_account,
             no_fallback: request.no_fallback,
             emit_missing: None,
         });
@@ -1144,7 +1168,6 @@ fn fetch_gap_round(
             &report,
             &path,
             request.key_path,
-            request.keyring_account,
         )?;
         if !failures.is_empty() {
             failed_requests = failed_requests.saturating_add(failures.total());
@@ -1260,7 +1283,6 @@ fn fetch_auth_batches(
     report: &crate::repair::GapReport,
     output: &Path,
     key_path: Option<&Path>,
-    keyring_account: Option<&str>,
 ) -> Result<(usize, FetchFailures), AppError> {
     let mut referencing = std::collections::BTreeSet::new();
     for reference in &report.references {
@@ -1285,7 +1307,6 @@ fn fetch_auth_batches(
             &uri,
             &rezzy::json!({}),
             key_path,
-            keyring_account,
         ) {
             Ok(value) => value,
             Err(error) => {

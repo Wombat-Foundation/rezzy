@@ -27,6 +27,8 @@ pub mod hash;
 pub mod inspect;
 /// Merging several JSONL event files into one deduplicated set.
 pub mod jsonl_merge;
+#[cfg(feature = "tls")]
+pub mod keyfile;
 /// Fetching room state from a homeserver.
 pub mod network;
 pub mod provenance;

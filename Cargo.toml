@@ -96,8 +96,11 @@ mimalloc = { version = "0.1.52" }
 ureq = { version = "3", default-features = false }
 
 # Signing
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 ed25519-consensus = { version = "2.1", default-features = false }
-keyring = { version = "4", default-features = false, features = ["v1"] }
+getrandom = { version = "0.4", default-features = false }
+rpassword = "7.5"
 
 # Dev dependencies
 rand_08 = { package = "rand", version = "0.10" }

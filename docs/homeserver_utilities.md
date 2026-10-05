@@ -200,7 +200,7 @@ room's event DAG:
 
 ```sh
 MATRIX_ORIGIN=example.org \
-MATRIX_SERVER_SIGNING_KEY_KEYRING=example.org \
+MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
 rezzy federation request --destination remote.example --path /_matrix/federation/v1/version
 
 rezzy federation get-remote-dag --origin example.org \
@@ -208,10 +208,10 @@ rezzy federation get-remote-dag --origin example.org \
   --from '$event:example.org' --output remote.jsonl
 ```
 
-Federation signing keys must be stored in the OS keyring. Plaintext key files,
-including `MATRIX_SERVER_SIGNING_KEY=/path/to/...`, are rejected. For multiple
-origins, use the per-origin keyring account variable
-`MATRIX_SERVER_SIGNING_KEY_KEYRING_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`.
+Signing keys are read from a passphrase-encrypted file (Argon2id +
+XChaCha20-Poly1305). Plaintext key files are rejected. Point at the file with
+`--signing-key`, `MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`,
+or `MATRIX_SERVER_SIGNING_KEY`.
 
 For legacy v3+ JSONL exports that omitted `event_id`, repair them using the
 room-version reference hash before aggregating:
@@ -233,20 +233,20 @@ intentionally not present in the default CLI build:
 cargo build -p rezzy-cli --features tls
 ```
 
-Store the complete `ed25519:<id> <seed>` line under service `rezzy` and account
-name `your.server` (for example, with Python's `keyring` package):
+Create the encrypted file from a plaintext `ed25519:<id> <seed>` line, then
+delete the plaintext:
 
 ```sh
-python3 -m keyring set rezzy your.server
-# paste: ed25519:7 <unpadded-base64-private-seed>
+rezzy federation encrypt-key --input plain.key --output your.server.key
+shred -u plain.key
 
-MATRIX_SERVER_SIGNING_KEY_KEYRING=your.server \
 rezzy federation request --origin your.server \
+  --signing-key your.server.key \
   --destination remote.example \
   --path /_matrix/federation/v1/version
 ```
 
-Use `MATRIX_SERVER_SIGNING_KEY_KEYRING_<DOMAIN>` for per-origin accounts, or
-pass `--signing-key-keyring <account>` on either federation subcommand. Each
-(origin, account) keyring value is read once per process; restart the CLI after
-rotating a key. No plaintext key file is created.
+The CLI prompts for the passphrase on the terminal. For unattended runs set
+`REZZY_KEY_PASSPHRASE` (weaker: visible to anything that can read the process
+environment). Each (origin, key file) is decrypted once per process; restart
+the CLI after rotating a key.
