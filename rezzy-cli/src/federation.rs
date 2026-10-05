@@ -546,7 +546,7 @@ fn well_known_lookup(destination: &str) -> Result<Option<String>, ()> {
         .call()
     {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, _)) if code < 500 => return Ok(None),
+        Err(ureq::Error::Status(404, _)) => return Ok(None),
         Err(_) => return Err(()),
     };
     let Ok(body) = response.into_string() else {
