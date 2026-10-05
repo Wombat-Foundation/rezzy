@@ -43,7 +43,8 @@ use core::{
     ops::{Index, IndexMut},
 };
 
-/// A JSON object, keyed in sorted order.
+/// A JSON object, keyed in sorted order (by key, not by source order), which
+/// is what canonical JSON requires. Source member order is not preserved.
 pub type Object = BTreeMap<String, Value>;
 
 /// Largest integer a JSON number may carry per Matrix canonical JSON (2^53 - 1).
@@ -78,6 +79,9 @@ pub fn is_canonical_integer_str(value: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 /// An owned JSON value.
+///
+/// [`Default`] is `Null`, so `unwrap_or_default()` on a failed parse silently
+/// yields `Null`; match on the `Result` when the distinction matters.
 pub enum Value {
     #[default]
     /// JSON `null`.
@@ -2502,6 +2506,71 @@ fn valid_number(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn number_literals_keep_integers_and_normalize_floats() {
+        // Integers keep their source spelling; floats are re-rendered through
+        // `ryu` (and `-0` becomes `-0.0`), so only the integer form is
+        // spelling-exact.
+        for (lit, want) in [
+            ("42", "42"),
+            ("1.0", "1.0"),
+            ("1e2", "100.0"),
+            ("-0", "-0.0"),
+            ("0.5", "0.5"),
+        ] {
+            let Value::Number(n) = Value::parse(lit).unwrap() else {
+                panic!("{lit} not a number")
+            };
+            assert_eq!(n.as_str(), want, "{lit}");
+        }
+        assert_eq!(
+            Value::parse("-0")
+                .unwrap()
+                .as_f64()
+                .map(f64::is_sign_negative),
+            Some(true)
+        );
+        // Strict canonical rejects every non-integer spelling.
+        for lit in ["1.0", "1e2", "-0"] {
+            assert!(
+                crate::write_raw_canonical_filtered_strict(lit.as_bytes(), |_| false).is_err(),
+                "{lit}"
+            );
+        }
+    }
+
+    #[test]
+    fn depth_limit_at_every_entry_point() {
+        let nest = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        let ok = nest(crate::MAX_DEPTH);
+        let deep = nest(crate::MAX_DEPTH + 1);
+        assert!(Value::parse(&ok).is_ok());
+        assert_eq!(Value::parse(&deep), Err(crate::Error::DepthLimitExceeded));
+        assert_eq!(
+            Value::parse_strict(&deep),
+            Err(crate::Error::DepthLimitExceeded)
+        );
+        assert_eq!(
+            Value::parse_located(&deep).unwrap_err().kind,
+            crate::Error::DepthLimitExceeded
+        );
+        let mut t = crate::Tokenizer::new(deep.as_bytes());
+        assert_eq!(
+            t.skip_value(),
+            Err(crate::TokenizerError::DepthLimitExceeded)
+        );
+        let mask = FieldMask::default();
+        assert_eq!(
+            crate::ValueRef::parse_masked(deep.as_bytes(), &mask).err(),
+            Some(crate::TokenizerError::DepthLimitExceeded)
+        );
+        let obj_deep = format!("{}1{}", "{\"a\":".repeat(129), "}".repeat(129));
+        assert_eq!(
+            crate::ValueRef::parse_masked(obj_deep.as_bytes(), &mask).err(),
+            Some(crate::TokenizerError::DepthLimitExceeded)
+        );
+    }
+
     #[test]
     fn value_display_and_from_str_round_trip() {
         let v: super::Value = r#"{"b":[1,true,null],"a":"x"}"#.parse().unwrap();
