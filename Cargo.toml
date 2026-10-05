@@ -103,7 +103,6 @@ getrandom = { version = "0.4", default-features = false }
 rpassword = "7.5"
 
 # Dev dependencies
-rand_08 = { package = "rand", version = "0.10" }
 test-case = "3.3.1"
 
 [workspace.lints.rust]
@@ -193,7 +192,6 @@ ed25519-consensus = { workspace = true, optional = true }
 base64.workspace = true
 hashbrown.workspace = true
 imbl.workspace = true
-rand_08.workspace = true
 rezzy-recon.workspace = true
 roaring.workspace = true
 sha2.workspace = true
