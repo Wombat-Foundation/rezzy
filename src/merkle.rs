@@ -1870,10 +1870,16 @@ pub mod causal {
                             // per-key proof descents dominate cost, so the
                             // largest case spot-checks a few keys only (n<=16
                             // already covers every key).
-                            let proof_keys: Vec<Hash> = if n > 16 {
-                                keys.iter().copied().step_by(n / 4).collect()
+                            // Sorted bytewise = tree order (descent is MSB-first), so
+                            // striding the sorted keys samples distinct prefixes.
+                            let proof_keys: alloc::borrow::Cow<'_, [Hash]> = if n > 16 {
+                                let mut sorted = keys.clone();
+                                sorted.sort_unstable();
+                                alloc::borrow::Cow::Owned(
+                                    sorted.into_iter().step_by(n / 4).collect(),
+                                )
                             } else {
-                                keys.clone()
+                                alloc::borrow::Cow::Borrowed(&keys)
                             };
                             assert_matches_oracle(
                                 &set,
