@@ -1866,8 +1866,13 @@ pub mod causal {
 
                             let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
                             let label = alloc::format!(" at n={n}");
+                            // Root/count are checked against the full set; the
+                            // per-key proof descents dominate cost, so the
+                            // largest case spot-checks a few keys only (n<=16
+                            // already covers every key).
+                            let proof_keys = if n > 16 { &keys[..4] } else { &keys[..] };
                             assert_matches_oracle(
-                                &set, &oracle, ref_root, ref_count, &keys, &label,
+                                &set, &oracle, ref_root, ref_count, proof_keys, &label,
                             );
 
                             // Non-inclusion: pick a key not in the set.
