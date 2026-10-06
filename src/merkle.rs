@@ -1870,9 +1870,13 @@ pub mod causal {
                             // per-key proof descents dominate cost, so the
                             // largest case spot-checks a few keys only (n<=16
                             // already covers every key).
-                            let proof_keys = if n > 16 { &keys[..4] } else { &keys[..] };
+                            let proof_keys: Vec<Hash> = if n > 16 {
+                                keys.iter().copied().step_by(n / 4).collect()
+                            } else {
+                                keys.clone()
+                            };
                             assert_matches_oracle(
-                                &set, &oracle, ref_root, ref_count, proof_keys, &label,
+                                &set, &oracle, ref_root, ref_count, &proof_keys, &label,
                             );
 
                             // Non-inclusion: pick a key not in the set.
