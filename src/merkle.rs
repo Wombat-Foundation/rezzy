@@ -1876,7 +1876,12 @@ pub mod causal {
                                 keys.clone()
                             };
                             assert_matches_oracle(
-                                &set, &oracle, ref_root, ref_count, &proof_keys, &label,
+                                &set,
+                                &oracle,
+                                ref_root,
+                                ref_count,
+                                &proof_keys,
+                                &label,
                             );
 
                             // Non-inclusion: pick a key not in the set.
