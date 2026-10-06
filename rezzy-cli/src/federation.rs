@@ -428,6 +428,19 @@ pub fn encrypt_key_file(input: &Path, output: &Path) -> Result<(), AppError> {
         return Err(err("empty passphrase".into()));
     }
     let sealed = crate::keyfile::seal(plain.as_bytes(), pw.as_bytes()).map_err(err)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(output)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.write_all(&sealed)?;
+    }
+    #[cfg(not(unix))]
     fs::write(output, sealed)?;
     Ok(())
 }

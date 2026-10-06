@@ -18,9 +18,9 @@ const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = MAGIC.len() + 12 + SALT_LEN + NONCE_LEN;
 /// Upper bounds on header-declared KDF cost, so a hostile file cannot force
 /// a huge allocation before authentication.
-const MAX_M_COST_KIB: u32 = 1 << 21;
-const MAX_T_COST: u32 = 64;
-const MAX_LANES: u32 = 16;
+const MAX_M_COST_KIB: u32 = 64 * 1024;
+const MAX_T_COST: u32 = 3;
+const MAX_LANES: u32 = 1;
 
 const DEFAULT_M_COST_KIB: u32 = 64 * 1024;
 const DEFAULT_T_COST: u32 = 3;
