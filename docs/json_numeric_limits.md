@@ -3,9 +3,10 @@
 How integers behave across the parse, permissive-canonical, and strict-canonical
 paths, where the boundaries are, and why they are where they are.
 
-The short version: **`Number` keeps the source spelling of integers, so they round-trip
-byte-exactly across an enormous range — but the range that is _canonical_ is
-much narrower, and anything above it must not be signed as a JSON number.**
+The short version: **`Number` keeps the source spelling of integers, so they
+round-trip byte-exactly across an enormous range — but the range that is
+_canonical_ is much narrower, and anything above it must not be signed as a JSON
+number.**
 
 ## The three ranges
 
@@ -125,8 +126,8 @@ Only integers keep their source spelling. A literal containing `.`, `e` or `E`
 is parsed as `f64` and re-rendered through `ryu`, so `1e2` becomes `100.0` and
 `1.0` stays `1.0`. Literals that overflow `f64` (`1e400`) are the exception and
 keep their spelling. Anything that parses a float, re-serializes it and then
-hashes or signs the result would see different bytes, so signing must go
-through the strict canonical writer, which rejects floats.
+hashes or signs the result would see different bytes, so signing must go through
+the strict canonical writer, which rejects floats.
 
 ## `-0`
 
@@ -153,9 +154,9 @@ or by `ruma`.
 ## Verifying changes to this behaviour
 
 Behaviour in the tables above was first established differentially against
-`simd-json` as an oracle. `simd-json` is no longer a dependency of the
-workspace (only of `benches/`), so the behaviour is now pinned by explicit
-tests in `src/basespec/rezzy_types.rs` and `rezzy-json/src/lib.rs`.
+`simd-json` as an oracle. `simd-json` is no longer a dependency of the workspace
+(only of `benches/`), so the behaviour is now pinned by explicit tests in
+`src/basespec/rezzy_types.rs` and `rezzy-json/src/lib.rs`.
 
 A caution learned the hard way: **a golden corpus of realistic Matrix payloads
 detects none of this.** Real events carry `origin_server_ts` and depth integers

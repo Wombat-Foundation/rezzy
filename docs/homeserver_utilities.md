@@ -210,8 +210,9 @@ rezzy federation get-remote-dag --origin example.org \
 
 Signing keys are read from a passphrase-encrypted file (Argon2id +
 XChaCha20-Poly1305). Plaintext key files are rejected. Point at the file with
-`--signing-key`, `MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`,
-or `MATRIX_SERVER_SIGNING_KEY`.
+`--signing-key`,
+`MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`, or
+`MATRIX_SERVER_SIGNING_KEY`.
 
 For legacy v3+ JSONL exports that omitted `event_id`, repair them using the
 room-version reference hash before aggregating:
@@ -248,5 +249,5 @@ rezzy federation request --origin your.server \
 
 The CLI prompts for the passphrase on the terminal. For unattended runs set
 `REZZY_KEY_PASSPHRASE` (weaker: visible to anything that can read the process
-environment). Each (origin, key file) is decrypted once per process; restart
-the CLI after rotating a key.
+environment). Each (origin, key file) is decrypted once per process; restart the
+CLI after rotating a key.
