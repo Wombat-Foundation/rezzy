@@ -322,7 +322,7 @@ fn test_checkpoint_partial_join_resolution() {
             let should_insert = match checkpoint_state.get(&key) {
                 Some(existing_id) => {
                     let existing_ev = bootstrap_events.iter().find(|e| e.event_id == *existing_id);
-                    existing_ev.map_or(true, |e| ev.depth > e.depth)
+                    existing_ev.is_none_or(|e| ev.depth > e.depth)
                 }
                 None => true,
             };
