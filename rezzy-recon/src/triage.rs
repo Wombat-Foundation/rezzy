@@ -639,6 +639,13 @@ mod tests {
             toggle_stratum(&mut remote, value);
         }
         assert_eq!(estimate_delta(&local, &remote), Ok(6));
+        assert_eq!(
+            estimate_strata(&local, &remote, MAX_STRATA_FACTOR_WORK),
+            Ok(StrataEstimate {
+                delta: 6,
+                low_confidence: false,
+            })
+        );
         assert_eq!(estimate_delta(&local, &local), Ok(0));
     }
 
