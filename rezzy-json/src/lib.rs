@@ -598,6 +598,25 @@ macro_rules! json {
     (@object $object:ident; $key:literal : $value:expr) => {
         $object.insert($crate::key($key), $crate::to_value($value));
     };
+    (@object $object:ident; & $key:ident : null $(, $($rest:tt)*)?) => {{
+        $object.insert($crate::key(&$key), $crate::Value::Null);
+        $crate::json!(@object $object; $($($rest)*)?);
+    }};
+    (@object $object:ident; & $key:ident : { $($inner:tt)* } $(, $($rest:tt)*)?) => {{
+        $object.insert($crate::key(&$key), $crate::json!({ $($inner)* }));
+        $crate::json!(@object $object; $($($rest)*)?);
+    }};
+    (@object $object:ident; & $key:ident : [ $($inner:tt)* ] $(, $($rest:tt)*)?) => {{
+        $object.insert($crate::key(&$key), $crate::json!([ $($inner)* ]));
+        $crate::json!(@object $object; $($($rest)*)?);
+    }};
+    (@object $object:ident; & $key:ident : $value:expr, $($rest:tt)*) => {{
+        $object.insert($crate::key(&$key), $crate::to_value($value));
+        $crate::json!(@object $object; $($rest)*);
+    }};
+    (@object $object:ident; & $key:ident : $value:expr) => {
+        $object.insert($crate::key(&$key), $crate::to_value($value));
+    };
     ($value:expr) => { $crate::to_value($value) };
 }
 
@@ -2572,6 +2591,16 @@ mod tests {
         assert_eq!(
             write_string_pretty(&value).unwrap(),
             "{\n  \"a\": [\n    1,\n    {\n      \"b\": \"x\\n\"\n    }\n  ],\n  \"z\": true\n}"
+        );
+    }
+
+    #[test]
+    fn json_macro_accepts_expression_object_keys() {
+        let user_id = String::from("@alice:example.com");
+        let value = crate::json!({ &user_id: { "ts": 12345 } });
+        assert_eq!(
+            write_string_value(&value).unwrap(),
+            r#"{"@alice:example.com":{"ts":12345}}"#
         );
     }
 
