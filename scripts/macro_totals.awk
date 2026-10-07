@@ -18,7 +18,7 @@ function num(s) { gsub(/_/, "", s); return s + 0 }
 	sub(/^macro-stats +/, "", name)
 	sub(/ +[0-9_]+ +[0-9_]+ +[0-9_.]+ +[0-9_]+ +[0-9_.]+ *$/, "", name)
 	if (name ~ /^#\[derive/) kind = "derives"
-	else if (name ~ /^(::|alloc::|core::|std::)/ || name ~ /^(vec|stringify|matches|write|assert|assert_eq|debug_assert|debug_assert_eq|panic|cfg|format)!$/) kind = "std/external"
+	else if (name ~ /^(::|alloc::|core::|std::)/ || name ~ /^(vec|stringify|matches|write|assert|assert_eq|debug_assert|debug_assert_eq|panic|unreachable|cfg|format)!$/) kind = "std/external"
 	else kind = "crate macros"
 	u[kind] += uses; l[kind] += lines; b[kind] += bytes
 	tu += uses; tl += lines; tb += bytes
