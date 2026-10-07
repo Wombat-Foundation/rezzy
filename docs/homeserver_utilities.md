@@ -238,8 +238,8 @@ Create the encrypted file from a plaintext `ed25519:<id> <seed>` line, then
 delete the plaintext:
 
 ```sh
-rezzy federation encrypt-key --input plain.key --output your.server.key
-shred -u plain.key
+rezzy federation encrypt-key --input plain.key --output your.server.key && \
+  shred -u plain.key
 
 rezzy federation request --origin your.server \
   --signing-key your.server.key \

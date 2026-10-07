@@ -661,7 +661,10 @@ fn base_url(destination: &str) -> String {
     }
 }
 
-/// Send one signed federation request. Keyring values are cached per process.
+/// Send one signed federation request using a passphrase-encrypted signing key
+/// file. The key file is resolved from `key_path` or the
+/// `MATRIX_SERVER_SIGNING_KEY_<DOMAIN>` / `MATRIX_SERVER_SIGNING_KEY`
+/// environment variables and cached per process.
 ///
 /// # Errors
 /// Returns an error if credentials cannot be loaded or the signed request fails.

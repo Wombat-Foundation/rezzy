@@ -36,6 +36,7 @@ check:	##H Cargo check and code dupe
 
 .PHONY: macro
 macro: ##H See macro expansion costs
+	set -o pipefail; \
 	$(CARGO) +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
 
 
