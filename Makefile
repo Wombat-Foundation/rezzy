@@ -43,7 +43,7 @@ macro: ##H See macro expansion costs
 .PHONY: lint
 lint: ##H Run all linters
 	-shellcheck $(LINT_LOCS_SH)
-	$(CARGO) clippy --all-targets --all-features
+	$(CARGO) clippy --all-targets --all-features $(filter --locked,$(CARGO_FEATURE_ARGS))
 
 .PHONY: fix
 fix:	##H Clippy auto-fix (per-package; workspace-wide --fix silently drops fixes)
