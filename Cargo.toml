@@ -70,7 +70,7 @@ members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 [workspace.package]
 version = "0.6.0-rc.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.87"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"

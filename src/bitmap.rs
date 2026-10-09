@@ -49,7 +49,7 @@ fn empty_words() -> Words {
 }
 
 fn test_bit(words: &[u64; WORDS], lo: u16) -> bool {
-    words[usize::from(lo >> 6)] >> (lo & 63) & 1 != 0
+    (words[usize::from(lo >> 6)] >> (lo & 63)) & 1 != 0
 }
 
 fn set_bit(words: &mut [u64; WORDS], lo: u16) -> bool {

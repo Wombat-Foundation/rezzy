@@ -20,9 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - rust: "1.88.0"
+          - rust: "1.87.0"
             label: "MSRV (default features)"
-          - rust: "1.88.0"
+          - rust: "1.87.0"
             label: "cli feature"
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
           rustc --version
           cargo --version
 
-      # rustc 1.88.0 is the workspace MSRV; both matrix rows share it and are
+      # rustc 1.87.0 is the workspace MSRV; both matrix rows share it and are
       # distinguished by `matrix.label`, not `matrix.rust`.
       - name: Lint (default features)
         if: matrix.label == 'MSRV (default features)'
