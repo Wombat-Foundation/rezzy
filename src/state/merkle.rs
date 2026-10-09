@@ -9,7 +9,7 @@ use alloc::{collections::BTreeMap, string::ToString, vec::Vec};
 use crate::merkle::hash_parts;
 use crate::state::at::SharedState;
 
-/// A SHA3-256 digest used for state-map keys, leaves, and internal nodes.
+/// A SHA-256 digest used for state-map keys, leaves, and internal nodes.
 pub type Hash = [u8; 32];
 
 /// The fixed bit depth of the resolved-state sparse Merkle map.

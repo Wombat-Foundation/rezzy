@@ -86,7 +86,6 @@ hashbrown = { version = "0.17", default-features = false, features = ["default-h
 roaring = { version = "0.11", default-features = false }
 ryu = { version = "1.0", default-features = false }
 sha2 = { version = "0.11", default-features = false }
-sha3 = { version = "0.12", default-features = false }
 
 # CLI-only
 clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
@@ -179,7 +178,6 @@ blake3.workspace = true
 hashbrown.workspace = true
 roaring.workspace = true
 sha2.workspace = true
-sha3.workspace = true
 
 # Optional
 clap = { workspace = true, optional = true }
