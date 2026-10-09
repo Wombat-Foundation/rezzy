@@ -3,11 +3,12 @@
 //! `roaring` is a comparison baseline only; the library itself has no such
 //! dependency. Every case checks both implementations agree before timing.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::time::Instant;
 
 use rezzy::bitmap::Bitmap;
-use roaring::RoaringBitmap;
+use roaring::{RoaringBitmap, RoaringTreemap};
 
 struct Rng(u64);
 
@@ -116,6 +117,252 @@ fn dag_case(n: u32, fanout: u32, iters: u32) {
     );
 }
 
+/// Benchmark-only wide sets: the high bits key a `BTreeMap`, the low 32 bits
+/// live in a `Bitmap`. Not part of the library API.
+macro_rules! wide_set {
+    ($name:ident, $value:ty, $key:ty) => {
+        #[derive(Clone, Default, PartialEq, Eq)]
+        struct $name(BTreeMap<$key, Bitmap>);
+
+        impl $name {
+            fn insert(&mut self, v: $value) {
+                self.0
+                    .entry((v >> 32) as $key)
+                    .or_default()
+                    .insert(v as u32);
+            }
+            fn contains(&self, v: $value) -> bool {
+                self.0
+                    .get(&((v >> 32) as $key))
+                    .is_some_and(|b| b.contains(v as u32))
+            }
+            fn len(&self) -> u64 {
+                self.0.values().map(Bitmap::len).sum()
+            }
+            fn iter(&self) -> impl Iterator<Item = $value> + '_ {
+                self.0.iter().flat_map(|(hi, b)| {
+                    let hi = <$value>::from(*hi) << 32;
+                    b.iter().map(move |lo| hi | <$value>::from(lo))
+                })
+            }
+            fn or(&self, o: &Self) -> Self {
+                let mut out = self.clone();
+                for (k, b) in &o.0 {
+                    *out.0.entry(*k).or_default() |= b;
+                }
+                out
+            }
+            fn and(&self, o: &Self) -> Self {
+                let mut out = Self::default();
+                for (k, b) in &self.0 {
+                    if let Some(c) = o.0.get(k) {
+                        let r = b & c;
+                        if !r.is_empty() {
+                            out.0.insert(*k, r);
+                        }
+                    }
+                }
+                out
+            }
+            fn sub(&self, o: &Self) -> Self {
+                let mut out = Self::default();
+                for (k, b) in &self.0 {
+                    let r = o.0.get(k).map_or_else(|| b.clone(), |c| b.clone() - c);
+                    if !r.is_empty() {
+                        out.0.insert(*k, r);
+                    }
+                }
+                out
+            }
+        }
+
+        impl FromIterator<$value> for $name {
+            fn from_iter<I: IntoIterator<Item = $value>>(it: I) -> Self {
+                let mut s = Self::default();
+                for v in it {
+                    s.insert(v);
+                }
+                s
+            }
+        }
+    };
+}
+
+wide_set!(Bitmap64, u64, u32);
+wide_set!(Bitmap128, u128, u64);
+
+/// `n` values spread over `groups` distinct high-bit groups, `per_mille` dense
+/// within each group's first 200k low values.
+fn wide_values(rng: &mut Rng, groups: u32, per_mille: u64, hi_stride: u128) -> Vec<u128> {
+    let mut out = Vec::new();
+    for g in 0..groups {
+        let base = (u128::from(g) * hi_stride) << 32;
+        out.extend(
+            values(rng, 200_000, per_mille)
+                .into_iter()
+                .map(|v| base | u128::from(v)),
+        );
+    }
+    out
+}
+
+fn wide_cases(rng: &mut Rng) {
+    println!("\nWide sets (high bits in a BTreeMap, low 32 bits in Bitmap)");
+    for &(groups, pm, label) in &[
+        (4u32, 5u64, "sparse"),
+        (4, 60, "boundary"),
+        (4, 500, "dense"),
+    ] {
+        let a = wide_values(rng, groups, pm, 3);
+        let b = wide_values(rng, groups, pm, 2);
+        let iters = 20;
+
+        // u64 vs RoaringTreemap.
+        let a64: Vec<u64> = a.iter().map(|v| *v as u64).collect();
+        let b64: Vec<u64> = b.iter().map(|v| *v as u64).collect();
+        let (wa, wb): (Bitmap64, Bitmap64) =
+            (a64.iter().copied().collect(), b64.iter().copied().collect());
+        let (ta, tb): (RoaringTreemap, RoaringTreemap) =
+            (a64.iter().copied().collect(), b64.iter().copied().collect());
+        assert_eq!(wa.len(), ta.len());
+        assert!(wa.iter().eq(ta.iter()));
+        assert!(wa.or(&wb).iter().eq((&ta | &tb).iter()));
+        assert!(wa.and(&wb).iter().eq((&ta & &tb).iter()));
+        assert!(wa.sub(&wb).iter().eq((&ta - &tb).iter()));
+        row(
+            &format!("u64 build {label} n={}", a64.len()),
+            iters,
+            || {
+                black_box(a64.iter().copied().collect::<Bitmap64>());
+            },
+            || {
+                black_box(a64.iter().copied().collect::<RoaringTreemap>());
+            },
+        );
+        row(
+            &format!("u64 or {label}"),
+            iters,
+            || {
+                black_box(wa.or(&wb));
+            },
+            || {
+                black_box(&ta | &tb);
+            },
+        );
+        row(
+            &format!("u64 and {label}"),
+            iters,
+            || {
+                black_box(wa.and(&wb));
+            },
+            || {
+                black_box(&ta & &tb);
+            },
+        );
+        row(
+            &format!("u64 sub {label}"),
+            iters,
+            || {
+                black_box(wa.sub(&wb));
+            },
+            || {
+                black_box(&ta - &tb);
+            },
+        );
+        row(
+            &format!("u64 iterate {label}"),
+            iters,
+            || {
+                black_box(wa.iter().fold(0u64, |s, v| s.wrapping_add(v)));
+            },
+            || {
+                black_box(ta.iter().fold(0u64, |s, v| s.wrapping_add(v)));
+            },
+        );
+        row(
+            &format!("u64 contains x{} {label}", b64.len()),
+            iters,
+            || {
+                black_box(b64.iter().filter(|v| wa.contains(**v)).count());
+            },
+            || {
+                black_box(b64.iter().filter(|v| ta.contains(**v)).count());
+            },
+        );
+
+        // u128 vs BTreeSet<u128> (roaring has no u128 type).
+        let (xa, xb): (Bitmap128, Bitmap128) =
+            (a.iter().copied().collect(), b.iter().copied().collect());
+        let (sa, sb): (BTreeSet<u128>, BTreeSet<u128>) =
+            (a.iter().copied().collect(), b.iter().copied().collect());
+        assert_eq!(xa.len(), sa.len() as u64);
+        assert!(xa.iter().eq(sa.iter().copied()));
+        assert!(xa.or(&xb).iter().eq(sa.union(&sb).copied()));
+        assert!(xa.and(&xb).iter().eq(sa.intersection(&sb).copied()));
+        assert!(xa.sub(&xb).iter().eq(sa.difference(&sb).copied()));
+        row(
+            &format!("u128 build {label} n={} (vs BTreeSet)", a.len()),
+            iters,
+            || {
+                black_box(a.iter().copied().collect::<Bitmap128>());
+            },
+            || {
+                black_box(a.iter().copied().collect::<BTreeSet<u128>>());
+            },
+        );
+        row(
+            &format!("u128 or {label} (vs BTreeSet)"),
+            iters,
+            || {
+                black_box(xa.or(&xb));
+            },
+            || {
+                black_box(sa.union(&sb).copied().collect::<BTreeSet<u128>>());
+            },
+        );
+        row(
+            &format!("u128 and {label} (vs BTreeSet)"),
+            iters,
+            || {
+                black_box(xa.and(&xb));
+            },
+            || {
+                black_box(sa.intersection(&sb).copied().collect::<BTreeSet<u128>>());
+            },
+        );
+        row(
+            &format!("u128 sub {label} (vs BTreeSet)"),
+            iters,
+            || {
+                black_box(xa.sub(&xb));
+            },
+            || {
+                black_box(sa.difference(&sb).copied().collect::<BTreeSet<u128>>());
+            },
+        );
+        row(
+            &format!("u128 iterate {label} (vs BTreeSet)"),
+            iters,
+            || {
+                black_box(xa.iter().fold(0u128, |s, v| s.wrapping_add(v)));
+            },
+            || {
+                black_box(sa.iter().fold(0u128, |s, v| s.wrapping_add(*v)));
+            },
+        );
+        row(
+            &format!("u128 contains x{} {label} (vs BTreeSet)", b.len()),
+            iters,
+            || {
+                black_box(b.iter().filter(|v| xa.contains(**v)).count());
+            },
+            || {
+                black_box(b.iter().filter(|v| sa.contains(*v)).count());
+            },
+        );
+    }
+}
+
 /// Entry point for the bitmap comparison benchmark.
 pub fn run() {
     println!("Bitmap vs roaring (ratio < 1 means Bitmap is faster)");
@@ -198,4 +445,6 @@ pub fn run() {
     dag_case(2_000, 2, 5);
     dag_case(20_000, 2, 3);
     dag_case(20_000, 4, 3);
+
+    wide_cases(&mut rng);
 }
