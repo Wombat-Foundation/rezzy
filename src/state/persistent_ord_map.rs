@@ -49,6 +49,16 @@ impl<K: Clone, V: Clone> Clone for Node<K, V> {
 }
 
 impl<K, V> Internal<K, V> {
+    /// Unlinks child `idx` (and its separator) once it has become empty.
+    fn drop_if_empty(&mut self, idx: usize) {
+        if self.children[idx].is_empty() {
+            self.children.remove(idx);
+            if !self.keys.is_empty() {
+                self.keys.remove(idx.saturating_sub(1));
+            }
+        }
+    }
+
     /// Index of the child whose key range contains `key`.
     fn child_index<Q>(&self, key: &Q) -> usize
     where
@@ -410,11 +420,7 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        // Avoid copying the path when there is nothing to remove.
-        if !self.contains_key(key) {
-            return None;
-        }
-        let removed = remove_rec(&mut self.root, key);
+        let removed = remove_rec(&mut self.root, key)?;
         self.len = self.len.checked_sub(1).expect("map length underflow");
 
         loop {
@@ -490,29 +496,65 @@ where
 }
 
 /// Removes `key`, which the caller has already checked is present.
-fn remove_rec<K, V, Q>(node: &mut Arc<Node<K, V>>, key: &Q) -> V
+/// Removes `key` in a single descent, copying the path only if the key exists.
+///
+/// An unshared node is edited in place (nothing is modified until the leaf
+/// confirms the key is present); a shared node is rebuilt by `remove_copied`,
+/// which allocates only on a hit.
+fn remove_rec<K, V, Q>(node: &mut Arc<Node<K, V>>, key: &Q) -> Option<V>
 where
     K: Ord + Clone + Borrow<Q>,
     V: Clone,
     Q: Ord + ?Sized,
 {
-    match Arc::make_mut(node) {
+    let Some(unique) = Arc::get_mut(node) else {
+        let (rebuilt, removed) = remove_copied(node, key)?;
+        *node = Arc::new(rebuilt);
+        return Some(removed);
+    };
+    match unique {
         Node::Leaf(entries) => {
             let i = entries
                 .binary_search_by(|(k, _)| Borrow::<Q>::borrow(k).cmp(key))
-                .expect("key checked present before removal");
-            entries.remove(i).1
+                .ok()?;
+            Some(entries.remove(i).1)
         }
         Node::Internal(internal) => {
             let idx = internal.child_index(key);
-            let removed = remove_rec(&mut internal.children[idx], key);
-            if internal.children[idx].is_empty() {
-                internal.children.remove(idx);
-                if !internal.keys.is_empty() {
-                    internal.keys.remove(idx.saturating_sub(1));
-                }
-            }
-            removed
+            let removed = remove_rec(&mut internal.children[idx], key)?;
+            internal.drop_if_empty(idx);
+            Some(removed)
+        }
+    }
+}
+
+/// Returns a copy of shared `node` without `key`, or `None` if it is absent.
+fn remove_copied<K, V, Q>(node: &Node<K, V>, key: &Q) -> Option<(Node<K, V>, V)>
+where
+    K: Ord + Clone + Borrow<Q>,
+    V: Clone,
+    Q: Ord + ?Sized,
+{
+    match node {
+        Node::Leaf(entries) => {
+            let i = entries
+                .binary_search_by(|(k, _)| Borrow::<Q>::borrow(k).cmp(key))
+                .ok()?;
+            let mut rest = Vec::with_capacity(entries.len().saturating_sub(1));
+            rest.extend_from_slice(&entries[..i]);
+            rest.extend_from_slice(&entries[i.saturating_add(1)..]);
+            Some((Node::Leaf(rest), entries[i].1.clone()))
+        }
+        Node::Internal(internal) => {
+            let idx = internal.child_index(key);
+            let (child, removed) = remove_copied(&internal.children[idx], key)?;
+            let mut copy = Internal {
+                keys: internal.keys.clone(),
+                children: internal.children.clone(),
+            };
+            copy.children[idx] = Arc::new(child);
+            copy.drop_if_empty(idx);
+            Some((Node::Internal(copy), removed))
         }
     }
 }
