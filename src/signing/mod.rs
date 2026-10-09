@@ -36,6 +36,7 @@ use std::string::String;
 use std::string::ToString;
 
 use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
+use crate::errors::SignError;
 
 #[cfg(all(test, feature = "signing-consensus"))]
 use crate::basespec::rezzy_types::canonical_redacted_json;
@@ -70,13 +71,13 @@ pub trait SignatureVerifier {
     /// # Errors
     /// Returns `Err` when the key is unknown, the signature is malformed, or
     /// the signature does not verify.
-    fn verify(
+    fn verify<'a>(
         &self,
-        server_name: &str,
-        key_id: &str,
+        server_name: &'a str,
+        key_id: &'a str,
         message: &[u8],
         signature: &[u8],
-    ) -> Result<(), String>;
+    ) -> Result<(), SignError<'a>>;
 }
 
 /// Extracts the expected homeserver domain that should sign `value` in
@@ -117,21 +118,17 @@ pub(crate) fn expected_event_signer<'a>(value: &'a Value, room_version: &str) ->
 /// Returns `Err` when the event carries no `signatures` object, when a
 /// signature present for a known key fails to verify, or when its base64
 /// encoding is malformed.
-pub fn verify_event_signatures(
-    value: &Value,
-    room_version: &str,
+pub fn verify_event_signatures<'a>(
+    value: &'a Value,
+    room_version: &'a str,
     verifier: &dyn SignatureVerifier,
-) -> Result<(), String> {
+) -> Result<(), SignError<'a>> {
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
-        return Err(format!(
-            "unsupported room version {room_version}: cannot verify signatures over an undefined format"
-        ));
+        return Err(SignError::UnsupportedRoomVersion { room_version });
     }
 
     let Some(origin) = expected_event_signer(value, room_version) else {
-        return Err(std::string::String::from(
-            "could not derive expected event signer from event_id or sender",
-        ));
+        return Err(SignError::NoExpectedSigner);
     };
     verify_event_signatures_from_server(value, room_version, origin, verifier)
 }
@@ -144,19 +141,19 @@ pub fn verify_event_signatures(
 ///
 /// # Errors
 /// Returns `Err` if the expected server has no supported valid signature.
-pub fn verify_event_signatures_from_server(
-    value: &Value,
-    room_version: &str,
-    expected_server: &str,
+pub fn verify_event_signatures_from_server<'a>(
+    value: &'a Value,
+    room_version: &'a str,
+    expected_server: &'a str,
     verifier: &dyn SignatureVerifier,
-) -> Result<(), String> {
+) -> Result<(), SignError<'a>> {
     use base64::Engine as _;
 
     let message = try_canonical_redacted_json(value, room_version)
-        .map_err(|e| format!("failed to compute canonical redacted JSON: {e}"))?
+        .map_err(SignError::CanonicalRedacted)?
         .into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
-        return Err(std::string::String::from("event has no signatures object"));
+        return Err(SignError::NoSignaturesObject);
     };
     let mut verified_any = false;
     for (server, keys) in signatures {
@@ -172,19 +169,23 @@ pub fn verify_event_signatures_from_server(
             }
             verified_any = true;
             let Some(sig_str) = sig.as_str() else {
-                return Err(format!("signature for {server}/{key_id} is not a string"));
+                return Err(SignError::SignatureNotAString { server, key_id });
             };
             let sig_bytes = base64::engine::general_purpose::STANDARD_NO_PAD
                 .decode(sig_str)
-                .map_err(|e| format!("bad base64 for {server}/{key_id}: {e}"))?;
+                .map_err(|source| SignError::BadSignatureBase64 {
+                    server,
+                    key_id,
+                    source,
+                })?;
             verifier.verify(server, key_id, &message, &sig_bytes)?;
         }
     }
 
     if !verified_any {
-        return Err(format!(
-            "no supported signature from required server {expected_server}"
-        ));
+        return Err(SignError::NoSupportedSignature {
+            server: expected_server,
+        });
     }
     Ok(())
 }
@@ -254,7 +255,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
 
     fn verify_signatures(&self, event_id: &Id) -> Result<(), String> {
         let value = self.event(event_id)?;
-        verify_event_signatures(value, &self.room_version, &self.verifier)
+        verify_event_signatures(value, &self.room_version, &self.verifier).map_err(String::from)
     }
 
     fn verify_join_authorised_via_users_server(
@@ -267,6 +268,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .ok_or_else(|| format!("invalid authorising user ID {authorising_user}"))?;
         let value = self.event(event_id)?;
         verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
+            .map_err(String::from)
     }
 
     fn verify_content_hash(&self, event_id: &Id) -> Result<(), String> {

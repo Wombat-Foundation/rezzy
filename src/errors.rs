@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Typed zero-heap errors for the hash and canonicalization layer.
+//! Typed zero-heap errors for the hash, canonicalization, and signature
+//! verification layers.
 //!
 //! [`HashError`] replaces the `String` error payloads previously returned by
-//! the reference-hash, content-hash, and canonical-redaction functions. Every
-//! variant carries only borrowed or inline data, so constructing and
-//! rendering an error never allocates. Display rendering is byte-compatible
-//! with the old `format!` messages.
+//! the reference-hash, content-hash, and canonical-redaction functions, and
+//! [`SignError`] those of signature verification. Every variant carries only
+//! borrowed or inline data, so constructing and rendering an error never
+//! allocates. Display rendering is byte-compatible with the old `format!`
+//! messages.
 
 use base64::EncodeSliceError;
 use core::fmt;
@@ -149,6 +151,113 @@ impl fmt::Display for HashError<'_> {
 /// converted to structured error types in a later phase.
 impl From<HashError<'_>> for String {
     fn from(err: HashError<'_>) -> Self {
+        err.to_string()
+    }
+}
+
+/// Errors returned by signature verification and key provisioning.
+///
+/// Like [`HashError`], payloads are borrowed (`&'a str` from the caller's
+/// server/key/room-version strings) or inline (embedded
+/// [`HashError`]/[`base64::DecodeError`]/`ed25519_zebra::Error` values), so
+/// building and displaying an error performs no allocation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SignError<'a> {
+    /// The room version has no defined signature format.
+    UnsupportedRoomVersion {
+        /// The rejected room version.
+        room_version: &'a str,
+    },
+    /// The event's expected signer could not be derived from `event_id`/`sender`.
+    NoExpectedSigner,
+    /// Canonical redaction of the signing envelope failed.
+    CanonicalRedacted(HashError<'a>),
+    /// The event carries no `signatures` object.
+    NoSignaturesObject,
+    /// A signature value is not a string.
+    SignatureNotAString {
+        /// The server the signature is claimed from.
+        server: &'a str,
+        /// The claimed key ID.
+        key_id: &'a str,
+    },
+    /// A signature is not valid base64.
+    BadSignatureBase64 {
+        /// The server the signature is claimed from.
+        server: &'a str,
+        /// The claimed key ID.
+        key_id: &'a str,
+        /// The base64 decode failure.
+        source: base64::DecodeError,
+    },
+    /// No supported signature from the required server.
+    NoSupportedSignature {
+        /// The server whose signature was required.
+        server: &'a str,
+    },
+    /// The event carries no signature this verifier holds a key for.
+    NoSupportedSignaturesPresent,
+    /// The raw public key bytes are not a valid Ed25519 key.
+    #[cfg(feature = "signing-consensus")]
+    InvalidVerificationKey(ed25519_zebra::Error),
+    /// The verifier holds no key for this `(server_name, key_id)`.
+    NoPublicKey {
+        /// The server whose key was requested.
+        server_name: &'a str,
+        /// The requested key ID.
+        key_id: &'a str,
+    },
+    /// A signature was not exactly 64 bytes.
+    SignatureLength,
+    /// Ed25519 signature verification failed.
+    #[cfg(feature = "signing-consensus")]
+    SignatureVerifyFailed(ed25519_zebra::Error),
+}
+
+impl fmt::Display for SignError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedRoomVersion { room_version } => write!(
+                f,
+                "unsupported room version {room_version}: cannot verify signatures over an undefined format"
+            ),
+            Self::NoExpectedSigner => {
+                f.write_str("could not derive expected event signer from event_id or sender")
+            }
+            Self::CanonicalRedacted(err) => {
+                write!(f, "failed to compute canonical redacted JSON: {err}")
+            }
+            Self::NoSignaturesObject => f.write_str("event has no signatures object"),
+            Self::SignatureNotAString { server, key_id } => {
+                write!(f, "signature for {server}/{key_id} is not a string")
+            }
+            Self::BadSignatureBase64 {
+                server,
+                key_id,
+                source,
+            } => write!(f, "bad base64 for {server}/{key_id}: {source}"),
+            Self::NoSupportedSignature { server } => {
+                write!(f, "no supported signature from required server {server}")
+            }
+            Self::NoSupportedSignaturesPresent => {
+                f.write_str("no supported signatures present on event")
+            }
+            #[cfg(feature = "signing-consensus")]
+            Self::InvalidVerificationKey(err) => write!(f, "{err:?}"),
+            Self::NoPublicKey { server_name, key_id } => {
+                write!(f, "no public key for {server_name}/{key_id}")
+            }
+            Self::SignatureLength => f.write_str("signature must be 64 bytes"),
+            #[cfg(feature = "signing-consensus")]
+            Self::SignatureVerifyFailed(err) => write!(f, "signature verification failed: {err:?}"),
+        }
+    }
+}
+
+/// Transitional bridge: the signing `EventVerifier` impls still spell their
+/// errors `String` until the `VerifyError` trait conversion.
+impl From<SignError<'_>> for String {
+    fn from(err: SignError<'_>) -> Self {
         err.to_string()
     }
 }
