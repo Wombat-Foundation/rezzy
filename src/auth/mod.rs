@@ -206,17 +206,69 @@ pub enum AuthError<'a, Id = String> {
 }
 
 impl<Id: fmt::Display> fmt::Display for AuthError<'_, Id> {
-    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthError::NotMember { .. }
+            | AuthError::BannedUser { .. }
+            | AuthError::InvalidStateKey { .. }
+            | AuthError::SelfTarget { .. }
+            | AuthError::ThirdPartyInviteSenderMismatch { .. }
+            | AuthError::TpiIssuerSenderMismatch { .. }
+            | AuthError::UnknownMembership { .. } => self.fmt_membership(f),
+            AuthError::InsufficientPowerLevel { .. }
+            | AuthError::NonIntegerPowerLevel { .. }
+            | AuthError::NonIntegerMapPowerLevel { .. }
+            | AuthError::UsersContainsCreator { .. }
+            | AuthError::UsersContainsAdditionalCreator { .. }
+            | AuthError::InvalidUsersKey { .. } => self.fmt_power_levels(f),
+            AuthError::CannotChangeEvents { .. }
+            | AuthError::CannotSetEvents { .. }
+            | AuthError::CannotChangeNotifications { .. }
+            | AuthError::CannotSetNotifications { .. }
+            | AuthError::CannotChangeUsers { .. }
+            | AuthError::CannotSetUsers { .. }
+            | AuthError::CannotChangeScalar { .. }
+            | AuthError::CannotSetScalar { .. } => self.fmt_power_level_changes(f),
+            AuthError::CreateWithPrevEvents
+            | AuthError::MissingAuthEvent(_)
+            | AuthError::MissingCreate
+            | AuthError::InvalidSyntax(_)
+            | AuthError::Verification(_)
+            | AuthError::IncompleteAuthEvents { .. }
+            | AuthError::ForeignRoomEvent { .. }
+            | AuthError::RejectedAuthEvent { .. }
+            | AuthError::RejectedAuthStateEvent { .. }
+            | AuthError::PrevStateEventsTooLong { .. }
+            | AuthError::UnexpectedAuthEventType { .. } => self.fmt_auth_events(f),
+            AuthError::CrossDomainSender { sender } => {
+                write!(
+                    f,
+                    "cross-domain event from sender {sender} rejected: room has m.federate=false"
+                )
+            }
+            AuthError::CreateRoomIdDomainMismatch { declared, sender } => {
+                write!(
+                    f,
+                    "m.room.create room_id {declared} domain does not match sender {sender} domain"
+                )
+            }
+            AuthError::RoomIdNotAcceptedCreate { declared } => {
+                write!(
+                    f,
+                    "room_id {declared} is not the event ID of an accepted m.room.create event"
+                )
+            }
+        }
+    }
+}
+
+impl<Id: fmt::Display> AuthError<'_, Id> {
+    /// `Display` arms for membership/state-key rejections.
+    fn fmt_membership(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AuthError::NotMember { sender, .. } => {
                 write!(f, "sender {sender} is not joined")
             }
-            AuthError::InsufficientPowerLevel {
-                required,
-                actual,
-                event_type,
-            } => write!(f, "PL {actual} < {required} for {event_type}"),
             AuthError::BannedUser { sender, .. } => {
                 write!(f, "sender {sender} is banned")
             }
@@ -226,10 +278,7 @@ impl<Id: fmt::Display> fmt::Display for AuthError<'_, Id> {
             AuthError::SelfTarget { sender } => {
                 write!(f, "invalid state_key: {sender} (expected != {sender})")
             }
-            AuthError::ThirdPartyInviteSenderMismatch {
-                target_user,
-                mxid,
-            } => {
+            AuthError::ThirdPartyInviteSenderMismatch { target_user, mxid } => {
                 write!(
                     f,
                     "invalid state_key: {mxid} (expected mxid == {target_user})"
@@ -244,78 +293,21 @@ impl<Id: fmt::Display> fmt::Display for AuthError<'_, Id> {
                     "invalid state_key: {event_sender} (expected sender == {tpi_sender})"
                 )
             }
-            AuthError::CreateWithPrevEvents => {
-                write!(f, "m.room.create has prev_events")
+            AuthError::UnknownMembership { membership } => {
+                write!(f, "unknown membership: {membership}")
             }
-            AuthError::MissingAuthEvent(id) => {
-                write!(f, "missing auth event: {id}")
-            }
-            AuthError::MissingCreate => {
-                write!(f, "m.room.create is missing from state")
-            }
-            AuthError::InvalidSyntax(reason) => {
-                write!(f, "invalid syntax: {reason}")
-            }
-            AuthError::Verification(err) => {
-                write!(f, "invalid syntax: {err}")
-            }
-            AuthError::IncompleteAuthEvents {
-                event_type,
-                state_key,
-            } => {
-                write!(
-                    f,
-                    "auth_events omits required ({event_type}, {state_key:?})"
-                )
-            }
-            AuthError::ForeignRoomEvent {
-                event_id,
-                auth_event_id,
-                expected,
+            _ => Err(fmt::Error),
+        }
+    }
+
+    /// `Display` arms for `m.room.power_levels` value/key validation.
+    fn fmt_power_levels(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthError::InsufficientPowerLevel {
+                required,
                 actual,
-            } => match actual {
-                Some(actual) => write!(
-                    f,
-                    "event {event_id} in room {expected} cites auth event {auth_event_id} from foreign room {actual}"
-                ),
-                None => write!(
-                    f,
-                    "event {event_id} in room {expected} cites auth event {auth_event_id} with no room_id"
-                ),
-            },
-            AuthError::RejectedAuthEvent {
-                event_id,
-                auth_event_id,
-            } => {
-                write!(
-                    f,
-                    "event {event_id} cites rejected auth event {auth_event_id}"
-                )
-            }
-            AuthError::RejectedAuthStateEvent {
                 event_type,
-                state_key,
-            } => {
-                write!(
-                    f,
-                    "rejected auth state event {event_type}/{state_key} must not be used"
-                )
-            }
-            AuthError::PrevStateEventsTooLong { max } => {
-                write!(
-                    f,
-                    "prev_state_events exceeds maximum allowed length of {max}"
-                )
-            }
-            AuthError::CrossDomainSender { sender } => {
-                write!(
-                    f,
-                    "cross-domain event from sender {sender} rejected: room has m.federate=false"
-                )
-            }
-            AuthError::UnexpectedAuthEventType { auth_type } => {
-                write!(f, "unexpected event type in auth_events: {auth_type}")
-            }
+            } => write!(f, "PL {actual} < {required} for {event_type}"),
             AuthError::NonIntegerPowerLevel { field } => {
                 write!(f, "m.room.power_levels {field} is not an integer")
             }
@@ -337,9 +329,13 @@ impl<Id: fmt::Display> fmt::Display for AuthError<'_, Id> {
             AuthError::InvalidUsersKey { user_id } => {
                 write!(f, "users key is not a valid user ID: {user_id}")
             }
-            AuthError::UnknownMembership { membership } => {
-                write!(f, "unknown membership: {membership}")
-            }
+            _ => Err(fmt::Error),
+        }
+    }
+
+    /// `Display` arms for Rule 10.x sender-PL change restrictions.
+    fn fmt_power_level_changes(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             AuthError::CannotChangeEvents {
                 key,
                 old_val,
@@ -420,18 +416,80 @@ impl<Id: fmt::Display> fmt::Display for AuthError<'_, Id> {
                     "cannot set {field} to {new_val}: exceeds sender PL {sender_pl}"
                 )
             }
-            AuthError::CreateRoomIdDomainMismatch { declared, sender } => {
+            _ => Err(fmt::Error),
+        }
+    }
+
+    /// `Display` arms for auth-events selection, chain, and syntax failures.
+    fn fmt_auth_events(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthError::CreateWithPrevEvents => {
+                write!(f, "m.room.create has prev_events")
+            }
+            AuthError::MissingAuthEvent(id) => {
+                write!(f, "missing auth event: {id}")
+            }
+            AuthError::MissingCreate => {
+                write!(f, "m.room.create is missing from state")
+            }
+            AuthError::InvalidSyntax(reason) => {
+                write!(f, "invalid syntax: {reason}")
+            }
+            AuthError::Verification(err) => {
+                write!(f, "invalid syntax: {err}")
+            }
+            AuthError::IncompleteAuthEvents {
+                event_type,
+                state_key,
+            } => {
                 write!(
                     f,
-                    "m.room.create room_id {declared} domain does not match sender {sender} domain"
+                    "auth_events omits required ({event_type}, {state_key:?})"
                 )
             }
-            AuthError::RoomIdNotAcceptedCreate { declared } => {
+            AuthError::ForeignRoomEvent {
+                event_id,
+                auth_event_id,
+                expected,
+                actual,
+            } => match actual {
+                Some(actual) => write!(
+                    f,
+                    "event {event_id} in room {expected} cites auth event {auth_event_id} from foreign room {actual}"
+                ),
+                None => write!(
+                    f,
+                    "event {event_id} in room {expected} cites auth event {auth_event_id} with no room_id"
+                ),
+            },
+            AuthError::RejectedAuthEvent {
+                event_id,
+                auth_event_id,
+            } => {
                 write!(
                     f,
-                    "room_id {declared} is not the event ID of an accepted m.room.create event"
+                    "event {event_id} cites rejected auth event {auth_event_id}"
                 )
             }
+            AuthError::RejectedAuthStateEvent {
+                event_type,
+                state_key,
+            } => {
+                write!(
+                    f,
+                    "rejected auth state event {event_type}/{state_key} must not be used"
+                )
+            }
+            AuthError::PrevStateEventsTooLong { max } => {
+                write!(
+                    f,
+                    "prev_state_events exceeds maximum allowed length of {max}"
+                )
+            }
+            AuthError::UnexpectedAuthEventType { auth_type } => {
+                write!(f, "unexpected event type in auth_events: {auth_type}")
+            }
+            _ => Err(fmt::Error),
         }
     }
 }
