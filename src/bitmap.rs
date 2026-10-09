@@ -16,6 +16,7 @@
 )]
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::iter::FromIterator;
@@ -189,6 +190,42 @@ impl Chunk {
         Self::from_words(key, merged).expect("union of non-empty chunks")
     }
 
+    /// Unions `other` into this chunk without replacing dense storage.
+    fn union_assign(&mut self, other: &Self) {
+        debug_assert_eq!(self.key, other.key);
+
+        match (&mut self.store, &other.store) {
+            (Store::Dense(a), Store::Dense(b)) => {
+                let mut added = 0;
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    let before = *x;
+                    *x |= y;
+                    added += (*x).count_ones() - before.count_ones();
+                }
+                self.len += added;
+            }
+            (Store::Dense(a), Store::Array(b)) => {
+                let mut added = 0;
+                for &x in b {
+                    added += u32::from(set_bit(a, x));
+                }
+                self.len += added;
+            }
+            (Store::Array(a), Store::Dense(b)) => {
+                let mut words = b.clone();
+                for &x in a.iter() {
+                    set_bit(&mut words, x);
+                }
+                let len = popcount(&words);
+                self.store = Store::Dense(words);
+                self.len = len;
+            }
+            (Store::Array(_), Store::Array(_)) => {
+                *self = self.union(other);
+            }
+        }
+    }
+
     fn intersection(&self, other: &Self) -> Option<Self> {
         let key = self.key;
         match (&self.store, &other.store) {
@@ -266,7 +303,7 @@ impl Chunk {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Bitmap {
     /// Non-empty chunks, strictly ascending by key.
-    chunks: Vec<Chunk>,
+    chunks: Vec<Arc<Chunk>>,
 }
 
 impl Bitmap {
@@ -310,15 +347,15 @@ impl Bitmap {
             },
         };
         if self.chunks.get(pos).is_some_and(|c| c.key == key) {
-            return self.chunks[pos].insert(lo);
+            return Arc::make_mut(&mut self.chunks[pos]).insert(lo);
         }
         self.chunks.insert(
             pos,
-            Chunk {
+            Arc::new(Chunk {
                 key,
                 len: 1,
                 store: Store::Array(alloc::vec![lo]),
-            },
+            }),
         );
         true
     }
@@ -333,25 +370,52 @@ impl Bitmap {
     }
 
     fn merge_with(&mut self, other: &Self, mode: Mode) {
+        if core::ptr::eq(self, other) {
+            if mode != Mode::Sub {
+                return;
+            }
+            self.chunks.clear();
+            return;
+        }
+        if other.is_empty() {
+            if mode == Mode::And {
+                self.chunks.clear();
+            }
+            return;
+        }
+        if self.is_empty() {
+            if mode == Mode::Or {
+                self.chunks.clone_from(&other.chunks);
+            }
+            return;
+        }
+
         let mine = core::mem::take(&mut self.chunks);
         let mut out = Vec::with_capacity(mine.len());
         let mut theirs = other.chunks.iter().peekable();
-        for chunk in mine {
+        for mut chunk in mine {
             while let Some(o) = theirs.next_if(|o| o.key < chunk.key) {
                 if mode == Mode::Or {
-                    out.push(o.clone());
+                    out.push(Arc::clone(o));
                 }
             }
             match (theirs.next_if(|o| o.key == chunk.key), mode) {
-                (Some(o), Mode::Or) => out.push(chunk.union(o)),
-                (Some(o), Mode::And) => out.extend(chunk.intersection(o)),
-                (Some(o), Mode::Sub) => out.extend(chunk.difference(o)),
+                (Some(o), Mode::Or) => {
+                    Arc::make_mut(&mut chunk).union_assign(o);
+                    out.push(chunk);
+                }
+                (Some(o), Mode::And) => {
+                    out.extend(chunk.intersection(o).map(Arc::new));
+                }
+                (Some(o), Mode::Sub) => {
+                    out.extend(chunk.difference(o).map(Arc::new));
+                }
                 (None, Mode::And) => {}
                 (None, Mode::Or | Mode::Sub) => out.push(chunk),
             }
         }
         if mode == Mode::Or {
-            out.extend(theirs.cloned());
+            out.extend(theirs.map(Arc::clone));
         }
         self.chunks = out;
     }
@@ -376,7 +440,7 @@ struct Cursor {
     pos: u32,
 }
 
-fn advance(chunks: &[Chunk], cursor: &mut Cursor) -> Option<u32> {
+fn advance(chunks: &[Arc<Chunk>], cursor: &mut Cursor) -> Option<u32> {
     while let Some(chunk) = chunks.get(cursor.chunk) {
         let base = u32::from(chunk.key) << 16;
         match &chunk.store {
@@ -413,7 +477,7 @@ fn advance(chunks: &[Chunk], cursor: &mut Cursor) -> Option<u32> {
 
 /// Borrowing iterator over a [`Bitmap`], ascending.
 pub struct Iter<'a> {
-    chunks: &'a [Chunk],
+    chunks: &'a [Arc<Chunk>],
     cursor: Cursor,
 }
 
@@ -427,7 +491,7 @@ impl Iterator for Iter<'_> {
 
 /// Owning iterator over a [`Bitmap`], ascending.
 pub struct IntoIter {
-    chunks: Vec<Chunk>,
+    chunks: Vec<Arc<Chunk>>,
     cursor: Cursor,
 }
 
