@@ -45,8 +45,15 @@ mod consensus;
 #[cfg(feature = "signing-consensus")]
 pub use consensus::{verify_sequential, Ed25519ConsensusVerifier};
 
+/// Re-export of the [`ed25519_zebra`] backend.
+///
+/// Provisioning a signing key needs the concrete backend type, which
+/// [`attest::sign_attestation`] already exposes in its public signature.
+/// Re-exporting it here lets dependents sign and build verification keys
+/// through `rezzy` alone, so their `ed25519-zebra` version can never drift
+/// from the one [`Ed25519ConsensusVerifier`] verifies with.
 #[cfg(feature = "signing-consensus")]
-pub mod attest;
+pub use ed25519_zebra;
 
 /// A backend able to verify one Ed25519 signature over a message.
 ///
