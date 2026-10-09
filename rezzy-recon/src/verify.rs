@@ -21,7 +21,7 @@
 //! indistinguishable from misbehavior, and the caller's response is the same
 //! either way -- discard the node's result and use the baseline.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use super::client::ReconciliationClient;
 use super::server::H64Index;
@@ -258,7 +258,7 @@ pub fn verify_follow_up(
         .iter()
         .map(|digest| ElementHash::from_digest32(*digest))
         .collect();
-    let mut covered = alloc::vec![false; classified.m_roots.len()];
+    let mut covered = vec![false; classified.m_roots.len()];
     for element in &returned {
         let slot = classified
             .m_roots
@@ -281,7 +281,7 @@ pub fn verify_follow_up(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use super::*;
     use crate::triage::BucketDecodeSuccess;

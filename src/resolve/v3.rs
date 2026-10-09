@@ -71,7 +71,7 @@ use crate::basespec::event_types::{
 };
 use crate::basespec::rezzy_types::{EventContent, EventId, EventVerifier, StateKey};
 use crate::{HashMap, LeanEvent, SharedState};
-use alloc::{string::ToString, vec::Vec};
+use std::{string::ToString, vec::Vec};
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
 
@@ -281,7 +281,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     fn rank(
         &self,
@@ -370,7 +370,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     crate::auth::check_auth(
         event,
@@ -412,7 +412,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    for<'a> (alloc::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'a> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
 {
     if grant.event_type != M_ROOM_POWER_LEVELS {
         return None;
@@ -634,7 +634,7 @@ where
 /// updated only for synchronous round failures, avoiding a full conflict-map
 /// scan on every repair round.
 struct AdmittedWriterIndex<Id, K> {
-    writers: alloc::collections::BTreeMap<(EventType, K), Vec<Id>>,
+    writers: std::collections::BTreeMap<(EventType, K), Vec<Id>>,
 }
 
 impl<Id: EventId, K: StateKey> AdmittedWriterIndex<Id, K> {
@@ -646,11 +646,11 @@ impl<Id: EventId, K: StateKey> AdmittedWriterIndex<Id, K> {
         C: EventContent,
         S: BuildHasher,
     {
-        let mut writers = alloc::collections::BTreeMap::<(EventType, K), Vec<Id>>::new();
+        let mut writers = std::collections::BTreeMap::<(EventType, K), Vec<Id>>::new();
         for event_id in admitted {
             let event = conflicted_events.get(event_id).ok_or_else(|| {
                 V3ResolveError::IncompleteAuthContext {
-                    missing_event_ids: alloc::vec![event_id.clone()],
+                    missing_event_ids: vec![event_id.clone()],
                 }
             })?;
             let Some(state_key) = event.state_key.as_ref() else {
@@ -681,13 +681,13 @@ impl<Id: EventId, K: StateKey> AdmittedWriterIndex<Id, K> {
 /// efficient graph index. Each ordered pair is therefore queried at most once
 /// across all repair rounds.
 struct CausalRelationCache<Id> {
-    precedes: alloc::collections::BTreeMap<(Id, Id), bool>,
+    precedes: std::collections::BTreeMap<(Id, Id), bool>,
 }
 
 impl<Id> Default for CausalRelationCache<Id> {
     fn default() -> Self {
         Self {
-            precedes: alloc::collections::BTreeMap::new(),
+            precedes: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -785,13 +785,13 @@ mod tests {
         M_ROOM_TOPIC,
     };
     use crate::json::Value;
-    use alloc::string::String;
+    use std::string::String;
 
     #[derive(Default)]
     struct TestAdmission {
-        admissions: alloc::collections::BTreeMap<String, V3Admission<String, String>>,
-        reject: alloc::collections::BTreeSet<String>,
-        causal: alloc::collections::BTreeSet<(String, String)>,
+        admissions: std::collections::BTreeMap<String, V3Admission<String, String>>,
+        reject: std::collections::BTreeSet<String>,
+        causal: std::collections::BTreeSet<(String, String)>,
         reject_when_selected: Option<(String, (EventType, String), String)>,
     }
 
@@ -1080,7 +1080,7 @@ mod tests {
         admission.causal.insert(("$a".into(), "$b".into()));
         admission.causal.insert(("$b".into(), "$a".into()));
 
-        let mut expected = alloc::vec![String::from("$a"), String::from("$b")];
+        let mut expected = vec![String::from("$a"), String::from("$b")];
         expected.sort();
         let err = resolve_v3(&SharedState::new(), &events, &admission).unwrap_err();
         match err {
@@ -1526,7 +1526,7 @@ mod tests {
                 .map(|_| ())
                 .unwrap_err(),
             V3ResolveError::IncompleteAuthContext {
-                missing_event_ids: alloc::vec![String::from("$missing")],
+                missing_event_ids: vec![String::from("$missing")],
             },
         );
     }

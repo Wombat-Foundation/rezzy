@@ -1,8 +1,8 @@
 //! [`ed25519_zebra`]-backed (ZIP 215) signature verification.
 
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::string::ToString;
+use std::collections::BTreeMap;
+use std::string::String;
+use std::string::ToString;
 
 use crate::json::Value;
 use ed25519_zebra::{Signature, VerificationKey};
@@ -42,7 +42,7 @@ impl Ed25519ConsensusVerifier {
         key_id: &str,
         public_key: &[u8],
     ) -> Result<&mut Self, String> {
-        let key = VerificationKey::try_from(public_key).map_err(|e| alloc::format!("{e:?}"))?;
+        let key = VerificationKey::try_from(public_key).map_err(|e| format!("{e:?}"))?;
         Ok(self.insert(server_name, key_id, key))
     }
 
@@ -70,13 +70,13 @@ impl SignatureVerifier for Ed25519ConsensusVerifier {
         let key = self
             .keys
             .get(&(server_name.to_ascii_lowercase(), key_id.to_string()))
-            .ok_or_else(|| alloc::format!("no public key for {server_name}/{key_id}"))?;
+            .ok_or_else(|| format!("no public key for {server_name}/{key_id}"))?;
         let sig_bytes: [u8; 64] = signature
             .try_into()
-            .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
+            .map_err(|_| std::string::String::from("signature must be 64 bytes"))?;
         let sig = Signature::from(sig_bytes);
         key.verify(&sig, message)
-            .map_err(|e| alloc::format!("signature verification failed: {e:?}"))
+            .map_err(|e| format!("signature verification failed: {e:?}"))
     }
 }
 
@@ -104,23 +104,23 @@ pub fn verify_sequential(
     use base64::Engine as _;
 
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
-        return Err(alloc::format!(
+        return Err(format!(
             "unsupported room version {room_version}: cannot verify signatures over an undefined format"
         ));
     }
 
     for value in events {
         let message = super::try_canonical_redacted_json(value, room_version)
-            .map_err(|e| alloc::format!("failed to compute canonical redacted JSON: {e}"))?
+            .map_err(|e| format!("failed to compute canonical redacted JSON: {e}"))?
             .into_bytes();
         let Some(sigs_map) = value.get("signatures").and_then(Value::as_object) else {
-            return Err(alloc::string::String::from(
+            return Err(std::string::String::from(
                 "event has no signatures object",
             ));
         };
 
         let Some(origin) = super::expected_event_signer(value, room_version) else {
-            return Err(alloc::string::String::from(
+            return Err(std::string::String::from(
                 "could not derive expected event signer from event_id or sender",
             ));
         };
@@ -137,26 +137,26 @@ pub fn verify_sequential(
                     continue;
                 };
                 let Some(sig_str) = sig_val.as_str() else {
-                    return Err(alloc::format!(
+                    return Err(format!(
                         "signature for {server}/{key_id} is not a string"
                     ));
                 };
                 let raw = base64::engine::general_purpose::STANDARD_NO_PAD
                     .decode(sig_str)
-                    .map_err(|e| alloc::format!("bad base64 for {server}/{key_id}: {e}"))?;
+                    .map_err(|e| format!("bad base64 for {server}/{key_id}: {e}"))?;
                 let sig_bytes: [u8; 64] = raw
                     .try_into()
-                    .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
+                    .map_err(|_| std::string::String::from("signature must be 64 bytes"))?;
                 let signature = Signature::from(sig_bytes);
                 // Sequential ZIP 215 verification, one signature at a time.
                 key.verify(&signature, &message)
-                    .map_err(|e| alloc::format!("signature verification failed: {e:?}"))?;
+                    .map_err(|e| format!("signature verification failed: {e:?}"))?;
                 event_verified_any = true;
             }
         }
 
         if !event_verified_any {
-            return Err(alloc::string::String::from(
+            return Err(std::string::String::from(
                 "no supported signatures present on event",
             ));
         }

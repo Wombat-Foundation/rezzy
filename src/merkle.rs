@@ -1,6 +1,6 @@
 //! MSC4511 Merkleized event-metadata primitives.
 
-use alloc::{
+use std::{
     format,
     string::{String, ToString},
     vec::Vec,
@@ -404,7 +404,7 @@ fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<Pro
             if target == 0 {
                 Some((
                     inner_hash(hashes[0], hashes[1]),
-                    alloc::vec![ProofStep {
+                    vec![ProofStep {
                         side: Side::Right,
                         hash: hashes[1]
                     }],
@@ -412,7 +412,7 @@ fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<Pro
             } else {
                 Some((
                     inner_hash(hashes[0], hashes[1]),
-                    alloc::vec![ProofStep {
+                    vec![ProofStep {
                         side: Side::Left,
                         hash: hashes[0]
                     }],
@@ -618,7 +618,7 @@ pub(crate) fn hash_parts(parts: &[&[u8]]) -> Hash {
 /// This provides a reference implementation matching `gomatrixcrypto`'s `merkle.CausalSet`.
 pub mod causal {
     use super::{hash_parts, Hash};
-    use alloc::{collections::BTreeMap, collections::BTreeSet, vec::Vec};
+    use std::{collections::BTreeMap, collections::BTreeSet, vec::Vec};
 
     /// The number of bit-levels in the causal sparse Merkle sum trie: one
     /// level per bit of a 32-byte (256-bit) event-ID digest key.
@@ -1865,21 +1865,21 @@ pub mod causal {
                             }
 
                             let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
-                            let label = alloc::format!(" at n={n}");
+                            let label = format!(" at n={n}");
                             // Root/count are checked against the full set; the
                             // per-key proof descents dominate cost, so the
                             // largest case spot-checks a few keys only (n<=16
                             // already covers every key).
                             // Sorted bytewise = tree order (descent is MSB-first), so
                             // striding the sorted keys samples distinct prefixes.
-                            let proof_keys: alloc::borrow::Cow<'_, [Hash]> = if n > 16 {
+                            let proof_keys: std::borrow::Cow<'_, [Hash]> = if n > 16 {
                                 let mut sorted = keys.clone();
                                 sorted.sort_unstable();
-                                alloc::borrow::Cow::Owned(
+                                std::borrow::Cow::Owned(
                                     sorted.into_iter().step_by(n / 4).collect(),
                                 )
                             } else {
-                                alloc::borrow::Cow::Borrowed(&keys)
+                                std::borrow::Cow::Borrowed(&keys)
                             };
                             assert_matches_oracle(
                                 &set,
@@ -2055,7 +2055,7 @@ pub mod causal {
             let (path, t, root, count) = set.non_inclusion_proof(&absent).unwrap();
             assert!(verify_causal_non_inclusion(&absent, t, &path, root, count));
 
-            let mut extended = alloc::vec![CausalProofStep {
+            let mut extended = vec![CausalProofStep {
                 hash: empty_table()[t + 1],
                 count: 0,
             }];

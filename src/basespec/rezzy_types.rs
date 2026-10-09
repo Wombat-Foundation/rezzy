@@ -16,10 +16,10 @@
 
 use crate::json::Value;
 use crate::{FastSet, HashMap};
-use alloc::string::String;
-use alloc::string::ToString;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use std::string::String;
+use std::string::ToString;
+use std::sync::Arc;
+use std::vec::Vec;
 use base64::Engine as _;
 use core::cmp::Ordering;
 use sha2::{Digest, Sha256};
@@ -162,16 +162,33 @@ impl clap::ValueEnum for StateResVersion {
 
 impl From<StateResVersion> for crate::json::Value {
     fn from(value: StateResVersion) -> Self {
-        Self::String(alloc::format!("{value:?}"))
+        Self::String(value.debug_name().into())
     }
 }
 impl From<&StateResVersion> for crate::json::Value {
     fn from(value: &StateResVersion) -> Self {
-        Self::String(alloc::format!("{value:?}"))
+        Self::String(value.debug_name().into())
     }
 }
 
 impl StateResVersion {
+    /// The stable `Debug`-compatible name of this variant (`"V1"`, `"V2"`,
+    /// `"V2_1"`, `"V2_1_1"`, `"V2_2"`, `"V3"`).
+    ///
+    /// Used for JSON values and error messages that historically used
+    /// `format!("{version:?}")`, without going through `format!`.
+    #[must_use]
+    pub const fn debug_name(self) -> &'static str {
+        match self {
+            Self::V1 => "V1",
+            Self::V2 => "V2",
+            Self::V2_1 => "V2_1",
+            Self::V2_1_1 => "V2_1_1",
+            Self::V2_2 => "V2_2",
+            Self::V3 => "V3",
+        }
+    }
+
     /// Map a Matrix room version string (e.g. `"10"`, `"12"`) to the corresponding
     /// state resolution algorithm version.
     ///
@@ -510,7 +527,7 @@ mod room_version_format_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod canonicalization_error_tests {
     use super::{validate_canonical_number, CanonicalizationError};
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     #[test]
     fn display_variants() {
@@ -912,6 +929,102 @@ fn is_supported_room_version(room_version: &str) -> bool {
     RoomVersionFormat::parse(room_version).is_some()
 }
 
+/// Maximum unpadded base64 length of a SHA-256 digest (32 bytes → 43 chars).
+pub const HASH_B64_MAX_LEN: usize = 43;
+
+/// Writes the unpadded base64 encoding of `hash` into `out` using the room
+/// version's alphabet, without allocating.
+///
+/// Returns the number of bytes written (always 43 for a 32-byte digest).
+///
+/// # Errors
+/// Returns `Err` when `out` is shorter than [`HASH_B64_MAX_LEN`].
+pub fn encode_hash_slice(
+    hash: &[u8; 32],
+    room_version: &str,
+    out: &mut [u8],
+) -> Result<usize, std::string::String> {
+    if out.len() < HASH_B64_MAX_LEN {
+        return Err(std::string::String::from(
+            "encode_hash_slice: output buffer shorter than 43 bytes",
+        ));
+    }
+    hash_base64_engine(room_version)
+        .encode_slice(hash, out)
+        .map_err(|e| format!("failed to encode hash: {e}"))
+}
+
+/// Computes the raw SHA-256 **reference hash** of a PDU `Value` (the event ID
+/// digest for room versions 4+), without encoding or allocating.
+///
+/// This is the zero-alloc core of [`reference_hash`]: same validation and
+/// canonical-redaction path, but returns the 32-byte digest instead of a
+/// base64 `String`. Encode with [`encode_hash_slice`] or
+/// [`reference_hash`]'s wrapper.
+///
+/// # Errors
+/// Returns `Err` when the room version has no reference hash (v1/v2), when the
+/// room version is unsupported, or when the canonical JSON writer fails.
+pub fn reference_hash_bytes(
+    value: &Value,
+    room_version: &str,
+) -> Result<[u8; 32], std::string::String> {
+    let major = room_version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok());
+    if major.is_some_and(|m| m <= 2) {
+        return Err(format!(
+            "no reference hash for room version {room_version}: v1/v2 event IDs are opaque server-assigned strings, not hashes"
+        ));
+    }
+
+    if StateResVersion::from_room_version(room_version).is_none() {
+        return Err(format!(
+            "no reference hash for unsupported room version {room_version}: its event ID hash rules are undefined"
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    {
+        let mut w = ShaWriter(&mut hasher);
+        write_redacted_canonical(&mut w, value, room_version)
+            .map_err(|e| format!("failed to write canonical JSON: {e}"))?;
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// Computes the raw SHA-256 **content hash** of a PDU `Value` (`hashes.sha256`
+/// digest), without encoding or allocating.
+///
+/// This is the zero-alloc core of [`compute_content_hash`]: same validation and
+/// canonicalization path, but returns the 32-byte digest instead of a base64
+/// `String`. Encode with [`encode_hash_slice`] (STANDARD unpadded) or
+/// [`compute_content_hash`]'s wrapper.
+///
+/// # Errors
+/// Returns `Err` when `room_version` is not a recognised room version, or when
+/// the canonical JSON writer fails.
+pub fn content_hash_bytes(
+    value: &Value,
+    room_version: &str,
+) -> Result<[u8; 32], std::string::String> {
+    if !is_supported_room_version(room_version) {
+        return Err(format!(
+            "no content hash for unsupported room version {room_version}: its canonical JSON rules are undefined"
+        ));
+    }
+
+    let strict_numbers = room_version_is_v6_or_later(room_version);
+    let mut hasher = Sha256::new();
+    {
+        let mut w = ShaWriter(&mut hasher);
+        write_content_hash_canonical(&mut w, value, strict_numbers)
+            .map_err(|e| format!("failed to write canonical JSON: {e}"))?;
+    }
+    Ok(hasher.finalize().into())
+}
+
 /// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for
 /// room versions 4+: SHA-256 of the canonical JSON of the *redacted* event
 /// (with `signatures`/`unsigned`/legacy `age_ts` removed; `hashes` is
@@ -923,6 +1036,9 @@ fn is_supported_room_version(room_version: &str) -> bool {
 /// present rather than rejecting them. Keys are already lexicographically
 /// sorted because `crate::json::Object` is a `BTreeMap`.
 ///
+/// Prefer [`reference_hash_bytes`] + [`encode_hash_slice`] when the caller can
+/// supply stack storage; this wrapper allocates one `String` for the result.
+///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
 /// event IDs are opaque server-assigned strings, not hashes), or when the
@@ -931,36 +1047,20 @@ fn is_supported_room_version(room_version: &str) -> bool {
 pub fn reference_hash(
     value: &Value,
     room_version: &str,
-) -> Result<alloc::string::String, alloc::string::String> {
-    let major = room_version
-        .split('.')
-        .next()
-        .and_then(|m| m.parse::<u32>().ok());
-    if major.is_some_and(|m| m <= 2) {
-        return Err(alloc::format!(
-            "no reference hash for room version {room_version}: v1/v2 event IDs are opaque server-assigned strings, not hashes"
-        ));
-    }
-
-    if StateResVersion::from_room_version(room_version).is_none() {
-        return Err(alloc::format!(
-            "no reference hash for unsupported room version {room_version}: its event ID hash rules are undefined"
-        ));
-    }
-
-    let mut hasher = Sha256::new();
-    {
-        let mut w = ShaWriter(&mut hasher);
-        write_redacted_canonical(&mut w, value, room_version)
-            .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
-    }
-    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
+) -> Result<std::string::String, std::string::String> {
+    let digest = reference_hash_bytes(value, room_version)?;
+    let mut out = std::string::String::with_capacity(HASH_B64_MAX_LEN);
+    hash_base64_engine(room_version).encode_string(digest, &mut out);
+    Ok(out)
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
 /// SHA-256 of the canonical JSON of the *unredacted* event with `unsigned`,
 /// `signatures`, and `hashes` removed, encoded with standard unpadded base64
 /// for every room version.
+///
+/// Prefer [`content_hash_bytes`] + [`encode_hash_slice`] when the caller can
+/// supply stack storage; this wrapper allocates one `String` for the result.
 ///
 /// # Errors
 /// Returns `Err` when `room_version` is not a recognised room version, or
@@ -969,21 +1069,11 @@ pub fn reference_hash(
 pub fn compute_content_hash(
     value: &Value,
     room_version: &str,
-) -> Result<alloc::string::String, alloc::string::String> {
-    if !is_supported_room_version(room_version) {
-        return Err(alloc::format!(
-            "no content hash for unsupported room version {room_version}: its canonical JSON rules are undefined"
-        ));
-    }
-
-    let strict_numbers = room_version_is_v6_or_later(room_version);
-    let mut hasher = Sha256::new();
-    {
-        let mut w = ShaWriter(&mut hasher);
-        write_content_hash_canonical(&mut w, value, strict_numbers)
-            .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
-    }
-    Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
+) -> Result<std::string::String, std::string::String> {
+    let digest = content_hash_bytes(value, room_version)?;
+    let mut out = std::string::String::with_capacity(HASH_B64_MAX_LEN);
+    base64::engine::general_purpose::STANDARD_NO_PAD.encode_string(digest, &mut out);
+    Ok(out)
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
@@ -991,23 +1081,32 @@ pub fn compute_content_hash(
 /// event (the content hash covers the unredacted content), before the event is
 /// converted into a lean form that drops the hashed content.
 ///
+/// Allocation-free on both the success and mismatch paths: the recomputed
+/// digest is encoded into a stack buffer and compared against the declared
+/// base64 in place.
+///
 /// # Errors
-/// Returns `Err` when `hashes.sha256` is missing/not a string, or when the
-/// recomputed content hash does not match.
-pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), alloc::string::String> {
+/// Returns `Err` when `hashes.sha256` is missing/not a string, when the room
+/// version is unsupported, or when the recomputed content hash does not match.
+pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), std::string::String> {
     let Some(expected) = value
         .get(crate::basespec::event_types::FIELD_HASHES)
         .and_then(|h| h.get("sha256"))
         .and_then(Value::as_str)
     else {
-        return Err(alloc::string::String::from(
+        return Err(std::string::String::from(
             "hashes.sha256 is missing or not a string",
         ));
     };
-    let computed = compute_content_hash(value, room_version)?;
-    if computed != expected {
-        return Err(alloc::format!(
-            "content hash mismatch: hashes.sha256={expected}, computed={computed}"
+    let digest = content_hash_bytes(value, room_version)?;
+    let mut buf = [0u8; HASH_B64_MAX_LEN];
+    let n = base64::engine::general_purpose::STANDARD_NO_PAD
+        .encode_slice(digest, &mut buf)
+        .map_err(|e| format!("failed to encode hash: {e}"))?;
+    if expected.as_bytes() != &buf[..n] {
+        return Err(format!(
+            "content hash mismatch: hashes.sha256={expected}, computed={}",
+            core::str::from_utf8(&buf[..n]).unwrap_or("<invalid base64>")
         ));
     }
     Ok(())
@@ -1032,8 +1131,8 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
 /// unreachable for a `crate::json::Value` (a safe `Value` cannot hold a
 /// non-finite number); the former is a caller invariant.
 #[must_use]
-pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
-    let mut out = alloc::string::String::new();
+pub fn canonical_redacted_json(value: &Value, room_version: &str) -> std::string::String {
+    let mut out = std::string::String::new();
     write_redacted_canonical(&mut out, value, room_version)
         .expect("writing canonical JSON into a String is infallible");
     out
@@ -1051,15 +1150,15 @@ pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::stri
 pub fn try_canonical_redacted_json(
     value: &Value,
     room_version: &str,
-) -> Result<alloc::string::String, alloc::string::String> {
+) -> Result<std::string::String, std::string::String> {
     if !is_supported_room_version(room_version) {
-        return Err(alloc::format!(
+        return Err(format!(
             "no canonical redacted JSON for unsupported room version {room_version}"
         ));
     }
-    let mut out = alloc::string::String::new();
+    let mut out = std::string::String::new();
     write_redacted_canonical(&mut out, value, room_version)
-        .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
+        .map_err(|e| format!("failed to write canonical JSON: {e}"))?;
     Ok(out)
 }
 
@@ -1429,26 +1528,26 @@ pub fn ingest_events(
     pdus: &[Value],
     room_version: &str,
     room_id: Option<&str>,
-) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
+) -> Result<Vec<LeanEvent<String, Value, String>>, std::string::String> {
     let derives_event_ids = RoomVersionFormat::parse(room_version)
         .is_some_and(RoomVersionFormat::uses_reference_hash_event_ids);
     let shared_room_id = room_id.map(RoomId::new);
     let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
     for pdu in pdus {
-        validate_raw_pdu_shape(pdu).map_err(|e| alloc::format!("invalid PDU: {e}"))?;
+        validate_raw_pdu_shape(pdu).map_err(|e| format!("invalid PDU: {e}"))?;
         if derives_event_ids
             && pdu
                 .get(crate::basespec::event_types::FIELD_EVENT_ID)
                 .is_some()
         {
-            return Err(alloc::string::String::from(
+            return Err(std::string::String::from(
                 "event_id must be omitted from federation PDUs in room versions v3 and later",
             ));
         }
         let mut event = LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.clone())?;
         event
             .validate_syntactic(room_version)
-            .map_err(|e| alloc::format!("invalid PDU: {e}"))?;
+            .map_err(|e| format!("invalid PDU: {e}"))?;
         if pdu
             .get(crate::basespec::event_types::FIELD_HASHES)
             .is_some()
@@ -1465,16 +1564,16 @@ pub fn ingest_events(
 }
 
 /// Validates fields required before a raw PDU may be parsed.
-pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), alloc::string::String> {
+pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), std::string::String> {
     for field in ["type", "sender", "content", "origin_server_ts"] {
         if value.get(field).is_none() {
-            return Err(alloc::format!("missing required PDU field: {field}"));
+            return Err(format!("missing required PDU field: {field}"));
         }
     }
     if value.get("type").and_then(Value::as_str).is_none()
         || value.get("sender").and_then(Value::as_str).is_none()
     {
-        return Err(alloc::string::String::from(
+        return Err(std::string::String::from(
             "PDU type and sender must be strings",
         ));
     }
@@ -1662,7 +1761,7 @@ pub trait EventLike: DagNode {
     ///
     /// Returns `Cow::Borrowed` when the type string is stored inline (e.g. `LeanEvent`),
     /// or `Cow::Owned`/`Cow::Borrowed` from a typed enum (e.g. ruma `TimelineEventType`).
-    fn event_type(&self) -> alloc::borrow::Cow<'_, str>;
+    fn event_type(&self) -> std::borrow::Cow<'_, str>;
 
     /// The MXID of the user who sent the event.
     fn sender(&self) -> &str;
@@ -1796,8 +1895,8 @@ pub trait EventLike: DagNode {
 impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C, K> {
     type Content = C;
 
-    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
-        alloc::borrow::Cow::Borrowed(&self.event_type)
+    fn event_type(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.event_type)
     }
     fn sender(&self) -> &str {
         &self.sender
@@ -1893,7 +1992,7 @@ pub trait RawEvent {
     fn raw_event_id(&self) -> &Self::Id;
 
     /// The Matrix event type as a string (e.g. `"m.room.member"`).
-    fn raw_event_type(&self) -> alloc::borrow::Cow<'_, str>;
+    fn raw_event_type(&self) -> std::borrow::Cow<'_, str>;
 
     /// The sender's MXID as a string slice.
     fn raw_sender(&self) -> &str;
@@ -1974,7 +2073,7 @@ impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     ///
     /// Returns a description of the [`crate::json::Error`] if the raw content
     /// string is not valid JSON.
-    pub fn try_new(event: &'a T) -> Result<Self, alloc::string::String> {
+    pub fn try_new(event: &'a T) -> Result<Self, std::string::String> {
         let content = Value::parse(event.raw_content_json()).map_err(|e| e.to_string())?;
         Ok(Self {
             raw: event,
@@ -2010,7 +2109,7 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
 impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
     type Content = crate::json::Value;
 
-    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
+    fn event_type(&self) -> std::borrow::Cow<'_, str> {
         self.raw.raw_event_type()
     }
 
@@ -2166,13 +2265,13 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
 /// value (via `Deref`), not pointer identity, so two `RoomId`s built from
 /// separate allocations still compare equal if their content matches.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RoomId(alloc::sync::Arc<str>);
+pub struct RoomId(std::sync::Arc<str>);
 
 impl RoomId {
     /// Builds a `RoomId` from any string-like value, allocating once.
     #[must_use]
     pub fn new(id: impl AsRef<str>) -> Self {
-        Self(alloc::sync::Arc::from(id.as_ref()))
+        Self(std::sync::Arc::from(id.as_ref()))
     }
 }
 
@@ -2203,7 +2302,7 @@ impl From<&str> for RoomId {
 
 impl From<String> for RoomId {
     fn from(id: String) -> Self {
-        Self(alloc::sync::Arc::from(id.as_str()))
+        Self(std::sync::Arc::from(id.as_str()))
     }
 }
 
@@ -2237,20 +2336,20 @@ impl From<String> for RoomId {
 /// site (since `AsRef<str>` takes no external context to resolve an id back
 /// to its string), which is real new plumbing, not a drop-in type swap.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InternedKey(alloc::sync::Arc<str>);
+pub struct InternedKey(std::sync::Arc<str>);
 
 impl InternedKey {
     /// Builds an `InternedKey` from any string-like value, allocating once.
     #[must_use]
     pub fn new(key: impl AsRef<str>) -> Self {
-        Self(alloc::sync::Arc::from(key.as_ref()))
+        Self(std::sync::Arc::from(key.as_ref()))
     }
 }
 
 impl Default for InternedKey {
     /// The empty key, matching `StateKey`'s `K::default().as_ref() == ""` contract.
     fn default() -> Self {
-        Self(alloc::sync::Arc::from(""))
+        Self(std::sync::Arc::from(""))
     }
 }
 
@@ -2281,7 +2380,7 @@ impl From<&str> for InternedKey {
 
 impl From<String> for InternedKey {
     fn from(key: String) -> Self {
-        Self(alloc::sync::Arc::from(key.as_str()))
+        Self(std::sync::Arc::from(key.as_str()))
     }
 }
 
@@ -2475,8 +2574,8 @@ impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
 impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_, Id, C, K> {
     type Content = C;
 
-    fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
-        alloc::borrow::Cow::Borrowed(self.event_type)
+    fn event_type(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(self.event_type)
     }
     fn sender(&self) -> &str {
         self.sender
@@ -2661,7 +2760,7 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+    fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), std::string::String> {
         Ok(())
     }
 
@@ -2670,7 +2769,7 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_signatures(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+    fn verify_signatures(&self, _event_id: &Id) -> Result<(), std::string::String> {
         Ok(())
     }
 
@@ -2679,7 +2778,7 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_content_hash(&self, _event_id: &Id) -> Result<(), alloc::string::String> {
+    fn verify_content_hash(&self, _event_id: &Id) -> Result<(), std::string::String> {
         Ok(())
     }
 
@@ -2692,7 +2791,7 @@ pub trait EventVerifier<Id> {
         &self,
         _event_id: &Id,
         _tpi_token: &str,
-    ) -> Result<(), alloc::string::String> {
+    ) -> Result<(), std::string::String> {
         Ok(())
     }
 
@@ -2708,8 +2807,8 @@ pub trait EventVerifier<Id> {
         &self,
         _event_id: &Id,
         _authorising_user: &str,
-    ) -> Result<(), alloc::string::String> {
-        Err(alloc::string::String::from(
+    ) -> Result<(), std::string::String> {
+        Err(std::string::String::from(
             "verifier does not support join_authorised_via_users_server signatures",
         ))
     }
@@ -3077,6 +3176,46 @@ pub fn extract_domain(id: &str) -> Option<&str> {
     id.split_once(':').map(|(_, domain)| domain)
 }
 
+/// Writes `value`'s `Display` form into `buf` without allocating.
+///
+/// Returns the number of bytes written, or `None` if the output did not fit
+/// (or was not valid UTF-8, which `Display` cannot produce for valid writes).
+/// Event IDs are validated to ≤255 bytes, so a 256-byte buffer always fits
+/// post-validation; pre-validation callers should treat `None` as "skip the
+/// optimization / fail closed".
+pub(crate) fn write_display_into(buf: &mut [u8], value: &impl core::fmt::Display) -> Option<usize> {
+    struct Adapter<'a> {
+        buf: &'a mut [u8],
+        len: usize,
+        overflow: bool,
+    }
+    impl core::fmt::Write for Adapter<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let Some(end) = self.len.checked_add(bytes.len()) else {
+                self.overflow = true;
+                return Err(core::fmt::Error);
+            };
+            if end > self.buf.len() {
+                self.overflow = true;
+                return Err(core::fmt::Error);
+            }
+            self.buf[self.len..end].copy_from_slice(bytes);
+            self.len = end;
+            Ok(())
+        }
+    }
+    let mut adapter = Adapter {
+        buf,
+        len: 0,
+        overflow: false,
+    };
+    if core::fmt::write(&mut adapter, format_args!("{value}")).is_err() || adapter.overflow {
+        return None;
+    }
+    Some(adapter.len)
+}
+
 /// Assign every event a dense `usize` index keyed by its `event_id`, in
 /// iteration order.
 ///
@@ -3149,14 +3288,21 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         C: EventContent,
         K: AsRef<str>,
     {
-        let mut warnings = alloc::vec::Vec::new();
+        let mut warnings = std::vec::Vec::new();
         self.validate_structure(room_version)?;
-        let id_str = alloc::format!("{}", self.event_id);
+        // Stack path for the common ≤255-byte case; fall back to a formatted
+        // String only for oversized Display forms (pre-v11 warning path).
+        let mut id_buf = [0u8; 256];
+        let id_fallback;
+        let id_len = if let Some(n) = write_display_into(&mut id_buf, &self.event_id) { n } else {
+            id_fallback = format!("{}", self.event_id);
+            id_fallback.len()
+        };
         self.validate_identifiers(room_version, &mut warnings)?;
         if self.depth > MAX_SAFE_JSON_INTEGER {
             return Err("depth exceeds maximum allowed value");
         }
-        self.validate_field_lengths(&id_str, room_version, &mut warnings)?;
+        self.validate_field_lengths(id_len, room_version, &mut warnings)?;
 
         Ok(crate::warnings::Outcome::with_warnings((), warnings))
     }
@@ -3202,7 +3348,12 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         Id: core::fmt::Display + Clone,
         C: EventContent,
     {
-        let event_id = alloc::format!("{}", self.event_id);
+        let mut id_buf = [0u8; 256];
+        let id_fallback;
+        let event_id: &str = if let Some(n) = write_display_into(&mut id_buf, &self.event_id) { core::str::from_utf8(&id_buf[..n]).unwrap_or("") } else {
+            id_fallback = format!("{}", self.event_id);
+            id_fallback.as_str()
+        };
         if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
@@ -3267,7 +3418,7 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
 
     fn validate_field_lengths(
         &self,
-        event_id: &str,
+        event_id_len: usize,
         room_version: &str,
         warnings: &mut SyntacticWarnings<Id>,
     ) -> Result<(), &'static str>
@@ -3276,22 +3427,22 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         K: AsRef<str>,
     {
         let strict = room_version_is_v11_or_later(room_version);
-        for (field, name) in [
-            (event_id, "event_id"),
-            (&self.sender, "sender"),
-            (&self.event_type, "event_type"),
+        for (len, name) in [
+            (event_id_len, "event_id"),
+            (self.sender.len(), "sender"),
+            (self.event_type.len(), "event_type"),
         ] {
-            self.validate_field_length(field, name, strict, warnings)?;
+            self.validate_field_length(len, name, strict, warnings)?;
         }
         if let Some(state_key) = &self.state_key {
-            self.validate_field_length(state_key.as_ref(), "state_key", strict, warnings)?;
+            self.validate_field_length(state_key.as_ref().len(), "state_key", strict, warnings)?;
         }
         Ok(())
     }
 
     fn validate_field_length(
         &self,
-        value: &str,
+        len: usize,
         field: &'static str,
         strict: bool,
         warnings: &mut SyntacticWarnings<Id>,
@@ -3299,7 +3450,6 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     where
         Id: Clone,
     {
-        let len = value.len();
         if len <= 255 {
             return Ok(());
         }
@@ -3502,8 +3652,11 @@ impl LeanEvent<String, Value, String> {
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else if let Some(ver) = room_version {
-            let rh = reference_hash(value, ver)?;
-            alloc::format!("${rh}")
+            let digest = reference_hash_bytes(value, ver)?;
+            let mut id = String::with_capacity(1 + HASH_B64_MAX_LEN);
+            id.push('$');
+            hash_base64_engine(ver).encode_string(digest, &mut id);
+            id
         } else {
             return Err(String::from(
                 "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
@@ -3790,7 +3943,7 @@ impl<Id: Ord, C, K> LeanEvent<Id, C, K> {
     }
 }
 
-/// A priority wrapper for [`BinaryHeap`](alloc::collections::BinaryHeap)-based
+/// A priority wrapper for [`BinaryHeap`](std::collections::BinaryHeap)-based
 /// topological sorting of events.
 ///
 /// Rust's `BinaryHeap` is a **max-heap** — the element with the greatest `Ord`
@@ -3959,7 +4112,7 @@ impl<
 }
 
 impl<Id: core::hash::Hash + Eq + Ord, C, E: EventLike<Id = Id, Content = C>> EventProvider<Id, C, E>
-    for alloc::collections::BTreeMap<Id, E>
+    for std::collections::BTreeMap<Id, E>
 {
     fn get_event(&self, id: &Id) -> Option<&E> {
         self.get(id)
@@ -4158,7 +4311,7 @@ mod dag_node_tests {
         let ev = LeanEvent::<String> {
             event_id: "$ev:example".into(),
             event_type: M_ROOM_CREATE.into(),
-            auth_events: alloc::vec!["$prev1:example".into(), "$prev2:example".into()],
+            auth_events: vec!["$prev1:example".into(), "$prev2:example".into()],
             ..Default::default()
         };
         // V1–V2.1.1: returns the stored auth_events
@@ -4177,8 +4330,8 @@ mod dag_node_tests {
     fn dag_edges_returns_correct_edges_per_version() {
         let node = DualStorageNode {
             event_id: "$ev:example".into(),
-            auth: alloc::vec!["$auth:example".into()],
-            prev_state: alloc::vec!["$ps:example".into()],
+            auth: vec!["$auth:example".into()],
+            prev_state: vec!["$ps:example".into()],
         };
         // V2: dag_edges returns auth_events
         assert_eq!(node.dag_edges(StateResVersion::V2), &["$auth:example"]);
@@ -4192,7 +4345,7 @@ mod dag_node_tests {
 mod canonical_parity_tests {
     use super::*;
     use crate::json;
-    use alloc::string::String;
+    use std::string::String;
 
     fn content_hash_writer(v: &Value) -> String {
         let mut out = String::new();

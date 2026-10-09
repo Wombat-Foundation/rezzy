@@ -32,11 +32,11 @@ use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
 };
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
-use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::string::String;
+use std::sync::Arc;
+use std::vec::Vec;
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
 
@@ -232,13 +232,13 @@ pub(crate) fn update_local_auth<Id: Clone + Ord, C: Clone, K: Clone + Ord + AsRe
     let key = (EventType::from(aev.event_type.as_str()), sk.clone());
     let arc_ev = Arc::new(aev.clone());
     match local_auth.entry(key) {
-        alloc::collections::btree_map::Entry::Vacant(e) => {
+        std::collections::btree_map::Entry::Vacant(e) => {
             e.insert(LocalAuthEntry {
                 event: arc_ev.clone(),
                 auth_depth: depth,
             });
         }
-        alloc::collections::btree_map::Entry::Occupied(mut e) => {
+        std::collections::btree_map::Entry::Occupied(mut e) => {
             if depth < e.get().auth_depth {
                 e.insert(LocalAuthEntry {
                     event: arc_ev,
@@ -272,7 +272,7 @@ where
     }
 
     let mut local_auth: BTreeMap<(EventType, K), LocalAuthEntry<Id, C, K>> = BTreeMap::new();
-    let mut queue = alloc::collections::VecDeque::new();
+    let mut queue = std::collections::VecDeque::new();
     for aid in &event.auth_events {
         queue.push_back((aid, 1));
     }
@@ -298,13 +298,13 @@ where
                 for (key, entry) in cached_ancestor {
                     let total_depth = current_depth.saturating_add(entry.auth_depth);
                     match local_auth.entry(key.clone()) {
-                        alloc::collections::btree_map::Entry::Vacant(e) => {
+                        std::collections::btree_map::Entry::Vacant(e) => {
                             e.insert(LocalAuthEntry {
                                 event: entry.event.clone(),
                                 auth_depth: total_depth,
                             });
                         }
-                        alloc::collections::btree_map::Entry::Occupied(mut e) => {
+                        std::collections::btree_map::Entry::Occupied(mut e) => {
                             if total_depth < e.get().auth_depth {
                                 e.insert(LocalAuthEntry {
                                     event: entry.event.clone(),
@@ -378,7 +378,7 @@ pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(
 ///
 /// Build the inputs with [`intern_events`](crate::intern_events), which
 /// allocates each event id and state key once and shares it everywhere.
-pub type FastSharedState = SharedState<alloc::sync::Arc<str>, crate::InternedKey>;
+pub type FastSharedState = SharedState<std::sync::Arc<str>, crate::InternedKey>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -573,7 +573,7 @@ where
     let target_refs: Vec<&Id> = actual_target_ids.iter().collect();
     let index = collect_ancestor_short_ids_batch(&target_refs, events_map);
 
-    let mut is_target = alloc::vec![false; index.len()];
+    let mut is_target = vec![false; index.len()];
     for tid in &actual_target_ids {
         if let Some(idx) = index.index_of(&tid) {
             is_target[idx] = true;
@@ -783,7 +783,7 @@ where
     S: BuildHasher,
     Node: DagNode<Id = Id>,
 {
-    use alloc::collections::BinaryHeap;
+    use std::collections::BinaryHeap;
 
     assert!(
         extremities.len() <= 8,
@@ -946,7 +946,7 @@ where
     S: BuildHasher,
     Node: DagNode<Id = Id>,
 {
-    use alloc::collections::BinaryHeap;
+    use std::collections::BinaryHeap;
 
     use roaring::RoaringBitmap;
 
@@ -1065,9 +1065,9 @@ where
     C: Clone,
 {
     let num_reachable = index.len();
-    let mut in_degree = alloc::vec![0usize; num_reachable];
-    let mut adjacency = alloc::vec![Vec::new(); num_reachable];
-    let mut out_degree = alloc::vec![0usize; num_reachable];
+    let mut in_degree = vec![0usize; num_reachable];
+    let mut adjacency = vec![Vec::new(); num_reachable];
+    let mut out_degree = vec![0usize; num_reachable];
 
     for (i, id) in index.items().iter().enumerate() {
         let Some(ev) = events_map.get(*id) else {
@@ -1093,7 +1093,7 @@ where
         }
     }
 
-    let mut topo_queue = alloc::collections::VecDeque::new();
+    let mut topo_queue = std::collections::VecDeque::new();
     for (i, &deg) in in_degree.iter().enumerate() {
         if deg == 0 {
             topo_queue.push_back(i);
@@ -1736,10 +1736,10 @@ where
             }
         }
     }
-    let mut u_heap = alloc::collections::BinaryHeap::from(u_heap_elements);
+    let mut u_heap = std::collections::BinaryHeap::from(u_heap_elements);
 
     let mut c_visited = crate::FastSet::default();
-    let mut c_heap = alloc::collections::BinaryHeap::new();
+    let mut c_heap = std::collections::BinaryHeap::new();
     for id in conflicted_state_set {
         if u_visited.contains(id) {
             continue; // PRUNE EARLY
@@ -1997,7 +1997,7 @@ where
     S: BuildHasher,
     C: Clone,
 {
-    let mut depth_by_idx = alloc::vec![0u64; index.len()];
+    let mut depth_by_idx = vec![0u64; index.len()];
     for &idx in sorted {
         let id = index.items()[idx];
         if let Some(ev) = events_map.get(id) {
@@ -2137,7 +2137,7 @@ where
     let all_ids: Vec<&Id> = events_map.keys().collect();
     let (index, sorted) = ancestor_index_and_topo(&all_ids, events_map);
 
-    let mut depths = alloc::vec![0u64; index.len()];
+    let mut depths = vec![0u64; index.len()];
 
     for idx in &sorted {
         let id = index.items()[*idx];
@@ -2751,7 +2751,7 @@ where
 ///
 /// # Panics
 /// Panics if the number of distinct event IDs exceeds `u32::MAX`.
-pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> alloc::vec::Vec<Id>
+pub fn find_forward_extremities_roaring<Id, I, P>(events: I) -> std::vec::Vec<Id>
 where
     Id: core::hash::Hash + Eq + Clone,
     I: IntoIterator<Item = (Id, P)>,
@@ -2759,11 +2759,11 @@ where
 {
     use roaring::RoaringBitmap;
     let mut id_map = crate::HashMap::default();
-    let mut reverse_map = alloc::vec::Vec::new();
+    let mut reverse_map = std::vec::Vec::new();
 
     let get_or_insert = |id: Id,
                          id_map: &mut crate::HashMap<Id, u32>,
-                         reverse_map: &mut alloc::vec::Vec<Id>|
+                         reverse_map: &mut std::vec::Vec<Id>|
      -> u32 {
         *id_map.entry(id).or_insert_with_key(|id| {
             let idx = u32::try_from(reverse_map.len()).expect("event count exceeds u32");
@@ -2788,7 +2788,7 @@ where
     let extremities_bitmap = core::ops::Sub::sub(all_events, has_children);
 
     let mut extremities =
-        alloc::vec::Vec::with_capacity(usize::try_from(extremities_bitmap.len()).unwrap());
+        std::vec::Vec::with_capacity(usize::try_from(extremities_bitmap.len()).unwrap());
     for idx in extremities_bitmap {
         extremities.push(reverse_map[idx as usize].clone());
     }
@@ -2803,12 +2803,12 @@ mod tests {
     use crate::auth::StateProvider;
     use crate::basespec::event_types::M_ROOM_POWER_LEVELS;
     use crate::json;
-    use alloc::string::ToString;
-    use alloc::vec;
+    use std::string::ToString;
+    use std::vec;
     use std::collections::BTreeSet;
 
     /// Collects events into an id-keyed map for the fixtures below.
-    fn test_events_map(events: alloc::vec::Vec<LeanEvent>) -> HashMap<String, LeanEvent> {
+    fn test_events_map(events: std::vec::Vec<LeanEvent>) -> HashMap<String, LeanEvent> {
         events
             .into_iter()
             .map(|ev| (ev.event_id.clone(), ev))
@@ -4035,7 +4035,7 @@ mod tests {
 
         // "ghost" is never inserted into events_map.
         let ghost = "ghost".to_string();
-        let targets: Vec<&String> = alloc::vec![&ghost];
+        let targets: Vec<&String> = vec![&ghost];
 
         let index = collect_ancestor_short_ids_batch(&targets, &events_map);
         assert_eq!(
@@ -4094,7 +4094,7 @@ mod tests {
              not just the ptr_eq fast path"
         );
 
-        let prev_states = alloc::vec![
+        let prev_states = vec![
             HashedState {
                 state: state_a.clone(),
                 hash: hash_a,
@@ -4130,7 +4130,7 @@ mod tests {
     fn test_fast_path_differential_matches_full_resolution_on_identical_forks() {
         use crate::basespec::event_types::EventType;
 
-        let entries: Vec<((EventType, String), String)> = alloc::vec![
+        let entries: Vec<((EventType, String), String)> = vec![
             (("m.room.topic".into(), String::new()), "t1".to_string()),
             (("m.room.name".into(), String::new()), "r1".to_string()),
             (("m.room.avatar".into(), String::new()), "a1".to_string()),
@@ -4240,7 +4240,7 @@ mod tests {
     #[test]
     fn test_state_update_debug() {
         // New variant formats as `New { state: ..., hash: ... }`.
-        let f = alloc::format!("{:?}", new_update());
+        let f = format!("{:?}", new_update());
         assert!(
             f.contains("New"),
             "debug output should name the New variant: {f}"
@@ -4254,7 +4254,7 @@ mod tests {
             parent_event_id: &parent,
             hash: &ZERO_HASH,
         };
-        let f = alloc::format!("{test_unchanged:?}");
+        let f = format!("{test_unchanged:?}");
         assert!(
             f.contains("Unchanged"),
             "debug output should name the Unchanged variant: {f}"
@@ -4375,7 +4375,7 @@ mod tests {
     /// Coverage: `Debug for HashedState` must print the struct name and both fields.
     #[test]
     fn test_hashed_state_debug() {
-        let f = alloc::format!("{:?}", init_hashed_state());
+        let f = format!("{:?}", init_hashed_state());
         assert!(
             f.contains("HashedState"),
             "debug output should name HashedState: {f}"
@@ -4459,7 +4459,7 @@ mod tests {
 
         let events_map = test_events_map(vec![a, b]);
 
-        let mut yielded_ids = alloc::vec![];
+        let mut yielded_ids = vec![];
         let mut saw_new = false;
         let ok = StreamingInputs::compute_optimized(
             &["B"],
@@ -4476,7 +4476,7 @@ mod tests {
 
         assert!(ok, "must complete without panicking");
         // B is the only target and must be yielded exactly once.
-        assert_eq!(yielded_ids, alloc::vec!["B".to_string()]);
+        assert_eq!(yielded_ids, vec!["B".to_string()]);
         assert!(saw_new, "B's state is new, not inherited");
     }
 

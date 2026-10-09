@@ -1,14 +1,8 @@
-#![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Minisketch reconciliation helpers (MSC4521).
 //!
 //! This crate is independent of the core state resolution engine and depends
 //! only on `base64` and `sha2`.
-
-#[cfg(feature = "std")]
-extern crate std;
-
-extern crate alloc;
 
 pub mod algebraic;
 pub mod client;

@@ -4,7 +4,7 @@
 //! particular `(event_type, state_key) -> event_id` binding or its absence,
 //! whereas `LtHash` is the efficient homomorphic accumulator for a whole map.
 
-use alloc::{collections::BTreeMap, string::ToString, vec::Vec};
+use std::{collections::BTreeMap, string::ToString, vec::Vec};
 
 use crate::merkle::hash_parts;
 use crate::state::at::SharedState;
@@ -305,7 +305,7 @@ fn verify(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use alloc::string::String;
+    use std::string::String;
 
     use super::*;
 
@@ -374,7 +374,7 @@ mod tests {
         let (path, t, root) = map.non_inclusion_proof("m.room.topic", "").unwrap();
         assert!(verify_non_inclusion("m.room.topic", "", t, &path, root));
 
-        let mut extended = alloc::vec![StateProofStep {
+        let mut extended = vec![StateProofStep {
             hash: empty_table()[t + 1],
         }];
         extended.extend_from_slice(&path);

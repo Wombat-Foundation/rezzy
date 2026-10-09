@@ -5,7 +5,7 @@
 
 //! Responder-side MSC0501 reconciliation digest generation.
 
-use alloc::{
+use std::{
     collections::{BTreeSet, VecDeque},
     string::ToString,
     vec::Vec,
@@ -540,10 +540,10 @@ impl<'a> SketchBuilder<'a> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::collections::BTreeMap;
-    use alloc::string::String;
-    use alloc::vec;
-    use alloc::vec::Vec;
+    use std::collections::BTreeMap;
+    use std::string::String;
+    use std::vec;
+    use std::vec::Vec;
     use core::fmt;
 
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -711,7 +711,7 @@ mod tests {
                 // (which would hash "$child") so the assertion below can only
                 // pass if traversal actually dispatches through this override.
                 Ok(ElementHash::from_opaque_bytes(
-                    alloc::format!("$custom-{}", id.0).as_bytes(),
+                    format!("$custom-{}", id.0).as_bytes(),
                 ))
             }
         }

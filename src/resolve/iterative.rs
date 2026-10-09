@@ -37,7 +37,7 @@ use crate::{
     state::delta::{ResolutionDelta, ResolvePhase},
     FastMap, HashMap,
 };
-use alloc::vec::Vec;
+use std::vec::Vec;
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
 
@@ -84,7 +84,7 @@ pub(crate) fn prepare_conflicted_and_keys<
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     _auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
     _version: StateResVersion,
-) -> alloc::collections::BTreeSet<Id>
+) -> std::collections::BTreeSet<Id>
 where
     K: AsRef<str> + Clone,
 {
@@ -176,7 +176,7 @@ pub fn expand_v2_power_events_auth_chains<
     non_power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S2>,
     sort_set: &HashMap<Id, LeanEvent<Id, C, K>, S3>,
 ) {
-    let mut queue: alloc::collections::VecDeque<Id> = power_events.keys().cloned().collect();
+    let mut queue: std::collections::VecDeque<Id> = power_events.keys().cloned().collect();
     while let Some(id) = queue.pop_front() {
         if let Some(ev) = sort_set.get(&id) {
             for aid in &ev.auth_events {
@@ -208,15 +208,15 @@ pub(crate) fn route_msc4297_ancestral_power_events<
 >(
     power_events: &mut HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
-    original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
+    original_conflicted_keys: &std::collections::BTreeSet<Id>,
     version: StateResVersion,
 ) {
     if matches!(
         version,
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
     ) {
-        let mut conflicted_power_ancestry = alloc::collections::BTreeSet::new();
-        let mut queue = alloc::collections::VecDeque::new();
+        let mut conflicted_power_ancestry = std::collections::BTreeSet::new();
+        let mut queue = std::collections::VecDeque::new();
         for ev in power_events.values() {
             for aid in &ev.auth_events {
                 queue.push_back(aid.clone());
@@ -427,7 +427,7 @@ pub(crate) fn execute_power_phase<'a, Id, C, S1, S2, K>(
     unconflicted_state: &SharedState<Id, K>,
     conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
-    original_conflicted_keys: &alloc::collections::BTreeSet<Id>,
+    original_conflicted_keys: &std::collections::BTreeSet<Id>,
     version: StateResVersion,
     empty_key: &K,
 ) -> (
@@ -1100,7 +1100,7 @@ where
 /// Resolved state paired with the per-step deltas recorded while resolving.
 pub type ResolvedWithDeltas<Id, K> = (
     SharedState<Id, K>,
-    alloc::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
+    std::vec::Vec<crate::state::delta::ResolutionDelta<Id, K>>,
 );
 
 #[must_use]
@@ -1184,7 +1184,7 @@ where
         prepare_conflicted_and_keys(conflicted_events, auth_context, version);
 
     let mut resolved = get_initial_resolved_state(unconflicted_state, version);
-    let mut deltas = alloc::vec::Vec::new();
+    let mut deltas = std::vec::Vec::new();
 
     // --- Power phase (with delta tracking) ---
 
@@ -1266,7 +1266,7 @@ where
     // but their rejected deltas still belong at their mainline positions;
     // appending them afterward makes the delta sequence disagree with the
     // documented mainline ordering.
-    let mut non_power_list: alloc::vec::Vec<&LeanEvent<Id, C, K>> =
+    let mut non_power_list: std::vec::Vec<&LeanEvent<Id, C, K>> =
         non_power_events.values().collect();
     mainline_sort(&mut non_power_list, &mainline, &sort_context, version);
 
@@ -1328,7 +1328,7 @@ mod tests {
     use super::*;
     use crate::basespec::event_types::{EventType, MEM_BAN, MEM_JOIN, M_ROOM_MEMBER};
     use crate::basespec::rezzy_types::LeanEvent;
-    use alloc::string::{String, ToString};
+    use std::string::{String, ToString};
     use SharedState;
 
     #[test]
@@ -1447,7 +1447,7 @@ mod tests {
                 "ban": 50,
                 "state_default": 50
             }),
-            auth_events: alloc::vec!["$create".to_string(), "$admin_join".to_string()],
+            auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
             ..Default::default()
         };
         let join_rules = LeanEvent {
@@ -1456,7 +1456,7 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@admin:example.com".into(),
             content: crate::json!({"join_rule": "public"}),
-            auth_events: alloc::vec![
+            auth_events: vec![
                 "$create".to_string(),
                 "$admin_join".to_string(),
                 "$pl".to_string()
@@ -1481,7 +1481,7 @@ mod tests {
             state_key: Some("@bob:example.com".into()),
             sender: "@admin:example.com".into(),
             content: crate::json!({"membership": MEM_BAN}),
-            auth_events: alloc::vec![
+            auth_events: vec![
                 "$create".to_string(),
                 "$admin_join".to_string(),
                 "$bob_join".to_string(),
@@ -1543,7 +1543,7 @@ mod tests {
         HashMap<String, LeanEvent>,
     ) {
         let mut pl = member_ev("$pl", "@admin:example.com", "@admin:example.com", MEM_JOIN);
-        pl.auth_events = alloc::vec!["$member".to_string()];
+        pl.auth_events = vec!["$member".to_string()];
         let member = member_ev("$member", "@a:example.com", "@a:example.com", MEM_JOIN);
 
         let mut power_events: HashMap<String, LeanEvent> = HashMap::new();
@@ -1572,7 +1572,7 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@bob:example.com".into(),
             content: crate::json!({"body": "spam"}),
-            auth_events: alloc::vec![
+            auth_events: vec![
                 "$create".to_string(),
                 "$bob_join".to_string(),
                 "$pl".to_string()
@@ -1585,7 +1585,7 @@ mod tests {
             state_key: Some(String::new()),
             sender: "@carol:example.com".into(),
             content: crate::json!({"body": "hello"}),
-            auth_events: alloc::vec![
+            auth_events: vec![
                 "$create".to_string(),
                 "$carol_join".to_string(),
                 "$pl".to_string()
@@ -1650,7 +1650,7 @@ mod tests {
             state_key: None,
             sender: "@alice:example.com".into(),
             content: crate::json!({"body": "hi"}),
-            auth_events: alloc::vec![
+            auth_events: vec![
                 "$create".to_string(),
                 "$alice_join".to_string(),
                 "$pl".to_string()
@@ -1799,12 +1799,12 @@ mod tests {
                 state_key: Some(String::new()),
                 sender: "@a:example.com".into(),
                 content: crate::json!({ "users": { "@a:example.com": 100 } }),
-                auth_events: alloc::vec!["$missing".to_string()],
+                auth_events: vec!["$missing".to_string()],
                 ..Default::default()
             },
         );
         let auth_context: HashMap<String, LeanEvent> = HashMap::new();
-        let original_conflicted_keys = alloc::collections::BTreeSet::new();
+        let original_conflicted_keys = std::collections::BTreeSet::new();
 
         route_msc4297_ancestral_power_events(
             &mut power_events,

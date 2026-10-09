@@ -18,8 +18,8 @@
 //! store a base snapshot and a chain of deltas.
 //! This module provides the primitives for computing and applying those deltas.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use std::string::{String, ToString};
+use std::vec::Vec;
 
 pub use super::lthash::{compute_state_hash, LtHash};
 
@@ -386,7 +386,7 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     };
 
     // Walk backwards from all targets to find all required ancestors
-    let mut required_indices = alloc::collections::BTreeSet::new();
+    let mut required_indices = std::collections::BTreeSet::new();
     let mut queue: Vec<usize> = sorted_targets.clone();
     while let Some(idx) = queue.pop() {
         if required_indices.insert(idx) && checkpoints[idx].snapshot.is_none() {
@@ -469,12 +469,12 @@ mod tests {
                     state.insert(
                         (
                             "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
+                            format!("@user_{j}:example.com"),
                         ),
-                        alloc::format!("${j}"),
+                        format!("${j}"),
                     );
                 }
-                (alloc::format!("${i}"), state)
+                (format!("${i}"), state)
             })
             .collect()
     }
@@ -699,7 +699,7 @@ mod tests {
 
         // 5 events, all producing the same state (non-state events)
         let states: ResolvedStates = (1..=5)
-            .map(|i| (alloc::format!("${i}"), state.clone()))
+            .map(|i| (format!("${i}"), state.clone()))
             .collect();
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
@@ -720,7 +720,7 @@ mod tests {
 
         // Event ID lookup must also work
         for i in 1..=5 {
-            let result = reconstruct_state_at_by_event_id(&checkpoints, &alloc::format!("${i}"));
+            let result = reconstruct_state_at_by_event_id(&checkpoints, &format!("${i}"));
             assert!(result.is_some(), "event ID lookup failed for ${i}");
             assert_eq!(result.unwrap(), state);
         }
@@ -729,7 +729,7 @@ mod tests {
     /// Builds the shared forward-jump regression fixture: 3 checkpoints where
     /// indices 0 and 2 share the same state hash, with index 1 having a
     /// different hash. Returns `(checkpoints, state_a, state_b)`.
-    fn forward_jump_fixture() -> (alloc::vec::Vec<CompactedCheckpoint>, StateMap, StateMap) {
+    fn forward_jump_fixture() -> (std::vec::Vec<CompactedCheckpoint>, StateMap, StateMap) {
         let shared_hash = [0xAA; 32];
         let different_hash = [0xBB; 32];
 
@@ -744,19 +744,19 @@ mod tests {
             s
         };
 
-        let checkpoints = alloc::vec![
+        let checkpoints = vec![
             CompactedCheckpoint::<String> {
                 state_hash: shared_hash,
                 parent_hash: None,
                 event_id: "$0".into(),
-                deltas: alloc::vec![],
+                deltas: vec![],
                 snapshot: Some(state_a.clone()),
             },
             CompactedCheckpoint::<String> {
                 state_hash: different_hash,
                 parent_hash: Some(shared_hash),
                 event_id: "$1".into(),
-                deltas: alloc::vec![StateDelta {
+                deltas: vec![StateDelta {
                     event_type: "m.room.topic".into(),
                     state_key: String::new(),
                     event_id: Some("$t".into()),
@@ -767,7 +767,7 @@ mod tests {
                 state_hash: shared_hash, // same as checkpoint 0!
                 parent_hash: Some(different_hash),
                 event_id: "$2".into(),
-                deltas: alloc::vec![StateDelta {
+                deltas: vec![StateDelta {
                     event_type: "m.room.topic".into(),
                     state_key: String::new(),
                     event_id: None, // deletion — reverts to state_a
@@ -861,19 +861,19 @@ mod tests {
         // Index 4's parent_hash is HASH_D (index 3) — normal.
         // The trap: hash_to_idx["HASH_A"] would be 4 (last), not 0.
         // Reconstructing index 1 needs HASH_A → index 0, but HashMap returns 4.
-        let checkpoints = alloc::vec![
+        let checkpoints = vec![
             CompactedCheckpoint::<String> {
                 state_hash: hash_a,
                 parent_hash: None,
                 event_id: "$0".into(),
-                deltas: alloc::vec![],
+                deltas: vec![],
                 snapshot: Some(state_a.clone()),
             },
             CompactedCheckpoint::<String> {
                 state_hash: hash_b,
                 parent_hash: Some(hash_a),
                 event_id: "$1".into(),
-                deltas: alloc::vec![StateDelta {
+                deltas: vec![StateDelta {
                     event_type: "m.room.topic".into(),
                     state_key: String::new(),
                     event_id: Some("$t1".into()),
@@ -884,7 +884,7 @@ mod tests {
                 state_hash: hash_c,
                 parent_hash: Some(hash_b),
                 event_id: "$2".into(),
-                deltas: alloc::vec![StateDelta {
+                deltas: vec![StateDelta {
                     event_type: "m.room.topic".into(),
                     state_key: String::new(),
                     event_id: Some("$t2".into()),
@@ -895,7 +895,7 @@ mod tests {
                 state_hash: hash_d,
                 parent_hash: Some(hash_c),
                 event_id: "$3".into(),
-                deltas: alloc::vec![StateDelta {
+                deltas: vec![StateDelta {
                     event_type: "m.room.topic".into(),
                     state_key: String::new(),
                     event_id: Some("$t3".into()),
@@ -906,7 +906,7 @@ mod tests {
                 state_hash: hash_a, // Duplicate of index 0!
                 parent_hash: Some(hash_d),
                 event_id: "$4".into(),
-                deltas: alloc::vec![StateDelta {
+                deltas: vec![StateDelta {
                     event_type: "m.room.topic".into(),
                     state_key: String::new(),
                     event_id: None, // deletion — reverts to state_a
@@ -953,12 +953,12 @@ mod tests {
         // Index 2's parent_hash points to A (index 0), but index 1 has hash_b ≠ hash_a,
         // so the immediate-predecessor check fails and rposition scans backwards.
         let delta_c_from_a = compute_state_delta(&state_a, &state_c);
-        let checkpoints = alloc::vec![
+        let checkpoints = vec![
             CompactedCheckpoint::<String> {
                 state_hash: hash_a,
                 parent_hash: None,
                 event_id: "$e0".into(),
-                deltas: alloc::vec![],
+                deltas: vec![],
                 snapshot: Some(state_a.clone()),
             },
             CompactedCheckpoint::<String> {

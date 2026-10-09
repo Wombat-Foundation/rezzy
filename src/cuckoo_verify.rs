@@ -14,9 +14,7 @@
 
 //! Cuckoo Cycle proof-of-work verification and key minting primitives.
 
-extern crate alloc;
-
-use alloc::string::String;
+use std::string::String;
 use core::fmt::Write;
 use core::mem::size_of;
 use sha3::{Digest, Sha3_256};

@@ -13,8 +13,8 @@
 // limitations under the License.
 
 //! Topological and mainline sorting for Matrix state resolution.
-use alloc::collections::{BinaryHeap, VecDeque};
-use alloc::vec::Vec;
+use std::collections::{BinaryHeap, VecDeque};
+use std::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
@@ -482,13 +482,13 @@ pub fn mainline_sort<Id, C, E>(
 mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;
-    use alloc::{string::String, vec::Vec};
+    use std::{string::String, vec::Vec};
 
     fn pl_event(event_id: &str) -> LeanEvent<String> {
         LeanEvent::<String> {
             event_id: event_id.into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         }
     }
@@ -499,8 +499,8 @@ mod tests {
         ev: &LeanEvent<String>,
         auth_ctx: &HashMap<String, LeanEvent<String>>,
     ) -> HashMap<String, usize> {
-        let mainline: Vec<String> = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![ev];
+        let mainline: Vec<String> = vec!["pl0".into()];
+        let mut events = vec![ev];
         compute_closest_mainline_positions(&mut events, &mainline, auth_ctx, StateResVersion::V2)
     }
 
@@ -508,37 +508,37 @@ mod tests {
     fn test_build_mainline_cycle_detection() {
         // A and B both claim to be m.room.power_levels, and auth against each other, forming a cycle.
         let a = LeanEvent::<String> {
-            event_id: alloc::string::String::from("A"),
-            event_type: alloc::string::String::from("m.room.power_levels"),
-            auth_events: alloc::vec![alloc::string::String::from("B")],
+            event_id: std::string::String::from("A"),
+            event_type: std::string::String::from("m.room.power_levels"),
+            auth_events: vec![std::string::String::from("B")],
             ..Default::default()
         };
         let b = LeanEvent::<String> {
-            event_id: alloc::string::String::from("B"),
-            event_type: alloc::string::String::from("m.room.power_levels"),
-            auth_events: alloc::vec![alloc::string::String::from("A")],
+            event_id: std::string::String::from("B"),
+            event_type: std::string::String::from("m.room.power_levels"),
+            auth_events: vec![std::string::String::from("A")],
             ..Default::default()
         };
 
         let mut auth_context = HashMap::new();
-        auth_context.insert(alloc::string::String::from("A"), a);
-        auth_context.insert(alloc::string::String::from("B"), b);
+        auth_context.insert(std::string::String::from("A"), a);
+        auth_context.insert(std::string::String::from("B"), b);
 
         // Initial state sets A as the power levels event.
         let mut resolved = SharedState::new();
         resolved.insert(
             (
                 crate::basespec::event_types::EventType::from("m.room.power_levels"),
-                alloc::string::String::new(),
+                std::string::String::new(),
             ),
-            alloc::string::String::from("A"),
+            std::string::String::from("A"),
         );
 
         // Before the fix, this would infinite loop!
         let mainline = build_mainline(
             &resolved,
             &auth_context,
-            &alloc::string::String::new(),
+            &std::string::String::new(),
             StateResVersion::V2,
         );
 
@@ -558,7 +558,7 @@ mod tests {
         let ev = LeanEvent::<String> {
             event_id: "orphan".into(),
             event_type: "m.room.topic".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         };
         let auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
@@ -574,7 +574,7 @@ mod tests {
         let ev = LeanEvent::<String> {
             event_id: "msg".into(),
             event_type: "m.room.message".into(),
-            auth_events: alloc::vec!["pl0".into()],
+            auth_events: vec!["pl0".into()],
             ..Default::default()
         };
         let mut auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
@@ -592,13 +592,13 @@ mod tests {
         let mid = LeanEvent::<String> {
             event_id: "mid".into(),
             event_type: "m.room.member".into(),
-            auth_events: alloc::vec!["pl0".into()],
+            auth_events: vec!["pl0".into()],
             ..Default::default()
         };
         let leaf = LeanEvent::<String> {
             event_id: "leaf".into(),
             event_type: "m.room.topic".into(),
-            auth_events: alloc::vec!["mid".into()],
+            auth_events: vec!["mid".into()],
             ..Default::default()
         };
         let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
@@ -618,13 +618,13 @@ mod tests {
         let pl0 = LeanEvent::<String> {
             event_id: "pl0".into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         };
         let pl1 = LeanEvent::<String> {
             event_id: "pl1".into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec!["pl0".into()],
+            auth_events: vec!["pl0".into()],
             ..Default::default()
         };
         // near: auth chain hits mainline at index 1 (newest) -> position 1.
@@ -632,7 +632,7 @@ mod tests {
             event_id: "near".into(),
             event_type: "m.room.topic".into(),
             origin_server_ts: 100,
-            auth_events: alloc::vec!["pl1".into()],
+            auth_events: vec!["pl1".into()],
             ..Default::default()
         };
         // far_early and far both hit mainline at index 0 -> position 0; tie on
@@ -641,14 +641,14 @@ mod tests {
             event_id: "far_early".into(),
             event_type: "m.room.topic".into(),
             origin_server_ts: 50,
-            auth_events: alloc::vec!["pl0".into()],
+            auth_events: vec!["pl0".into()],
             ..Default::default()
         };
         let far = LeanEvent::<String> {
             event_id: "far".into(),
             event_type: "m.room.topic".into(),
             origin_server_ts: 200,
-            auth_events: alloc::vec!["pl0".into()],
+            auth_events: vec!["pl0".into()],
             ..Default::default()
         };
         let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
@@ -658,8 +658,8 @@ mod tests {
         ctx.insert("far_early".into(), far_early.clone());
         ctx.insert("far".into(), far.clone());
 
-        let mainline = alloc::vec!["pl0".into(), "pl1".into()];
-        let mut events = alloc::vec![&far, &far_early, &near];
+        let mainline = vec!["pl0".into(), "pl1".into()];
+        let mut events = vec![&far, &far_early, &near];
         mainline_sort(&mut events, &mainline, &ctx, StateResVersion::V2);
 
         // Larger mainline position comes first: near (1), then far_early (ts
@@ -675,12 +675,12 @@ mod tests {
         let ev = LeanEvent::<String> {
             event_id: "x".into(),
             event_type: "m.room.topic".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         };
         let ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let mainline: Vec<String> = alloc::vec![];
-        let mut events = alloc::vec![&ev];
+        let mainline: Vec<String> = vec![];
+        let mut events = vec![&ev];
         let dist =
             compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2);
         assert_eq!(dist["x"], 0);
@@ -694,13 +694,13 @@ mod tests {
         let pl = LeanEvent::<String> {
             event_id: "pl0".into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         };
         let topic = LeanEvent::<String> {
             event_id: "topic".into(),
             event_type: "m.room.topic".into(),
-            auth_events: alloc::vec!["pl0".into()],
+            auth_events: vec!["pl0".into()],
             ..Default::default()
         };
 
@@ -716,8 +716,8 @@ mod tests {
             _marker: core::marker::PhantomData,
         };
 
-        let mainline = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&topic];
+        let mainline = vec!["pl0".into()];
+        let mut events = vec![&topic];
         let dist = compute_closest_mainline_positions(
             &mut events,
             &mainline,
@@ -736,19 +736,19 @@ mod tests {
         let pl0 = LeanEvent::<String> {
             event_id: "PL0".into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         };
         let pl1 = LeanEvent::<String> {
             event_id: "PL1".into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec!["PL0".into()],
+            auth_events: vec!["PL0".into()],
             ..Default::default()
         };
         let pl2 = LeanEvent::<String> {
             event_id: "PL2".into(),
             event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec!["PL1".into()],
+            auth_events: vec!["PL1".into()],
             ..Default::default()
         };
 
@@ -769,7 +769,7 @@ mod tests {
             &String::new(),
             StateResVersion::V2,
         );
-        assert_eq!(ml1, alloc::vec!["PL2", "PL1", "PL0"]);
+        assert_eq!(ml1, vec!["PL2", "PL1", "PL0"]);
         assert_eq!(cache.len(), 3, "all 3 PL events must be cached");
 
         // Second call: hits cache immediately for PL2 → skips BFS
@@ -845,7 +845,7 @@ mod tests {
             event_id: "$msg".into(),
             event_type: "m.room.message".into(),
             sender: "@alice:x".into(),
-            auth_events: alloc::vec!["$pl".into()],
+            auth_events: vec!["$pl".into()],
             ..Default::default()
         };
 
@@ -867,9 +867,9 @@ mod tests {
 
         assert_eq!(
             sorted,
-            alloc::vec![
-                alloc::string::String::from("$pl"),
-                alloc::string::String::from("$msg")
+            vec![
+                std::string::String::from("$pl"),
+                std::string::String::from("$msg")
             ]
         );
     }

@@ -6,8 +6,8 @@
 //!
 //! Every variant provides a stable [`Warning::code`] for programmatic matching and logging.
 
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 
 /// A non-fatal condition rezzy detected but left to the caller's own policy.
 ///
@@ -162,7 +162,7 @@ impl<T, Id> Outcome<T, Id> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{Outcome, Warning};
-    use alloc::{
+    use std::{
         string::{String, ToString},
         vec,
         vec::Vec,

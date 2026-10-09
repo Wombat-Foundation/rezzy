@@ -29,11 +29,7 @@
 //! strings: that is the only encoding which is canonical, interoperable, and
 //! lossless. See `docs/json_numeric_limits.md` for the full matrix.
 
-#![no_std]
-
-extern crate alloc;
-
-use alloc::{
+use std::{
     borrow::Cow,
     collections::BTreeMap,
     string::{String, ToString},
@@ -188,7 +184,7 @@ fn normalize_exponent(formatted: &str) -> String {
         let rest = formatted.get(index.saturating_add(1)..).unwrap_or("");
         if !rest.starts_with('-') {
             let head = formatted.get(..index).unwrap_or("");
-            return alloc::format!("{head}e+{rest}");
+            return format!("{head}e+{rest}");
         }
     }
     formatted.to_string()
@@ -2547,7 +2543,7 @@ mod tests {
         write_string_value, write_string_value_filtered, Error, Value,
     };
     use crate::{FieldMask, ValueRef};
-    use alloc::{
+    use std::{
         format,
         string::{String, ToString},
     };

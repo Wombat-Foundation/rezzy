@@ -79,7 +79,7 @@
 //! this module exists to avoid paying in production; it's affordable only
 //! as a debug/test-time correctness check, not on the hot path.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 use core::fmt;
 
 use crate::{HashMap, HashSet};
@@ -458,10 +458,10 @@ impl RefcountTable {
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
+
     use super::super::delta::NodeHashDelta;
     use super::*;
-    use alloc::vec;
+    use std::vec;
 
     fn h(byte: u8) -> StructuralHash {
         [byte; 32]

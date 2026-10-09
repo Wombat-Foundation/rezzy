@@ -39,10 +39,10 @@ use crate::state::at::{
     take_finalized_parent, MergeContext, SharedState,
 };
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
-use alloc::collections::VecDeque;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use std::collections::VecDeque;
+use std::string::{String, ToString};
+use std::vec;
+use std::vec::Vec;
 use core::borrow::Borrow;
 use core::fmt;
 use core::hash::BuildHasher;
@@ -126,7 +126,9 @@ pub enum StateDagValidationError<Id = String> {
     /// version.  State-DAG traversal requires `prev_state_events` edges
     /// that only exist in room versions 2.2 and later; earlier versions
     /// use auth-chain state resolution and should not call this function.
-    UnsupportedVersionForDag { version: String },
+    UnsupportedVersionForDag {
+        version: crate::basespec::rezzy_types::StateResVersion,
+    },
 }
 
 impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
@@ -198,7 +200,8 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
             Self::UnsupportedVersionForDag { version } => {
                 write!(
                     f,
-                    "State-DAG traversal requires room version 2.2 or later, got {version}"
+                    "State-DAG traversal requires room version 2.2 or later, got {}",
+                    version.debug_name()
                 )
             }
         }
@@ -209,7 +212,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod validation_error_display_tests {
     use super::StateDagValidationError;
-    use alloc::format;
+    use std::format;
 
     #[test]
     fn formats_every_state_dag_validation_error() {
@@ -317,7 +320,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagError<Id> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod state_dag_error_display_tests {
     use super::{StateDagError, StateDagValidationError};
-    use alloc::{format, vec};
+    use std::{format, vec};
 
     #[test]
     fn formats_every_state_dag_error_variant() {
@@ -349,7 +352,7 @@ mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;
     use crate::json::Value;
-    use alloc::{format, string::String};
+    use std::{format, string::String};
 
     type TestEvent = LeanEvent<String, Value, String>;
     type TestMap = crate::HashMap<String, TestEvent>;
@@ -1302,9 +1305,7 @@ where
     // chain state resolution and must not call this function.
     if version != StateResVersion::V2_2 {
         return Err(StateDagError::Validation(
-            StateDagValidationError::UnsupportedVersionForDag {
-                version: alloc::format!("{version:?}"),
-            },
+            StateDagValidationError::UnsupportedVersionForDag { version },
         ));
     }
 

@@ -32,8 +32,8 @@
 //! ```
 
 use crate::json::Value;
-use alloc::string::String;
-use alloc::string::ToString;
+use std::string::String;
+use std::string::ToString;
 
 use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
 
@@ -123,13 +123,13 @@ pub fn verify_event_signatures(
     verifier: &dyn SignatureVerifier,
 ) -> Result<(), String> {
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
-        return Err(alloc::format!(
+        return Err(format!(
             "unsupported room version {room_version}: cannot verify signatures over an undefined format"
         ));
     }
 
     let Some(origin) = expected_event_signer(value, room_version) else {
-        return Err(alloc::string::String::from(
+        return Err(std::string::String::from(
             "could not derive expected event signer from event_id or sender",
         ));
     };
@@ -153,10 +153,10 @@ pub fn verify_event_signatures_from_server(
     use base64::Engine as _;
 
     let message = try_canonical_redacted_json(value, room_version)
-        .map_err(|e| alloc::format!("failed to compute canonical redacted JSON: {e}"))?
+        .map_err(|e| format!("failed to compute canonical redacted JSON: {e}"))?
         .into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
-        return Err(alloc::string::String::from(
+        return Err(std::string::String::from(
             "event has no signatures object",
         ));
     };
@@ -174,19 +174,19 @@ pub fn verify_event_signatures_from_server(
             }
             verified_any = true;
             let Some(sig_str) = sig.as_str() else {
-                return Err(alloc::format!(
+                return Err(format!(
                     "signature for {server}/{key_id} is not a string"
                 ));
             };
             let sig_bytes = base64::engine::general_purpose::STANDARD_NO_PAD
                 .decode(sig_str)
-                .map_err(|e| alloc::format!("bad base64 for {server}/{key_id}: {e}"))?;
+                .map_err(|e| format!("bad base64 for {server}/{key_id}: {e}"))?;
             verifier.verify(server, key_id, &message, &sig_bytes)?;
         }
     }
 
     if !verified_any {
-        return Err(alloc::format!(
+        return Err(format!(
             "no supported signature from required server {expected_server}"
         ));
     }
@@ -229,7 +229,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K> NativeVerifier<Id, K> {
     fn event(&self, event_id: &Id) -> Result<&Value, String> {
         self.events
             .get(event_id)
-            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))
+            .ok_or_else(|| format!("unknown event {}", event_id.as_ref()))
     }
 }
 
@@ -249,7 +249,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             if actual == expected {
                 return Ok(());
             }
-            Err(alloc::format!(
+            Err(format!(
                 "event id hash mismatch for {}: expected {expected}",
                 event_id.as_ref()
             ))
@@ -268,7 +268,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
     ) -> Result<(), String> {
         let server = crate::basespec::rezzy_types::extract_domain(authorising_user)
             .filter(|server| !server.is_empty())
-            .ok_or_else(|| alloc::format!("invalid authorising user ID {authorising_user}"))?;
+            .ok_or_else(|| format!("invalid authorising user ID {authorising_user}"))?;
         let value = self.event(event_id)?;
         verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
     }
@@ -284,8 +284,8 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
 mod consensus_tests {
     use super::*;
     use crate::json;
-    use alloc::format;
-    use alloc::vec::Vec;
+    use std::format;
+    use std::vec::Vec;
     use base64::Engine as _;
     use ed25519_zebra::SigningKey;
 

@@ -26,9 +26,9 @@
 
 use crate::basespec::rezzy_types::{EventId, LeanEvent};
 use crate::{DenseIndex, FastMap, HashMap};
-use alloc::collections::{BTreeSet, VecDeque};
-use alloc::vec;
-use alloc::vec::Vec;
+use std::collections::{BTreeSet, VecDeque};
+use std::vec;
+use std::vec::Vec;
 use core::hash::BuildHasher;
 use roaring::RoaringBitmap;
 
@@ -1149,9 +1149,9 @@ mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;
     use crate::HashMap;
-    use alloc::format;
-    use alloc::string::String;
-    use alloc::vec;
+    use std::format;
+    use std::string::String;
+    use std::vec;
 
     struct Dummy;
 

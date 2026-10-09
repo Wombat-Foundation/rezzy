@@ -9,11 +9,8 @@
 // results consistent with the upstream Ruma state resolution implementation.
 mod utils;
 
-extern crate alloc;
-extern crate std;
-
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use utils::to_event_map;

@@ -53,7 +53,7 @@ use crate::basespec::rezzy_types::{
 use crate::state::at::SharedState;
 use crate::state::diff::{StateDiff, StateDiffEntry};
 use crate::{FastMap, FastSet, HashMap};
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 /// Partitions N state maps into unconflicted state (agreed by all) and a set
 /// of conflicted event IDs (present in some forks with different values).
@@ -121,7 +121,7 @@ where
                                 let mut set = FastSet::default();
                                 set.insert(occ.first_id);
                                 set.insert(id);
-                                occ.conflicts = Some((alloc::vec![occ.first_id, id], set));
+                                occ.conflicts = Some((vec![occ.first_id, id], set));
                             }
                             Some((ids, seen)) => {
                                 if seen.insert(id) {
@@ -195,7 +195,7 @@ where
         state_maps,
         event_context,
         version,
-        &alloc::string::String::new(),
+        &std::string::String::new(),
         reachability,
         auth_cache,
         mainline_cache,
@@ -280,7 +280,7 @@ where
 /// walk so the library's local-auth checks and power-level mainline walks are
 /// amortized across forks instead of restarting each call. Caches are pure
 /// memoization of deterministic work, so resolution results are unchanged.
-pub struct ForkResolveCaches<Id, C, K = alloc::string::String> {
+pub struct ForkResolveCaches<Id, C, K = std::string::String> {
     auth_cache: crate::state::at::LocalAuthCache<Id, C, K>,
     mainline_cache: crate::FastMap<Id, Option<Id>>,
 }
@@ -549,7 +549,7 @@ where
                     state_key: ev
                         .state_key
                         .as_ref()
-                        .map(|key| alloc::string::String::from(key.as_ref())),
+                        .map(|key| std::string::String::from(key.as_ref())),
                     sender: ev.sender.clone(),
                     auth_events: ev.auth_events.clone(),
                     prev_events: Vec::new(),
@@ -683,7 +683,7 @@ where
     // Genuinely conflicted keys, captured before the MSC4297 subgraph
     // supplement below adds more (auth-chain-context-only) events — see
     // resolve_state_maps's identical comment for why this matters.
-    let empty_key = alloc::string::String::new();
+    let empty_key = std::string::String::new();
     let conflicted_keys =
         crate::resolve::iterative::derive_all_conflicted_keys(&conflicted_events, &empty_key);
 
@@ -695,7 +695,7 @@ where
         populate_auth_from_diff(auth_diff, &conflicted_events, provider, &mut auth_context);
     } else {
         // Slow path: dynamically discover the auth diff via BFS
-        let mut auth_queue: alloc::collections::VecDeque<Id> = alloc::collections::VecDeque::new();
+        let mut auth_queue: std::collections::VecDeque<Id> = std::collections::VecDeque::new();
         for ev in conflicted_events.values() {
             for aid in &ev.auth_events {
                 if !conflicted_events.contains_key(aid) {
@@ -762,14 +762,14 @@ mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;
 
-    type StateMap = SharedState<alloc::string::String>;
+    type StateMap = SharedState<std::string::String>;
 
     fn make_event(
         id: &str,
         event_type: &str,
         state_key: &str,
         sender: &str,
-        auth_events: Vec<alloc::string::String>,
+        auth_events: Vec<std::string::String>,
         depth: u64,
     ) -> LeanEvent {
         LeanEvent {
@@ -781,7 +781,7 @@ mod tests {
             sender: sender.into(),
             content: crate::json::Value::Object(crate::json::Object::new()),
             auth_events,
-            prev_events: alloc::vec![],
+            prev_events: vec![],
             depth,
             power_level: 0,
             origin_server_ts: depth * 1000,
@@ -790,7 +790,7 @@ mod tests {
     }
 
     /// Parse a JSONL string into a `HashMap<String, LeanEvent>` keyed by `event_id`.
-    fn parse_jsonl_map(input: &str) -> HashMap<alloc::string::String, LeanEvent> {
+    fn parse_jsonl_map(input: &str) -> HashMap<std::string::String, LeanEvent> {
         let mut map = HashMap::new();
         for line in input.lines() {
             let line = line.trim();
@@ -807,7 +807,7 @@ mod tests {
     }
 
     fn create_ev() -> LeanEvent {
-        make_event("$create", "m.room.create", "", "@alice:x", alloc::vec![], 0)
+        make_event("$create", "m.room.create", "", "@alice:x", vec![], 0)
     }
 
     /// Builds an `m.room.member` join event whose sender and state key are
@@ -818,7 +818,7 @@ mod tests {
             "m.room.member",
             member,
             member,
-            alloc::vec!["$create".into()],
+            vec!["$create".into()],
             1,
         );
         ev.content = crate::json!({"membership": "join"});
@@ -840,11 +840,11 @@ mod tests {
     /// The canonical two-fork disagreement scenario shared by the concrete and
     /// lazy resolver parity tests.
     fn two_fork_scenario() -> (
-        HashMap<alloc::string::String, LeanEvent>,
+        HashMap<std::string::String, LeanEvent>,
         StateMap,
         StateMap,
     ) {
-        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let mut events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         events.insert("$create".into(), create_ev());
         events.insert("$alice_join".into(), join_ev("$alice_join", "@alice:x"));
         events.insert("$bob_join".into(), join_ev("$bob_join", "@bob:x"));
@@ -854,7 +854,7 @@ mod tests {
                 "m.room.power_levels",
                 "",
                 "@alice:x",
-                alloc::vec!["$create".into(), "$alice_join".into()],
+                vec!["$create".into(), "$alice_join".into()],
                 2,
             );
             ev.content = crate::json!({"users": {"@alice:x": 100}});
@@ -867,7 +867,7 @@ mod tests {
                 "m.room.power_levels",
                 "",
                 "@bob:x",
-                alloc::vec!["$create".into(), "$bob_join".into()],
+                vec!["$create".into(), "$bob_join".into()],
                 2,
             );
             ev.content = crate::json!({"users": {"@bob:x": 100}});
@@ -893,9 +893,9 @@ mod tests {
     fn assert_lazy_matches_concrete(
         fork_a: StateMap,
         fork_b: StateMap,
-        events: &HashMap<alloc::string::String, LeanEvent>,
+        events: &HashMap<std::string::String, LeanEvent>,
         version: StateResVersion,
-        auth_diff: Option<alloc::vec::Vec<alloc::string::String>>,
+        auth_diff: Option<std::vec::Vec<std::string::String>>,
         message: &str,
     ) {
         let concrete = resolve_state_maps(&[fork_a.clone(), fork_b.clone()], events, version);
@@ -966,7 +966,7 @@ mod tests {
         let fork_b = map.clone();
         assert!(fork_a.ptr_eq(&fork_b));
 
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         let result = resolve_state_maps(&[fork_a, fork_b], &events, StateResVersion::V2);
         assert_eq!(result, map);
     }
@@ -975,21 +975,21 @@ mod tests {
     fn test_resolve_identical_maps() {
         let map = fork(&[("m.room.create", "", "$create")]);
 
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         let result = resolve_state_maps(&[map.clone(), map.clone()], &events, StateResVersion::V2);
         assert_eq!(result, map);
     }
 
     #[test]
     fn test_resolve_state_maps_diff_supports_interned_state_keys() {
-        let base: SharedState<alloc::string::String, crate::InternedKey> = SharedState::new();
+        let base: SharedState<std::string::String, crate::InternedKey> = SharedState::new();
         let states = [base.clone()];
         let diff = resolve_state_maps_diff(
             0,
             &states,
             &HashMap::<
-                alloc::string::String,
-                LeanEvent<alloc::string::String, crate::json::Value, crate::InternedKey>,
+                std::string::String,
+                LeanEvent<std::string::String, crate::json::Value, crate::InternedKey>,
             >::new(),
             StateResVersion::V2,
             &crate::InternedKey::new(""),
@@ -1002,18 +1002,18 @@ mod tests {
     #[should_panic(expected = "base_state_index out of range: 1")]
     fn test_resolve_state_maps_diff_rejects_invalid_baseline_index() {
         let states: [StateMap; 1] = [StateMap::new()];
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
 
         let _ = resolve_state_maps_diff(
             1,
             &states,
             &events,
             StateResVersion::V2,
-            &alloc::string::String::new(),
+            &std::string::String::new(),
         );
     }
 
-    fn assert_two_fork_diff(diff: &StateDiff<alloc::string::String>) {
+    fn assert_two_fork_diff(diff: &StateDiff<std::string::String>) {
         use crate::state::diff::StateDiffEntry;
 
         assert_eq!(diff.len(), 3);
@@ -1038,14 +1038,14 @@ mod tests {
     fn assert_unchanged_baseline_diff(
         fork_a: StateMap,
         fork_b: StateMap,
-        events: &HashMap<alloc::string::String, LeanEvent>,
+        events: &HashMap<std::string::String, LeanEvent>,
     ) {
         let diff = resolve_state_maps_diff(
             0,
             &[fork_a, fork_b],
             events,
             StateResVersion::V2,
-            &alloc::string::String::new(),
+            &std::string::String::new(),
         );
         assert!(diff.is_empty());
     }
@@ -1068,7 +1068,7 @@ mod tests {
             &[fork_a.clone(), fork_b.clone()],
             &events,
             StateResVersion::V2,
-            &alloc::string::String::new(),
+            &std::string::String::new(),
         );
 
         // The designated predecessor is fork B, not state_maps[0]. The
@@ -1098,8 +1098,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "requires at least one state map")]
     fn test_resolve_empty_panics() {
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-        let _ = resolve_state_maps::<alloc::string::String, crate::json::Value, _>(
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
+        let _ = resolve_state_maps::<std::string::String, crate::json::Value, _>(
             &[],
             &events,
             StateResVersion::V2,
@@ -1122,7 +1122,7 @@ mod tests {
         ]);
 
         // events_map only has create — missing both join events
-        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let mut events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         events.insert("$create".into(), create_ev());
 
         let _ = resolve_state_maps(&[fork_a, fork_b], &events, StateResVersion::V2);
@@ -1135,7 +1135,7 @@ mod tests {
             ("m.room.member", "@alice:x", "$join"),
         ]);
 
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         let result = resolve_state_maps(core::slice::from_ref(&map), &events, StateResVersion::V2);
         assert_eq!(result, map);
     }
@@ -1144,7 +1144,7 @@ mod tests {
     fn test_resolve_three_forks() {
         // Three forks: two agree on alice's join, one differs.
         // Partitioning requires unanimity, so this slot is conflicted and must be resolved.
-        let mut events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let mut events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         events.insert("$create".into(), create_ev());
         events.insert("$alice_join".into(), join_ev("$alice_join", "@alice:x"));
         events.insert("$bob_join".into(), join_ev("$bob_join", "@alice:x"));
@@ -1177,11 +1177,11 @@ mod tests {
     fn test_resolve_lazy_identical_maps() {
         let map = fork(&[("m.room.create", "", "$create")]);
 
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         let result = resolve_state_maps_lazy_with_diff(
             &[map.clone(), map.clone()],
             &events,
-            None::<alloc::vec::Vec<alloc::string::String>>,
+            None::<std::vec::Vec<std::string::String>>,
             StateResVersion::V2,
         );
         assert_eq!(result, map);
@@ -1311,11 +1311,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "requires at least one state map")]
     fn test_resolve_lazy_empty_panics() {
-        let events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         let _ = resolve_state_maps_lazy_with_diff(
             &[],
             &events,
-            None::<alloc::vec::Vec<alloc::string::String>>,
+            None::<std::vec::Vec<std::string::String>>,
             StateResVersion::V2,
         );
     }
@@ -1326,14 +1326,14 @@ mod tests {
         // Directly test the defensive panic in insert_subgraph_events by
         // violating its invariant: pass a subgraph containing an event
         // that exists in neither conflicted_events nor auth_context.
-        let mut subgraph: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let mut subgraph: HashMap<std::string::String, LeanEvent> = HashMap::new();
         subgraph.insert(
             "$orphan".into(),
-            make_event("$orphan", "m.room.topic", "", "@alice:x", alloc::vec![], 0),
+            make_event("$orphan", "m.room.topic", "", "@alice:x", vec![], 0),
         );
 
-        let auth_context: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
-        let mut conflicted_events: HashMap<alloc::string::String, LeanEvent> = HashMap::new();
+        let auth_context: HashMap<std::string::String, LeanEvent> = HashMap::new();
+        let mut conflicted_events: HashMap<std::string::String, LeanEvent> = HashMap::new();
 
         insert_subgraph_events(subgraph, &auth_context, &mut conflicted_events);
     }
@@ -1360,7 +1360,7 @@ mod tests {
         let _ = resolve_state_maps_lazy_with_diff(
             &[fork_a, fork_b],
             &events,
-            None::<alloc::vec::Vec<alloc::string::String>>,
+            None::<std::vec::Vec<std::string::String>>,
             StateResVersion::V2,
         );
     }
@@ -1387,8 +1387,8 @@ mod tests {
 
         // Include an auth event already present in conflicted_events. It must
         // be skipped by populate_auth_from_diff rather than reinserted.
-        let auth_diff: alloc::vec::Vec<alloc::string::String> =
-            alloc::vec!["$create".into(), "$alice_join".into()];
+        let auth_diff: std::vec::Vec<std::string::String> =
+            vec!["$create".into(), "$alice_join".into()];
         assert_lazy_matches_concrete(
             fork_a,
             fork_b,

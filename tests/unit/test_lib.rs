@@ -1,14 +1,11 @@
 use crate::utils;
 use std::collections::HashMap;
-extern crate alloc;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
-    use super::alloc::string::ToString;
-    use super::alloc::vec;
     use super::utils;
     use core::cmp::Ordering;
     use rezzy::*;

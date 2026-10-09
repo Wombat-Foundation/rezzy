@@ -1,9 +1,9 @@
 #![cfg(feature = "mock-ruma")]
 #![allow(dead_code, unused_imports)]
-extern crate alloc;
+
 extern crate ruma_state_res as original_ruma;
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 pub use original_ruma::events::RoomCreateEvent;
 pub use original_ruma::utils::event_id_map::EventIdMap;
 pub use original_ruma::utils::event_id_set::EventIdSet;
@@ -13,7 +13,7 @@ use rezzy::basespec::event_types::EventType;
 use rezzy::LeanEvent;
 
 fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
-    use alloc::string::ToString;
+    use std::string::ToString;
     let content_val: rezzy::JsonValue =
         rezzy::JsonValue::parse(ev.content().get()).unwrap_or(rezzy::JsonValue::Null);
     let power_level = content_val
@@ -23,18 +23,18 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
     LeanEvent {
         event_id: ev.event_id().to_string(),
         event_type: ev.event_type().to_string(),
-        state_key: ev.state_key().map(alloc::string::ToString::to_string),
+        state_key: ev.state_key().map(std::string::ToString::to_string),
         power_level,
         origin_server_ts: ev.origin_server_ts().0.into(),
         sender: ev.sender().to_string(),
         content: content_val,
         prev_events: ev
             .prev_events()
-            .map(alloc::string::ToString::to_string)
+            .map(std::string::ToString::to_string)
             .collect(),
         auth_events: ev
             .auth_events()
-            .map(alloc::string::ToString::to_string)
+            .map(std::string::ToString::to_string)
             .collect(),
         depth: 0,
         rejected: false,
@@ -53,7 +53,7 @@ where
     E: Event + Clone,
     E::Id: 'a,
 {
-    use alloc::string::ToString;
+    use std::string::ToString;
     use std::collections::{HashMap, HashSet};
 
     let mut counts: HashMap<(&(ruma_events::StateEventType, String), &E::Id), usize> =
@@ -103,7 +103,7 @@ where
     E: Event + Clone,
     E::Id: 'a,
 {
-    use alloc::string::ToString;
+    use std::string::ToString;
     use core::borrow::Borrow;
     use std::collections::HashMap;
 
@@ -167,7 +167,7 @@ where
     E::Id: 'a,
     MapsIter: Iterator<Item = &'a StateMap<E::Id>> + Clone,
 {
-    use alloc::string::ToString;
+    use std::string::ToString;
     use core::borrow::Borrow;
     use std::collections::HashMap;
 
@@ -219,7 +219,7 @@ where
     for chain in auth_chains {
         let set: std::collections::HashSet<_> = chain
             .iter()
-            .map(alloc::string::ToString::to_string)
+            .map(std::string::ToString::to_string)
             .collect();
         union_auth.extend(set.clone());
         intersect_auth.retain(|id| set.contains(id));

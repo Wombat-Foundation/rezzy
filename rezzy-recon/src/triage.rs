@@ -5,7 +5,7 @@
 
 //! Phase 0 difference estimation and bucket localization for MSC4521.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use super::client::MAX_BUCKETS_PER_ROUND;
 use super::{pinsketch, AlgebraicError, SyndromeSketch, MAX_DEPTH, STRATA_COUNT, STRATUM_CAPACITY};
@@ -512,7 +512,7 @@ fn validate_bucket_requests_with_limit(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use super::*;
     use crate::{ElementHash, ResidentKernel};

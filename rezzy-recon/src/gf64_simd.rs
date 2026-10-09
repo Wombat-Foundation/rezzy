@@ -326,7 +326,7 @@ const fn select_evaluator_backend(_has_avx512: bool, has_pclmul: bool) -> Evalua
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::{string::String, vec::Vec};
+    use std::{string::String, vec::Vec};
 
     #[cfg(all(feature = "std", target_arch = "x86_64", not(has_avx512_support)))]
     #[test]
@@ -366,13 +366,13 @@ mod tests {
         }
         let term = 0x8000_0000_0000_0000;
         let source: Vec<u64> = (0..20_u64).map(|i| i * 0x0123_4567_89ab_cdef).collect();
-        let mut expected = alloc::vec![0u64; 20];
+        let mut expected = vec![0u64; 20];
         ScalarEvaluator::poly_mac(term, &source, &mut expected);
 
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("pclmulqdq") {
-                let mut target_sse = alloc::vec![0u64; 20];
+                let mut target_sse = vec![0u64; 20];
                 SseEvaluator::poly_mac(term, &source, &mut target_sse);
                 assert_eq!(target_sse, expected, "SseEvaluator results mismatch");
             }
@@ -384,7 +384,7 @@ mod tests {
                 && std::is_x86_feature_detected!("avx512bw")
                 && std::is_x86_feature_detected!("vpclmulqdq")
             {
-                let mut target_avx = alloc::vec![0u64; 20];
+                let mut target_avx = vec![0u64; 20];
                 Avx512Evaluator::poly_mac(term, &source, &mut target_avx);
                 assert_eq!(target_avx, expected, "Avx512Evaluator results mismatch");
             }
@@ -498,16 +498,16 @@ mod tests {
             state ^= state << 17;
             state
         };
-        let random: alloc::vec::Vec<u64> = (0..512).map(|_| next()).collect();
+        let random: std::vec::Vec<u64> = (0..512).map(|_| next()).collect();
 
-        let operands: alloc::vec::Vec<u64> = fixed.iter().copied().chain(random).collect();
+        let operands: std::vec::Vec<u64> = fixed.iter().copied().chain(random).collect();
 
         for &a in &operands {
             for &b in &operands
                 .iter()
                 .step_by(37)
                 .copied()
-                .collect::<alloc::vec::Vec<_>>()
+                .collect::<std::vec::Vec<_>>()
             {
                 let expected = crate::gf64::mul_bitwise(a, b);
 

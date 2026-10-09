@@ -57,7 +57,7 @@ use crate::{
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache, SharedState},
     HashMap,
 };
-use alloc::string::String;
+use std::string::String;
 use core::hash::BuildHasher;
 
 /// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
@@ -354,7 +354,7 @@ where
     Id: EventId + Sync + Send,
     C: EventContent + Sync + Send + Clone,
 {
-    let empty_key = alloc::string::String::new();
+    let empty_key = std::string::String::new();
     let conflicted_keys =
         crate::resolve::iterative::derive_all_conflicted_keys(conflicted_events, &empty_key);
     resolve_semilattice_fold_with_conflicted_keys(
@@ -393,7 +393,7 @@ where
     // Empty-key sentinel for the `(EventType, K)` lookups below (the
     // "" state key used for singleton events like power_levels/create).
     // `K = String` throughout this exploratory path.
-    let empty_key = alloc::string::String::new();
+    let empty_key = std::string::String::new();
 
     if inputs.version.is_v2_1_plus() {
         return crate::resolve::iterative::resolve_iterative_sort_with_conflicted_keys(inputs);
@@ -440,7 +440,7 @@ where
 
     // Coordinate Projection Phase (Mainline distance mapping)
     let mainline = build_mainline(&resolved, &sort_context, &empty_key, inputs.version);
-    let mut target_events: alloc::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
+    let mut target_events: std::vec::Vec<&LeanEvent<Id, C>> = non_power_events.values().collect();
     let mainline_distances = compute_closest_mainline_positions(
         &mut target_events,
         &mainline,

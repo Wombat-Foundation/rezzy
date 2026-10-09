@@ -145,8 +145,8 @@ mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;
     use crate::json;
-    use alloc::collections::BTreeMap;
-    use alloc::string::String;
+    use std::collections::BTreeMap;
+    use std::string::String;
 
     type State = BTreeMap<(String, String), LeanEvent>;
 

@@ -1,7 +1,7 @@
 //! Dense binary serialization and deserialization for persisted HAMT nodes.
 
 use super::hash::StructuralHash;
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 use core::hash::Hash;
 
 /// Magic prefix for a persisted HAMT node record.

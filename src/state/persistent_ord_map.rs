@@ -14,7 +14,7 @@
 //!   bound (exclusive) on every key in `children[i]`;
 //! - removal never rebalances: an emptied child is dropped and a root with a
 //!   single child is collapsed, so non-root nodes may be under-full.
-use alloc::{sync::Arc, vec, vec::Vec};
+use std::{sync::Arc, vec, vec::Vec};
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt;
@@ -364,7 +364,7 @@ impl<'a, K: Ord, V> IntoIterator for &'a PersistentOrdMap<K, V> {
 
 impl<K: Ord + Clone, V: Clone> IntoIterator for PersistentOrdMap<K, V> {
     type Item = (K, V);
-    type IntoIter = alloc::vec::IntoIter<(K, V)>;
+    type IntoIter = std::vec::IntoIter<(K, V)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -969,8 +969,8 @@ fn frame_height<K, V>(cursor: &Cursor<'_, K, V>) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::BTreeMap;
-    use alloc::vec::Vec;
+    use std::collections::BTreeMap;
+    use std::vec::Vec;
 
     use super::{DiffItem, Node, PersistentOrdMap, MAX_FANOUT};
 

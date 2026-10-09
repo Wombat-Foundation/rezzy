@@ -1,7 +1,7 @@
 //! Matrix Event Type Constants
 
-use alloc::string::String;
-use alloc::sync::Arc;
+use std::string::String;
+use std::sync::Arc;
 use core::fmt;
 
 pub const M_ROOM_MEMBER: &str = "m.room.member";
@@ -177,12 +177,12 @@ impl AsRef<str> for EventType {
 
 impl From<EventType> for crate::json::Value {
     fn from(value: EventType) -> Self {
-        Self::String(alloc::string::String::from(value.as_str()))
+        Self::String(std::string::String::from(value.as_str()))
     }
 }
 impl From<&EventType> for crate::json::Value {
     fn from(value: &EventType) -> Self {
-        Self::String(alloc::string::String::from(value.as_str()))
+        Self::String(std::string::String::from(value.as_str()))
     }
 }
 
@@ -301,12 +301,12 @@ pub const MAX_POWER_LEVEL_RUST: i64 = i64::MAX;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod event_type_tests {
     use super::*;
-    use alloc::format;
-    use alloc::vec::Vec;
+    use std::format;
+    use std::vec::Vec;
 
     /// Every well-known constant paired with the `EventType` variant it maps to.
     fn known_pairs() -> Vec<(&'static str, EventType)> {
-        alloc::vec![
+        vec![
             (M_ROOM_CREATE, EventType::RoomCreate),
             (M_ROOM_MEMBER, EventType::RoomMember),
             (M_ROOM_POWER_LEVELS, EventType::RoomPowerLevels),
@@ -407,12 +407,10 @@ mod event_type_tests {
             Some(core::cmp::Ordering::Less)
         );
 
-        let mut values = alloc::vec![
-            EventType::RoomMessage,
+        let mut values = [EventType::RoomMessage,
             EventType::from("a.custom.type"),
             EventType::RoomCreate,
-            EventType::from("z.custom.type"),
-        ];
+            EventType::from("z.custom.type")];
         values.sort();
         let strs: Vec<&str> = values.iter().map(EventType::as_str).collect();
         let mut expected = strs.clone();

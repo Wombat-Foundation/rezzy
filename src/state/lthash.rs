@@ -67,7 +67,7 @@
 //!   algebraic traits, and tri-mode output (lattice / digest / both).
 //! - [`RedactionOverlay`] and [`PduLtHash`] are thin domain layers over it.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 use core::iter::{Extend, FromIterator, Sum};
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 
@@ -1106,8 +1106,8 @@ mod tests {
     use core::fmt::Write as _;
 
     use super::*;
-    use alloc::string::String;
-    use alloc::vec::Vec;
+    use std::string::String;
+    use std::vec::Vec;
 
     #[test]
     fn resolution_input_record_encoding_is_canonical() {
@@ -1841,10 +1841,10 @@ mod tests {
         let mut keys = Vec::new();
         for i in 0..15 {
             let key = (
-                crate::basespec::event_types::EventType::from(alloc::format!("type_{i}")),
-                alloc::format!("state_key_{i}"),
+                crate::basespec::event_types::EventType::from(format!("type_{i}")),
+                format!("state_key_{i}"),
             );
-            let val = alloc::format!("$initial_event_{i}");
+            let val = format!("$initial_event_{i}");
             state.insert(key.clone(), val.clone());
             running_hash.insert(key.0.as_str(), &key.1, &val);
             keys.push(key);
@@ -1866,14 +1866,14 @@ mod tests {
                     // Create a new key
                     let id = rng.next();
                     let key = (
-                        crate::basespec::event_types::EventType::from(alloc::format!("type_{id}")),
-                        alloc::format!("state_key_{id}"),
+                        crate::basespec::event_types::EventType::from(format!("type_{id}")),
+                        format!("state_key_{id}"),
                     );
                     keys.push(key.clone());
                     key
                 };
 
-                let new_val = alloc::format!("$event_{}", rng.next());
+                let new_val = format!("$event_{}", rng.next());
 
                 // If it existed, we do a replace under the hood, or insert/remove.
                 if let Some(old_val) = state.get(&key) {
@@ -1896,7 +1896,7 @@ mod tests {
                 let idx = rng.next_range(0, keys_len - 1) as usize;
                 let key = &keys[idx];
                 if let Some(old_val) = state.get(key).cloned() {
-                    let new_val = alloc::format!("$replaced_{}", rng.next());
+                    let new_val = format!("$replaced_{}", rng.next());
                     running_hash.replace(key.0.as_str(), &key.1, &old_val, &new_val);
                     state.insert(key.clone(), new_val);
                 }
@@ -1947,7 +1947,7 @@ mod tests {
     fn test_lthash_boundary_multibyte_truncation_rounds_back_to_char_boundary() {
         // Force the truncation point to land inside a 4-byte UTF-8 character so
         // the loop has to back up more than once before it reaches a boundary.
-        let over_max = alloc::format!("{}🚀", "a".repeat(65533));
+        let over_max = format!("{}🚀", "a".repeat(65533));
         let seed_over = LtHash::seed(&over_max, "", &"$1");
         let seed_exact = LtHash::seed(&"a".repeat(65533), "", &"$1");
         assert_eq!(

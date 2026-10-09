@@ -20,9 +20,9 @@
 pub mod roaring;
 pub mod user;
 
-use alloc::collections::VecDeque;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use std::collections::VecDeque;
+use std::string::{String, ToString};
+use std::vec::Vec;
 use core::fmt;
 
 use crate::basespec::event_types::{
@@ -33,8 +33,8 @@ use crate::basespec::event_types::{
     RULE_KNOCK_RESTRICTED, RULE_PUBLIC, RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::{
-    apply_redaction, domain_matches, is_valid_mxid, EventContent, EventId, EventLike,
-    EventProvider, EventVerifier, LeanEvent, StateKey, StateResVersion,
+    apply_redaction, is_valid_mxid, EventContent, EventId, EventLike, EventProvider, EventVerifier,
+    LeanEvent, StateKey, StateResVersion,
 };
 
 /// An error indicating why an event failed authorization.
@@ -185,6 +185,21 @@ fn banned_user<Id: EventId>(sender: &str, event_id: &Id) -> AuthError<Id> {
     }
 }
 
+/// Like [`domain_matches`], but renders `id2`'s `Display` form into a stack
+/// buffer so the comparison does not allocate. Fails closed (`false`) if the
+/// Display form does not fit in 256 bytes — event IDs are validated to ≤255,
+/// so this only trips on already-invalid input.
+fn domain_matches_display(id1: &str, id2: &impl core::fmt::Display) -> bool {
+    let mut buf = [0u8; 256];
+    let Some(n) = crate::basespec::rezzy_types::write_display_into(&mut buf, id2) else {
+        return false;
+    };
+    let Ok(id2_str) = core::str::from_utf8(&buf[..n]) else {
+        return false;
+    };
+    crate::basespec::rezzy_types::domain_matches(id1, id2_str)
+}
+
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 
@@ -279,7 +294,7 @@ pub trait StateProvider<Id = String, C = crate::json::Value, E = LeanEvent<Id, C
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
 pub type RoomState<Id = String, C = crate::json::Value, K = String> =
-    alloc::collections::BTreeMap<(String, K), LeanEvent<Id, C, K>>;
+    std::collections::BTreeMap<(String, K), LeanEvent<Id, C, K>>;
 
 impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for RoomState<Id, C, K>
 where
@@ -414,7 +429,7 @@ fn reject_if_flagged_auth_state<
         .get_event(event_type, state_key)
         .is_some_and(EventLike::rejected)
     {
-        return Err(AuthError::InvalidSyntax(alloc::format!(
+        return Err(AuthError::InvalidSyntax(format!(
             "rejected auth state event {event_type}/{state_key} must not be used"
         )));
     }
@@ -552,7 +567,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
     if is_msc4242
         && event.prev_state_events().len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
     {
-        return Err(AuthError::InvalidSyntax(alloc::format!(
+        return Err(AuthError::InvalidSyntax(format!(
             "prev_state_events exceeds maximum allowed length of {}",
             crate::basespec::event_types::MAX_PREV_STATE_EVENTS
         )));
@@ -631,7 +646,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         if create_ev.content().get_m_federate() == Some(false)
             && !crate::basespec::rezzy_types::domain_matches(event.sender(), create_ev.sender())
         {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cross-domain event from sender {} rejected: room has m.federate=false",
                 event.sender()
             )));
@@ -673,12 +688,9 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         if matches!(room_version, "1" | "2") {
             let sender_pl = user::get_sender_power_level(event.sender(), state, version);
             let redact_pl = get_redact_power_level(state);
-            let same_domain = event.get_redacts().is_some_and(|target| {
-                crate::basespec::rezzy_types::domain_matches(
-                    target,
-                    &alloc::format!("{}", event.event_id()),
-                )
-            });
+            let same_domain = event
+                .get_redacts()
+                .is_some_and(|target| domain_matches_display(target, &event.event_id()));
             if sender_pl < redact_pl && !same_domain {
                 return Err(AuthError::InvalidSyntax(
                     "m.room.redaction requires sender PL >= redact level, or same domain as the redacted event".into(),
@@ -754,13 +766,13 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
             }
 
             if !VALID_AUTH_TYPES.contains(&auth_type.as_ref()) {
-                return Err(AuthError::InvalidSyntax(alloc::format!(
+                return Err(AuthError::InvalidSyntax(format!(
                     "unexpected event type in auth_events: {auth_type}"
                 )));
             }
 
             let sk = auth_ev.state_key().unwrap_or("");
-            let key = (auth_type.into_owned(), alloc::string::String::from(sk));
+            let key = (auth_type.into_owned(), std::string::String::from(sk));
             if seen_tuples.insert(key, auth_id.clone()).is_some() {
                 return Err(AuthError::InvalidSyntax(
                     "auth_events contains duplicate (type, state_key) pair".into(),
@@ -891,14 +903,14 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         if is_room_v10_plus {
             // Rule 10.1 (V10+): Scalar PL properties must be integers.
             if let Some(field) = new_content.find_non_integer_scalar_pl() {
-                return Err(AuthError::InvalidSyntax(alloc::format!(
+                return Err(AuthError::InvalidSyntax(format!(
                     "m.room.power_levels {field} is not an integer"
                 )));
             }
 
             // Rule 10.2 (V10+): `events`/`notifications` must be objects with integer values.
             if let Some(field) = new_content.find_non_integer_map_pl() {
-                return Err(AuthError::InvalidSyntax(alloc::format!(
+                return Err(AuthError::InvalidSyntax(format!(
                     "m.room.power_levels {field} is not an object with integer values"
                 )));
             }
@@ -910,7 +922,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
                 let create_content = create_event.content();
                 if let Some(creator) = create_content.get_creator() {
                     if new_content.has_user_in_users(creator) {
-                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                        return Err(AuthError::InvalidSyntax(format!(
                             "m.room.power_levels users contains creator {creator}"
                         )));
                     }
@@ -921,7 +933,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
                 new_content.visit_user_keys(&mut |user_id| {
                     if create_content.has_additional_creator(user_id) {
                         invalid_additional_creator =
-                            Some(AuthError::InvalidSyntax(alloc::format!(
+                            Some(AuthError::InvalidSyntax(format!(
                                 "m.room.power_levels users contains additional_creator {user_id}"
                             )));
                     }
@@ -942,7 +954,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         let mut invalid_user = None;
         new_content.visit_user_keys(&mut |user_id| {
             if !user_id.starts_with('@') || !user_id.contains(':') {
-                invalid_user = Some(AuthError::InvalidSyntax(alloc::format!(
+                invalid_user = Some(AuthError::InvalidSyntax(format!(
                     "users key is not a valid user ID: {user_id}"
                 )));
             }
@@ -985,7 +997,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         // Self-bans are nonsensical and forbidden by the spec.
         if new_membership == MEM_BAN && target_user == event.sender() {
             return Err(AuthError::InvalidStateKey {
-                expected: alloc::format!("!= {}", event.sender()),
+                expected: format!("!= {}", event.sender()),
                 actual: target_user.into(),
             });
         }
@@ -1007,7 +1019,7 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
             MEM_KNOCK => check_knock_rules(event, state, target_user)?,
             // Rule 5.8: Unknown membership — reject
             _ => {
-                return Err(AuthError::InvalidSyntax(alloc::format!(
+                return Err(AuthError::InvalidSyntax(format!(
                     "unknown membership: {new_membership}"
                 )));
             }
@@ -1031,7 +1043,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     prev_pl: &C,
     sender_pl: i64,
 ) -> Result<(), AuthError<Id>> {
-    use alloc::collections::BTreeMap;
+    use std::collections::BTreeMap;
 
     // Rule 10.6: Scalar PL properties — reject if old or new value > sender PL.
     check_scalar_pl(
@@ -1086,7 +1098,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     for (key, &old_val) in &old_events {
         let changed = new_events.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot change events[{key}]: current value {old_val} > sender PL {sender_pl}"
             )));
         }
@@ -1095,7 +1107,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     for (key, &new_val) in &new_events {
         let changed = old_events.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot set events[{key}] to {new_val}: exceeds sender PL {sender_pl}"
             )));
         }
@@ -1114,7 +1126,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     for (key, &old_val) in &old_notifications {
         let changed = new_notifications.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot change notifications[{key}]: current value {old_val} > sender PL {sender_pl}"
             )));
         }
@@ -1122,7 +1134,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     for (key, &new_val) in &new_notifications {
         let changed = old_notifications.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot set notifications[{key}] to {new_val}: exceeds sender PL {sender_pl}"
             )));
         }
@@ -1146,7 +1158,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
         }
         let changed = new_users.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val >= sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot change users[{key}]: current PL {old_val} >= sender PL {sender_pl}"
             )));
         }
@@ -1155,7 +1167,7 @@ fn check_power_levels_rules<Id: EventId, C: EventContent>(
     for (key, &new_val) in &new_users {
         let changed = old_users.get(key).is_none_or(|&ov| ov != new_val);
         if changed && new_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot set users[{key}] to {new_val}: exceeds sender PL {sender_pl}"
             )));
         }
@@ -1177,14 +1189,14 @@ fn check_scalar_pl<Id>(
     }
     if let Some(old_val) = old {
         if old_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot change {field}: current value {old_val} > sender PL {sender_pl}"
             )));
         }
     }
     if let Some(new_val) = new {
         if new_val > sender_pl {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "cannot set {field} to {new_val}: exceeds sender PL {sender_pl}"
             )));
         }
@@ -1250,9 +1262,9 @@ where
     // event (its `redacts` target) matches the domain of the redaction's own
     // event_id — matching `check_auth`'s rule, NOT the senders' domains.
     if matches!(room_version, "1" | "2") {
-        return redaction.get_redacts().is_some_and(|target| {
-            domain_matches(target, &alloc::format!("{}", redaction.event_id))
-        });
+        return redaction
+            .get_redacts()
+            .is_some_and(|target| domain_matches_display(target, &redaction.event_id));
     }
     false
 }
@@ -1298,18 +1310,18 @@ impl<Id> Default for RedactionReport<Id> {
 #[inline]
 pub(crate) fn event_id_to_wire_cow<Id: core::fmt::Display + 'static>(
     id: &Id,
-) -> alloc::borrow::Cow<'_, str> {
+) -> std::borrow::Cow<'_, str> {
     let any: &dyn core::any::Any = id;
-    if let Some(s) = any.downcast_ref::<alloc::string::String>() {
-        return alloc::borrow::Cow::Borrowed(s.as_str());
+    if let Some(s) = any.downcast_ref::<std::string::String>() {
+        return std::borrow::Cow::Borrowed(s.as_str());
     }
-    if let Some(s) = any.downcast_ref::<alloc::sync::Arc<str>>() {
-        return alloc::borrow::Cow::Borrowed(s.as_ref());
+    if let Some(s) = any.downcast_ref::<std::sync::Arc<str>>() {
+        return std::borrow::Cow::Borrowed(s.as_ref());
     }
-    if let Some(s) = any.downcast_ref::<alloc::boxed::Box<str>>() {
-        return alloc::borrow::Cow::Borrowed(s.as_ref());
+    if let Some(s) = any.downcast_ref::<std::boxed::Box<str>>() {
+        return std::borrow::Cow::Borrowed(s.as_ref());
     }
-    alloc::borrow::Cow::Owned(alloc::string::ToString::to_string(id))
+    std::borrow::Cow::Owned(std::string::ToString::to_string(id))
 }
 
 /// Apply each `m.room.redaction` event to its in-set target, but only when the
@@ -1417,14 +1429,14 @@ where
 
     // Build the wire ID index map. For string-backed IDs (String, Arc<str>, Box<str>),
     // `event_id_to_wire_cow` borrows directly without allocating.
-    let pos_by_id: alloc::collections::BTreeMap<alloc::borrow::Cow<'_, str>, usize> = events
+    let pos_by_id: std::collections::BTreeMap<std::borrow::Cow<'_, str>, usize> = events
         .iter()
         .enumerate()
         .map(|(i, e)| (event_id_to_wire_cow(&e.event_id), i))
         .collect();
 
     let mut pairs: Vec<(usize, usize)> = Vec::new();
-    let mut deferred: Vec<(usize, alloc::string::String)> = Vec::new();
+    let mut deferred: Vec<(usize, std::string::String)> = Vec::new();
     for &rp in &redaction_positions {
         let Some(target_id) = events[rp].get_redacts() else {
             continue;
@@ -1470,8 +1482,8 @@ where
         .enumerate()
         .map(|(i, &(rp, _))| (rp, i))
         .collect();
-    let mut children: Vec<Vec<usize>> = alloc::vec![Vec::new(); pairs.len()];
-    let mut in_degree: Vec<u8> = alloc::vec![0; pairs.len()];
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); pairs.len()];
+    let mut in_degree: Vec<u8> = vec![0; pairs.len()];
     for (i, &(_, tp)) in pairs.iter().enumerate() {
         if let Some(&parent) = blocked_by.get(&tp) {
             children[parent].push(i);
@@ -1480,7 +1492,7 @@ where
     }
     let mut queue: VecDeque<usize> = (0..pairs.len()).filter(|&i| in_degree[i] == 0).collect();
     let mut order: Vec<usize> = Vec::with_capacity(pairs.len());
-    let mut emitted = alloc::vec![false; pairs.len()];
+    let mut emitted = vec![false; pairs.len()];
     while let Some(i) = queue.pop_front() {
         order.push(i);
         emitted[i] = true;
@@ -1669,7 +1681,7 @@ fn check_invite_rules<E: EventLike>(
     // Inviting requires invite power level, and sender != target
     if target_user == event.sender() {
         return Err(AuthError::InvalidStateKey {
-            expected: alloc::format!("!= {}", event.sender()),
+            expected: format!("!= {}", event.sender()),
             actual: target_user.into(),
         });
     }
@@ -1712,7 +1724,7 @@ fn check_invite_rules<E: EventLike>(
 
         if mxid != target_user {
             return Err(AuthError::InvalidStateKey {
-                expected: alloc::format!("mxid == {target_user}"),
+                expected: format!("mxid == {target_user}"),
                 actual: mxid.into(),
             });
         }
@@ -1729,7 +1741,7 @@ fn check_invite_rules<E: EventLike>(
 
         if tpi_event.sender() != event.sender() {
             return Err(AuthError::InvalidStateKey {
-                expected: alloc::format!("sender == {}", tpi_event.sender()),
+                expected: format!("sender == {}", tpi_event.sender()),
                 actual: event.sender().into(),
             });
         }
@@ -2012,7 +2024,7 @@ where
         }
     } else if let Some(declared) = &event.room_id {
         if !crate::basespec::rezzy_types::domain_matches(declared, event.sender.as_str()) {
-            return Err(AuthError::InvalidSyntax(alloc::format!(
+            return Err(AuthError::InvalidSyntax(format!(
                 "m.room.create room_id {declared} domain does not match sender {} domain",
                 event.sender
             )));
@@ -2051,15 +2063,23 @@ where
         .get_event(M_ROOM_CREATE, "")
         .filter(|create_ev| !rejected_ids.contains(&create_ev.event_id));
     let matches_accepted_create = accepted_create.is_some_and(|create_ev| {
-        let create_id_str = create_ev.event_id.to_string();
+        let mut id_buf = [0u8; 256];
+        let Some(n) =
+            crate::basespec::rezzy_types::write_display_into(&mut id_buf, &create_ev.event_id)
+        else {
+            return false;
+        };
+        let Ok(create_id_str) = core::str::from_utf8(&id_buf[..n]) else {
+            return false;
+        };
         create_id_str
             .strip_prefix('$')
-            .is_some_and(|hash_part| declared.as_ref() == alloc::format!("!{hash_part}"))
+            .is_some_and(|hash_part| declared.as_ref().strip_prefix('!') == Some(hash_part))
     });
     if matches_accepted_create {
         Ok(())
     } else {
-        Err(AuthError::InvalidSyntax(alloc::format!(
+        Err(AuthError::InvalidSyntax(format!(
             "room_id {declared} is not the event ID of an accepted m.room.create event"
         )))
     }
@@ -2424,7 +2444,7 @@ mod tests {
     use super::*;
     use crate::basespec::event_types::M_ROOM_ALIASES;
     use crate::json;
-    use alloc::vec;
+    use std::vec;
 
     fn make_test_event(
         id: &str,

@@ -20,7 +20,7 @@
 //!   names were removed (no aliases remain), so downstream code must use the
 //!   new names; at the time of the rename neither had any caller.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use std::{sync::Arc, vec, vec::Vec};
 use core::{
     borrow::Borrow,
     fmt,

@@ -10,10 +10,10 @@ use crate::DenseIndex;
 use crate::FastMap;
 use crate::HashMap;
 use crate::LeanEvent;
-use alloc::collections::VecDeque;
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
+use std::collections::VecDeque;
+use std::string::String;
+use std::vec;
+use std::vec::Vec;
 use roaring::RoaringBitmap;
 
 /// A topologically-ordered auth DAG with pre-computed transitive reachability bitmaps.
@@ -173,7 +173,7 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     #[test]
     fn test_auth_graph_build() {
