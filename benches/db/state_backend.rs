@@ -26,8 +26,8 @@ use rezzy::hamt::{self, HamtNode};
 
 use crate::common::{generate_unique_entries, unreachable_resolver, Xorshift128};
 
-type Key = (EventType, String);
-type Value = String;
+pub(crate) type Key = (EventType, String);
+pub(crate) type Value = String;
 type PersistentMap = rezzy::PersistentOrdMap<Key, Value>;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-state-backend";
@@ -55,7 +55,7 @@ const KNOWN_SINGLETON_TYPES: &[EventType] = &[
 /// Builds `n` distinct state-map entries mimicking a real room: mostly
 /// `m.room.member` (one per state_key, i.e. per user) plus a handful of
 /// singleton config events and a sprinkling of custom event types.
-fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
+pub(crate) fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
     generate_unique_entries(
         n,
         seed,

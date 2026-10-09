@@ -75,6 +75,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "db",
+        name: "state_backend_fast",
+        description: "imbl vs PersistentOrdMap with equivalent Arc-backed key/value types",
+        run_fn: db::state_backend_fast::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
         name: "state_key_repr",
         description: "PersistentOrdMap String vs InternedKey keys and String vs Arc<str> values",
         run_fn: db::state_key_repr::run,
