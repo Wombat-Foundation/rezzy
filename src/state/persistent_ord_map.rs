@@ -12,8 +12,6 @@
 //! - an internal node has `keys.len() + 1 == children.len()`, with
 //!   `keys[i]` a lower bound on every key in `children[i + 1]` and an upper
 //!   bound (exclusive) on every key in `children[i]`;
-//! - a leaf's `keys` and `values` vectors always have equal lengths and entry
-//!   `i` in each vector belongs to the same map entry;
 //! - removal never rebalances: an emptied child is dropped and a root with a
 //!   single child is collapsed, so non-root nodes may be under-full.
 use alloc::{sync::Arc, vec, vec::Vec};
@@ -29,33 +27,8 @@ const MAX_FANOUT: usize = 24;
 const BULK_FILL: usize = MAX_FANOUT - MAX_FANOUT / 4;
 
 enum Node<K, V> {
-    Leaf(Leaf<K, V>),
+    Leaf(Vec<(K, V)>),
     Internal(Internal<K, V>),
-}
-
-/// Leaf storage is split by column so lookup binary-searches keys without
-/// loading values into the cache. Values are touched only after a key match.
-struct Leaf<K, V> {
-    keys: Vec<K>,
-    values: Vec<V>,
-}
-
-impl<K, V> Leaf<K, V> {
-    fn empty() -> Self {
-        Self {
-            keys: Vec::new(),
-            values: Vec::new(),
-        }
-    }
-}
-
-impl<K: Clone, V: Clone> Clone for Leaf<K, V> {
-    fn clone(&self) -> Self {
-        Self {
-            keys: self.keys.clone(),
-            values: self.values.clone(),
-        }
-    }
 }
 
 struct Internal<K, V> {
@@ -66,7 +39,7 @@ struct Internal<K, V> {
 impl<K: Clone, V: Clone> Clone for Node<K, V> {
     fn clone(&self) -> Self {
         match self {
-            Self::Leaf(leaf) => Self::Leaf(leaf.clone()),
+            Self::Leaf(entries) => Self::Leaf(entries.clone()),
             Self::Internal(internal) => Self::Internal(Internal {
                 keys: internal.keys.clone(),
                 children: internal.children.clone(),
@@ -100,7 +73,7 @@ impl<K, V> Internal<K, V> {
 impl<K, V> Node<K, V> {
     fn is_empty(&self) -> bool {
         match self {
-            Self::Leaf(leaf) => leaf.keys.is_empty(),
+            Self::Leaf(entries) => entries.is_empty(),
             Self::Internal(internal) => internal.children.is_empty(),
         }
     }
@@ -110,7 +83,7 @@ impl<K, V> Node<K, V> {
         let mut node = self;
         loop {
             match node {
-                Self::Leaf(leaf) => return leaf.keys.first(),
+                Self::Leaf(entries) => return entries.first().map(|(key, _)| key),
                 Self::Internal(internal) => node = internal.children.first()?,
             }
         }
@@ -159,7 +132,7 @@ impl<K, V> PersistentOrdMap<K, V> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            root: Arc::new(Node::Leaf(Leaf::empty())),
+            root: Arc::new(Node::Leaf(Vec::new())),
             height: 0,
             len: 0,
         }
@@ -192,12 +165,11 @@ impl<K, V> PersistentOrdMap<K, V> {
         let mut node: &Node<K, V> = &self.root;
         loop {
             match node {
-                Node::Leaf(leaf) => {
-                    return leaf
-                        .keys
-                        .binary_search_by(|k| Borrow::<Q>::borrow(k).cmp(key))
+                Node::Leaf(entries) => {
+                    return entries
+                        .binary_search_by(|(k, _)| Borrow::<Q>::borrow(k).cmp(key))
                         .ok()
-                        .map(|i| &leaf.values[i]);
+                        .map(|i| &entries[i].1);
                 }
                 Node::Internal(internal) => {
                     node = internal.children.get(internal.child_index(key))?;
@@ -331,15 +303,9 @@ impl<K: Clone, V> PersistentOrdMap<K, V> {
         let mut level: Vec<(K, Arc<Node<K, V>>)> = Vec::new();
         let mut source = entries.into_iter();
         for size in even_chunks(len) {
-            let mut keys = Vec::with_capacity(size);
-            let mut values = Vec::with_capacity(size);
-            for _ in 0..size {
-                let (key, value) = source.next().expect("bulk chunk exceeds source");
-                keys.push(key);
-                values.push(value);
-            }
-            let min = keys[0].clone();
-            level.push((min, Arc::new(Node::Leaf(Leaf { keys, values }))));
+            let chunk: Vec<(K, V)> = source.by_ref().take(size).collect();
+            let min = chunk[0].0.clone();
+            level.push((min, Arc::new(Node::Leaf(chunk))));
         }
 
         let mut height = 0u8;
@@ -480,24 +446,17 @@ where
     V: Clone,
 {
     match Arc::make_mut(node) {
-        Node::Leaf(leaf) => match leaf.keys.binary_search(&key) {
-            Ok(i) => (Some(mem::replace(&mut leaf.values[i], value)), None),
+        Node::Leaf(entries) => match entries.binary_search_by(|(k, _)| k.cmp(&key)) {
+            Ok(i) => (Some(mem::replace(&mut entries[i].1, value)), None),
             Err(i) => {
-                leaf.keys.insert(i, key);
-                leaf.values.insert(i, value);
-                if leaf.keys.len() > MAX_FANOUT {
-                    let split_at = leaf
-                        .keys
+                entries.insert(i, (key, value));
+                if entries.len() > MAX_FANOUT {
+                    let split_at = entries
                         .len()
                         .checked_div(2)
                         .expect("split divisor is non-zero");
-                    let right_keys = leaf.keys.split_off(split_at);
-                    let right_values = leaf.values.split_off(split_at);
-                    let separator = right_keys[0].clone();
-                    let right = Leaf {
-                        keys: right_keys,
-                        values: right_values,
-                    };
+                    let right = entries.split_off(split_at);
+                    let separator = right[0].0.clone();
                     (None, Some((separator, Arc::new(Node::Leaf(right)))))
                 } else {
                     (None, None)
@@ -554,13 +513,11 @@ where
         return Some(removed);
     };
     match unique {
-        Node::Leaf(leaf) => {
-            let i = leaf
-                .keys
-                .binary_search_by(|k| Borrow::<Q>::borrow(k).cmp(key))
+        Node::Leaf(entries) => {
+            let i = entries
+                .binary_search_by(|(k, _)| Borrow::<Q>::borrow(k).cmp(key))
                 .ok()?;
-            leaf.keys.remove(i);
-            Some(leaf.values.remove(i))
+            Some(entries.remove(i).1)
         }
         Node::Internal(internal) => {
             let idx = internal.child_index(key);
@@ -579,18 +536,14 @@ where
     Q: Ord + ?Sized,
 {
     match node {
-        Node::Leaf(leaf) => {
-            let i = leaf
-                .keys
-                .binary_search_by(|k| Borrow::<Q>::borrow(k).cmp(key))
+        Node::Leaf(entries) => {
+            let i = entries
+                .binary_search_by(|(k, _)| Borrow::<Q>::borrow(k).cmp(key))
                 .ok()?;
-            let mut keys = Vec::with_capacity(leaf.keys.len().saturating_sub(1));
-            keys.extend_from_slice(&leaf.keys[..i]);
-            keys.extend_from_slice(&leaf.keys[i.saturating_add(1)..]);
-            let mut values = Vec::with_capacity(leaf.values.len().saturating_sub(1));
-            values.extend_from_slice(&leaf.values[..i]);
-            values.extend_from_slice(&leaf.values[i.saturating_add(1)..]);
-            Some((Node::Leaf(Leaf { keys, values }), leaf.values[i].clone()))
+            let mut rest = Vec::with_capacity(entries.len().saturating_sub(1));
+            rest.extend_from_slice(&entries[..i]);
+            rest.extend_from_slice(&entries[i.saturating_add(1)..]);
+            Some((Node::Leaf(rest), entries[i].1.clone()))
         }
         Node::Internal(internal) => {
             let idx = internal.child_index(key);
@@ -612,7 +565,7 @@ type Ancestor<'a, K, V> = (&'a [Arc<Node<K, V>>], usize);
 /// Ordered map iterator.
 pub struct Iter<'a, K, V> {
     stack: Vec<Ancestor<'a, K, V>>,
-    leaf: Option<&'a Leaf<K, V>>,
+    leaf: &'a [(K, V)],
     pos: usize,
 }
 
@@ -620,7 +573,7 @@ impl<'a, K, V> Iter<'a, K, V> {
     const fn empty() -> Self {
         Self {
             stack: Vec::new(),
-            leaf: None,
+            leaf: &[],
             pos: 0,
         }
     }
@@ -630,13 +583,13 @@ impl<'a, K, V> Iter<'a, K, V> {
         loop {
             match node {
                 Node::Leaf(entries) => {
-                    self.leaf = Some(entries);
+                    self.leaf = entries;
                     self.pos = 0;
                     return;
                 }
                 Node::Internal(internal) => {
                     let Some(first) = internal.children.first() else {
-                        self.leaf = None;
+                        self.leaf = &[];
                         self.pos = 0;
                         return;
                     };
@@ -657,17 +610,16 @@ impl<'a, K, V> Iter<'a, K, V> {
         loop {
             match node {
                 Node::Leaf(entries) => {
-                    iter.leaf = Some(entries);
-                    iter.pos =
-                        entries.keys.partition_point(
-                            |k| {
-                                if inclusive {
-                                    k < key
-                                } else {
-                                    k <= key
-                                }
-                            },
-                        );
+                    iter.leaf = entries;
+                    iter.pos = entries.partition_point(
+                        |(k, _)| {
+                            if inclusive {
+                                k < key
+                            } else {
+                                k <= key
+                            }
+                        },
+                    );
                     return iter;
                 }
                 Node::Internal(internal) => {
@@ -691,12 +643,9 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(leaf) = self.leaf {
-                if let Some(key) = leaf.keys.get(self.pos) {
-                    let value = &leaf.values[self.pos];
-                    self.pos = self.pos.checked_add(1).expect("iterator position overflow");
-                    return Some((key, value));
-                }
+            if let Some((key, value)) = self.leaf.get(self.pos).map(|e| (&e.0, &e.1)) {
+                self.pos = self.pos.checked_add(1).expect("iterator position overflow");
+                return Some((key, value));
             }
             // Current leaf exhausted: move to the next unvisited child.
             loop {
@@ -785,7 +734,7 @@ enum Frame<'a, K, V> {
         height: u8,
     },
     Entries {
-        items: &'a Leaf<K, V>,
+        items: &'a [(K, V)],
         idx: usize,
     },
 }
@@ -817,9 +766,9 @@ impl<'a, K, V> Cursor<'a, K, V> {
                     }
                 }
                 Frame::Entries { items, idx } => {
-                    if let (Some(key), Some(value)) = (items.keys.get(*idx), items.values.get(*idx))
-                    {
-                        return Some(Head::Entry(key, value));
+                    let items: &'a [(K, V)] = items;
+                    if let Some(entry) = items.get(*idx) {
+                        return Some(Head::Entry(&entry.0, &entry.1));
                     }
                 }
             }
@@ -1055,20 +1004,16 @@ mod tests {
         match node {
             Node::Leaf(entries) => {
                 assert_eq!(depth, height, "leaf at wrong depth");
-                assert!(entries.keys.len() <= MAX_FANOUT, "leaf overflow");
-                assert_eq!(entries.keys.len(), entries.values.len());
-                assert!(is_root || !entries.keys.is_empty(), "empty non-root leaf");
-                assert!(
-                    entries.keys.windows(2).all(|w| w[0] < w[1]),
-                    "leaf unsorted"
-                );
-                if let (Some(lo), Some(first)) = (lower, entries.keys.first()) {
-                    assert!(first >= lo, "leaf below lower bound");
+                assert!(entries.len() <= MAX_FANOUT, "leaf overflow");
+                assert!(is_root || !entries.is_empty(), "empty non-root leaf");
+                assert!(entries.windows(2).all(|w| w[0].0 < w[1].0), "leaf unsorted");
+                if let (Some(lo), Some(first)) = (lower, entries.first()) {
+                    assert!(&first.0 >= lo, "leaf below lower bound");
                 }
-                if let (Some(hi), Some(last)) = (upper, entries.keys.last()) {
-                    assert!(last < hi, "leaf at or above upper bound");
+                if let (Some(hi), Some(last)) = (upper, entries.last()) {
+                    assert!(&last.0 < hi, "leaf at or above upper bound");
                 }
-                entries.keys.len()
+                entries.len()
             }
             Node::Internal(internal) => {
                 assert!(depth < height, "internal node at leaf depth");
