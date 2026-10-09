@@ -33,8 +33,8 @@ use crate::basespec::event_types::{
     RULE_KNOCK_RESTRICTED, RULE_PUBLIC, RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::{
-    apply_redaction, is_valid_mxid, EventContent, EventId, EventLike, EventProvider, EventVerifier,
-    LeanEvent, StateKey, StateResVersion,
+    apply_redaction, is_valid_mxid, EventContent, EventId, EventLike, EventProvider,
+    EventProviderRef, EventVerifier, LeanEvent, StateKey, StateResVersion,
 };
 use crate::errors::VerifyError;
 
@@ -201,6 +201,18 @@ pub enum AuthError<'a, Id = String> {
     /// A declared `room_id` on `m.room.create` is not the event's own ID.
     RoomIdNotAcceptedCreate { declared: &'a str },
 }
+
+// Pin the size that justifies having no `result_large_err`/`large_enum_variant`
+// allow on this type: if it grows past clippy's 128-byte threshold, the error
+// becomes expensive to pass by value and this assertion fails at compile time.
+// Note this is a *target-specific tripwire*, not a proof: the size is only
+// checked for the layout being compiled, and it varies with pointer width
+// (a 32-bit target yields a smaller type). Growth that shows up only on
+// another layout must still be caught by running clippy on that target.
+const _: () = assert!(
+    core::mem::size_of::<AuthError<'static>>() <= 128,
+    "AuthError exceeded the 128-byte budget; box the oversized payload or split the variant",
+);
 
 impl<Id: fmt::Display> fmt::Display for AuthError<'_, Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -993,7 +1005,6 @@ where
 // reference types (owned storage can't yield `'a`-borrowed events), so the
 // reference itself *is* the provider value. Taking `&impl` would force a
 // double reference at every call site for no benefit.
-#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn check_auth_with_context<
     'a,
     Id: EventId + 'static,
@@ -1005,6 +1016,41 @@ pub fn check_auth_with_context<
     version: StateResVersion,
     verifier: Option<&'a dyn EventVerifier<Id>>,
     auth_context: Option<&'a dyn EventProvider<Id, C, E>>,
+) -> Result<(), AuthError<'a, Id>> {
+    // The local `provider` binding is load-bearing: `check_auth_with_context_impl`
+    // wants `&dyn EventProviderRef`, and the blanket impl is on the *reference*
+    // `&dyn EventProvider`, so a `&provider` local is what lets the coercion
+    // happen without changing the public `dyn EventProvider` signature. Do not
+    // "simplify" this into passing `context` directly: it fails with E0515
+    // "cannot return value referencing function parameter `provider`" (the
+    // coerced reference is a closure local that cannot outlive the call).
+    match auth_context {
+        Some(context) => {
+            let provider: &'a dyn EventProvider<Id, C, E> = context;
+            check_auth_with_context_impl(event, state, version, verifier, Some(&provider))
+        }
+        None => check_auth_with_context_impl(event, state, version, verifier, None),
+    }
+}
+
+/// Generic core of [`check_auth_with_context`].
+///
+/// Takes the auth context through [`EventProviderRef`] rather than
+/// `dyn EventProvider` so callers whose provider borrows from a `'a`-lived
+/// backing store (e.g. [`check_auth_chain`]'s slice index) can return
+/// `'a`-borrowed errors, while the provider value itself stays a local.
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+fn check_auth_with_context_impl<
+    'a,
+    Id: EventId + 'static,
+    C: EventContent + 'a,
+    E: EventLike<Id = Id, Content = C>,
+>(
+    event: &'a E,
+    state: impl StateProviderRef<'a, Id, C, E>,
+    version: StateResVersion,
+    verifier: Option<&'a dyn EventVerifier<Id>>,
+    auth_context: Option<&dyn EventProviderRef<'a, Id, C, E>>,
 ) -> Result<(), AuthError<'a, Id>> {
     // Rule 0: Basic syntactic validation
     if event.prev_events().len() > 20 {
@@ -1193,7 +1239,7 @@ pub fn check_auth_with_context<
         let mut seen_tuples = crate::HashMap::new();
 
         for auth_id in event.auth_events() {
-            let Some(auth_ev) = provider.get_event(auth_id) else {
+            let Some(auth_ev) = provider.get_event_ref(auth_id) else {
                 return Err(AuthError::MissingAuthEvent(auth_id));
             };
 
@@ -2577,7 +2623,7 @@ where
 /// triggered, is not a free pass).
 fn check_foreign_room_citation<'a, Id, C, K>(
     event: &'a LeanEvent<Id, C, K>,
-    event_map: &'a crate::HashMap<Id, LeanEvent<Id, C, K>>,
+    event_map: &impl EventProviderRef<'a, Id, C, LeanEvent<Id, C, K>>,
 ) -> Result<(), AuthError<'a, Id>>
 where
     Id: EventId,
@@ -2588,7 +2634,7 @@ where
         return Ok(());
     };
     let foreign = event.auth_events.iter().find_map(|auth_id| {
-        let auth_event = event_map.get(auth_id)?;
+        let auth_event = event_map.get_event_ref(auth_id)?;
         match &auth_event.room_id {
             Some(actual) if actual == expected => None,
             Some(actual) => Some((auth_id, Some(actual))),
@@ -2604,6 +2650,61 @@ where
         })
     } else {
         Ok(())
+    }
+}
+
+/// Borrowed by-ID index over a chain's events for auth-context lookups.
+///
+/// Values are `&'a` references into `sorted_events`/`initial_state`, so errors
+/// built from them borrow for `'a`. The index itself is a local dropped when
+/// [`check_auth_chain`] returns -- unlike the previous `Box::leak`, nothing
+/// survives the call, and no event is cloned.
+///
+/// The backing `HashMap` is a transient heap allocation. It does not add a
+/// new category of cost: [`check_auth_chain`] already allocates its working
+/// sets (the accepted/rejected event lists and the `rejected_ids` map) on
+/// every call. A by-ID `DenseIndex` reuse or a `Vec<(&Id, &Event)>` sorted
+/// once would trade the hash map for a sort; neither removes the allocation,
+/// so the simpler map is kept.
+struct ChainEventIndex<'a, Id, C, K> {
+    by_id: crate::HashMap<&'a Id, &'a LeanEvent<Id, C, K>>,
+}
+
+impl<'a, Id, C, K> ChainEventIndex<'a, Id, C, K>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+{
+    fn build(
+        sorted_events: &'a [LeanEvent<Id, C, K>],
+        initial_state: &'a RoomState<Id, C, K>,
+    ) -> Self {
+        let mut by_id = crate::HashMap::new();
+        // `insert` (not `or_insert`) preserves the previous
+        // collect-into-HashMap semantics for malformed input: when a
+        // repeated `event_id` appears in `sorted_events`, the *last*
+        // occurrence wins the by-id lookup.
+        for ev in sorted_events {
+            by_id.insert(&ev.event_id, ev);
+        }
+        // initial_state only fills IDs not already present in sorted_events.
+        for ev in initial_state.values() {
+            by_id.entry(&ev.event_id).or_insert(ev);
+        }
+        Self { by_id }
+    }
+}
+
+impl<'a, Id, C, K> EventProviderRef<'a, Id, C, LeanEvent<Id, C, K>>
+    for ChainEventIndex<'a, Id, C, K>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey,
+{
+    fn get_event_ref(&self, id: &Id) -> Option<&'a LeanEvent<Id, C, K>> {
+        self.by_id.get(id).copied()
     }
 }
 
@@ -2628,24 +2729,10 @@ where
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
 
-    // Auth-context lookups may feed error payloads, so the by-id map is
-    // leaked once (bounded by the input size; this replaces a prior owned
-    // clone of the same data). Leaking keeps the map `'a`-borrowable while
-    // the loop mutates only the separate `BorrowedState`.
-    let event_map: &'a mut crate::HashMap<Id, LeanEvent<Id, C, K>> = Box::leak(Box::new(
-        sorted_events
-            .iter()
-            .map(|ev| (ev.event_id.clone(), ev.clone()))
-            .collect(),
-    ));
-    // Include initial-state events so Rule 2.5 foreign-room checks cannot be
-    // bypassed by citing an auth event that lives only in initial_state.
-    for ev in initial_state.values() {
-        event_map
-            .entry(ev.event_id.clone())
-            .or_insert_with(|| ev.clone());
-    }
-    let event_map: &'a crate::HashMap<Id, LeanEvent<Id, C, K>> = event_map;
+    // By-ID index over the input events; every value borrows from
+    // `sorted_events`/`initial_state` (`'a`), so auth-context lookups feed
+    // `'a`-borrowed errors while the index stays a local dropped on return.
+    let event_index = ChainEventIndex::build(sorted_events, initial_state);
 
     let mut rejected_ids = crate::HashSet::new();
 
@@ -2668,7 +2755,7 @@ where
                 check_room_id_matches_accepted_create(event, is_v12_plus, &state, &rejected_ids)
             })
             .and_then(|()| check_not_citing_rejected_auth_event(event, &rejected_ids))
-            .and_then(|()| check_foreign_room_citation(event, event_map));
+            .and_then(|()| check_foreign_room_citation(event, &event_index));
 
         if let Err(err) = pre_check {
             rejected.push((event.event_id.clone(), err));
@@ -2676,7 +2763,7 @@ where
             continue;
         }
 
-        match check_auth_with_context(event, &state, version, None, Some(event_map)) {
+        match check_auth_with_context_impl(event, &state, version, None, Some(&event_index)) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
@@ -3537,6 +3624,68 @@ mod tests {
             )),
             "event citing a foreign-room auth event from initial_state must be rejected: {rejected:?}"
         );
+    }
+
+    /// Coverage: `ChainEventIndex::build` duplicate-ID semantics.
+    ///
+    /// A repeated `event_id` in `sorted_events` is malformed input, but the
+    /// by-id index must resolve it consistently: the *last* occurrence wins,
+    /// preserving the previous `collect`-into-`HashMap` behavior.
+    #[test]
+    fn test_chain_event_index_duplicate_id_last_occurrence_wins() {
+        let mut first = make_test_event(
+            "$dup:example.com",
+            M_ROOM_POWER_LEVELS,
+            "@alice:example.com",
+            json!({ "users": { "@alice:example.com": 100 } }),
+        );
+        first.room_id = Some("!first:example.com".into());
+        let mut second = make_test_event(
+            "$dup:example.com",
+            M_ROOM_POWER_LEVELS,
+            "@alice:example.com",
+            json!({ "users": { "@alice:example.com": 100 } }),
+        );
+        second.room_id = Some("!second:example.com".into());
+
+        let sorted_events = vec![first, second];
+        let empty_state = RoomState::new();
+        let index = ChainEventIndex::build(&sorted_events, &empty_state);
+
+        let found = index
+            .get_event_ref(&"$dup:example.com".to_string())
+            .expect("by-id lookup for a present event_id must resolve");
+        assert_eq!(
+            found.room_id.as_deref(),
+            Some("!second:example.com"),
+            "the last duplicate in sorted_events must win the by-id lookup"
+        );
+    }
+
+    /// Coverage: `check_auth_chain` -- a cited auth event missing from both
+    /// `sorted_events` and `initial_state` surfaces as [`AuthError::MissingAuthEvent`]
+    /// (Rules 2.1-2.3 via the by-id index), rather than being treated as present.
+    #[test]
+    fn test_check_auth_chain_missing_auth_event_is_rejected() {
+        let mut citing = make_test_event(
+            "$citing:example.com",
+            M_ROOM_POWER_LEVELS,
+            "@alice:example.com",
+            json!({ "users": { "@alice:example.com": 100 } }),
+        );
+        citing.auth_events = vec!["$nonexistent:example.com".into()];
+
+        let sorted_events = vec![citing];
+        let empty_state = RoomState::new();
+        let (_accepted, rejected) =
+            check_auth_chain(&sorted_events, &empty_state, StateResVersion::V2_1);
+
+        match rejected.as_slice() {
+            [(id, AuthError::MissingAuthEvent(..))] => assert_eq!(id, "$citing:example.com"),
+            other => panic!(
+                "exactly the citing event must be rejected with MissingAuthEvent, got {other:?}"
+            ),
+        }
     }
 
     /// Coverage: `check_auth_chain` Rule 1.2 (V12+) -- an `m.room.create`

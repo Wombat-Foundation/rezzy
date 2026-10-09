@@ -4099,6 +4099,31 @@ pub trait EventProvider<Id, C, E = LeanEvent<Id, C>> {
     fn get_event(&self, id: &Id) -> Option<&E>;
 }
 
+/// Event lookup whose returned reference is borrowed from the provider's
+/// *storage* (`'p`), not from the `&self` lookup itself.
+///
+/// Crate-private twin of the public [`EventProvider`]: unlike
+/// [`StateProviderRef`](crate::auth::StateProviderRef), it is not used in any
+/// public signature (the public auth entry points still take
+/// `dyn EventProvider`), so it is kept internal to avoid expanding the API.
+/// A provider that indexes into a `&'p [LeanEvent]` (or a map of
+/// `&'p LeanEvent`) can hand out `'p`-borrowed events from a value that is
+/// itself a short-lived local, so authorization errors built from those
+/// lookups outlive the provider value without a leak. Any
+/// `&'p dyn EventProvider` also implements this, so existing
+/// dynamically-dispatched providers keep working.
+pub(crate) trait EventProviderRef<'p, Id, C, E = LeanEvent<Id, C>> {
+    /// Look up an event by ID, borrowing from the provider's storage (`'p`).
+    fn get_event_ref(&self, id: &Id) -> Option<&'p E>;
+}
+
+impl<'p, Id, C, E> EventProviderRef<'p, Id, C, E> for &'p dyn EventProvider<Id, C, E> {
+    fn get_event_ref(&self, id: &Id) -> Option<&'p E> {
+        let provider: &'p dyn EventProvider<Id, C, E> = *self;
+        provider.get_event(id)
+    }
+}
+
 impl<
         Id: core::hash::Hash + Eq,
         C,
