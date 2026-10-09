@@ -525,7 +525,7 @@ mod tests {
         auth_context.insert(alloc::string::String::from("B"), b);
 
         // Initial state sets A as the power levels event.
-        let mut resolved = imbl::OrdMap::new();
+        let mut resolved = SharedState::new();
         resolved.insert(
             (
                 crate::basespec::event_types::EventType::from("m.room.power_levels"),
@@ -757,7 +757,7 @@ mod tests {
         ctx.insert("PL1".into(), pl1);
         ctx.insert("PL2".into(), pl2);
 
-        let mut resolved = imbl::OrdMap::new();
+        let mut resolved = SharedState::new();
         resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
 
         // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None

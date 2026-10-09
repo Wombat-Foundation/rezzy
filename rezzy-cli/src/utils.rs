@@ -20,7 +20,7 @@ use rezzy::basespec::event_types::{
     FIELD_USERS, FIELD_USERS_DEFAULT, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
     M_ROOM_POWER_LEVELS,
 };
-use rezzy::{LeanEvent, StateResVersion};
+use rezzy::{LeanEvent, SharedState, StateResVersion};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -175,7 +175,7 @@ where
 
 /// Computes an FNV-1a hash of `StateEntries`.
 #[must_use]
-pub fn compute_state_hash(state: &imbl::OrdMap<(EventType, String), String>) -> String {
+pub fn compute_state_hash(state: &SharedState<String, String>) -> String {
     let mut hash: u64 = 14_695_981_039_346_656_037; // FNV offset basis
     for ((event_type, state_key), event_id) in state {
         for &byte in event_type.as_str().as_bytes() {
@@ -508,7 +508,7 @@ pub fn compute_state_maps<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher
 }
 
 /// Resolved state: `(type, state_key)` to event ID.
-pub type ResolvedState = imbl::OrdMap<(EventType, String), String>;
+pub type ResolvedState = SharedState<String, String>;
 
 /// Resolve parent states for a set of events.
 #[must_use]
@@ -665,18 +665,23 @@ pub fn apply_global_power_levels<S: std::hash::BuildHasher>(
     let sorted_power_ids =
         rezzy::KahnSortInputs::new(&power_events, events_map, create_ev, version, &mut pl_cache)
             .sort();
-    let mut resolved_power_state = imbl::OrdMap::new();
+    let mut resolved_power_state = ResolvedState::new();
     for id in sorted_power_ids {
         if let Some(ev) = power_events.get(&id) {
             if let Some(state_key) = &ev.state_key {
-                resolved_power_state.insert((ev.event_type.clone(), state_key.clone()), id);
+                resolved_power_state.insert(
+                    (EventType::from(ev.event_type.clone()), state_key.clone()),
+                    id,
+                );
             }
         }
     }
 
     let mut user_power_levels = HashMap::new();
     let mut default_power_level = 0;
-    if let Some(id) = resolved_power_state.get(&(M_ROOM_POWER_LEVELS.to_string(), String::new())) {
+    if let Some(id) =
+        resolved_power_state.get(&(EventType::from(M_ROOM_POWER_LEVELS), String::new()))
+    {
         if let Some(ev) = events_map.get(id) {
             if let Some(users) = ev.content.get(FIELD_USERS).and_then(|u| u.as_object()) {
                 for (user_id, pl) in users {

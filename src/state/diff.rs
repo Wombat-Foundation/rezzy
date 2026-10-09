@@ -125,19 +125,19 @@ pub fn compute_state_diff_generic<Id: EventId, K: Ord + Clone>(
 
     for diff_item in old.diff(new) {
         match diff_item {
-            imbl::ordmap::DiffItem::Add(key, new_id) => {
+            crate::state::DiffItem::Add(key, new_id) => {
                 entries.push(StateDiffEntry::Added {
                     key: key.clone(),
                     event_id: new_id.clone(),
                 });
             }
-            imbl::ordmap::DiffItem::Remove(key, old_id) => {
+            crate::state::DiffItem::Remove(key, old_id) => {
                 entries.push(StateDiffEntry::Removed {
                     key: key.clone(),
                     event_id: old_id.clone(),
                 });
             }
-            imbl::ordmap::DiffItem::Update {
+            crate::state::DiffItem::Update {
                 old: (key, old_id),
                 new: (_, new_id),
             } => {

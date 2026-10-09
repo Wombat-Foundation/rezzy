@@ -104,13 +104,13 @@ fn member_event(id: &str, state_key: &str, prev: &str, depth: u64) -> rezzy::Lea
 fn build_checkpoints(events: &[rezzy::LeanEvent]) -> Vec<DeltaCheckpoint> {
     let mut state_after_map: HashMap<
         String,
-        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+        rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>,
     > = HashMap::new();
     let mut state_hash_map: HashMap<String, [u8; 32]> = HashMap::new();
     let mut checkpoints = Vec::new();
 
     for ev in events {
-        let mut state_before = imbl::OrdMap::new();
+        let mut state_before = rezzy::PersistentOrdMap::new();
         let mut parent_hash = None;
 
         if !ev.prev_events.is_empty() {
@@ -384,7 +384,7 @@ fn test_streaming_correctness_with_branched_dag() {
     );
 
     // Oracle generation
-    let mut expected_at_40 = imbl::OrdMap::new();
+    let mut expected_at_40 = rezzy::PersistentOrdMap::new();
     for i in [10, 20, 30, 40] {
         expected_at_40.insert(
             (
@@ -417,7 +417,7 @@ fn test_streaming_correctness_with_branched_dag() {
         |id, state| {
             streaming_results.insert(
                 id.clone(),
-                state.into_iter().collect::<imbl::OrdMap<_, _>>(),
+                state.into_iter().collect::<rezzy::PersistentOrdMap<_, _>>(),
             );
         },
         &String::new(),

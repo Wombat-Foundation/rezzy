@@ -14,11 +14,11 @@ fn events_by_id(events: Vec<LeanEvent>) -> HashMap<String, LeanEvent> {
 }
 
 fn resolve(
-    unconflicted: &imbl::OrdMap<(EventType, String), String>,
+    unconflicted: &rezzy::PersistentOrdMap<(EventType, String), String>,
     conflicted: &HashMap<String, LeanEvent>,
     auth: &HashMap<String, LeanEvent>,
     version: StateResVersion,
-) -> imbl::OrdMap<(EventType, String), String> {
+) -> rezzy::PersistentOrdMap<(EventType, String), String> {
     resolve_iterative_sort(rezzy::IterativeInputs::new(
         unconflicted,
         conflicted,
@@ -101,8 +101,8 @@ fn pl_key() -> (EventType, String) {
     (EventType::from("m.room.power_levels"), String::new())
 }
 
-fn state_map_with_member(member_id: &str) -> imbl::OrdMap<(EventType, String), String> {
-    imbl::OrdMap::from(vec![
+fn state_map_with_member(member_id: &str) -> rezzy::PersistentOrdMap<(EventType, String), String> {
+    vec![
         (
             (EventType::from("m.room.create"), String::new()),
             "$create".to_string(),
@@ -122,13 +122,15 @@ fn state_map_with_member(member_id: &str) -> imbl::OrdMap<(EventType, String), S
             ),
             member_id.to_string(),
         ),
-    ])
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn unconflicted_from_auth(
     auth: &HashMap<String, LeanEvent>,
-) -> imbl::OrdMap<(EventType, String), String> {
-    let mut unconflicted = imbl::OrdMap::new();
+) -> rezzy::PersistentOrdMap<(EventType, String), String> {
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
     let mut sorted_auth: Vec<_> = auth.values().collect();
     sorted_auth.sort_by_key(|ev| ev.origin_server_ts);
     for ev in sorted_auth {
@@ -574,7 +576,7 @@ fn test_kahn_tiebreak_mods_banning_each_other_v2_1_1() {
 
     let conflicted_events = events_by_id(conflicted_evs);
 
-    let mut unconflicted = imbl::OrdMap::new();
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -769,7 +771,7 @@ fn bob_ban_concurrent_change_fixture(
     change_content: rezzy::JsonValue,
 ) -> (
     HashMap<String, LeanEvent>,
-    imbl::OrdMap<(EventType, String), String>,
+    rezzy::PersistentOrdMap<(EventType, String), String>,
     HashMap<String, LeanEvent>,
     LeanEvent,
 ) {
@@ -832,7 +834,7 @@ fn bob_ban_concurrent_change_fixture(
 }
 
 fn control_resolves(
-    unconflicted: &imbl::OrdMap<(EventType, String), String>,
+    unconflicted: &rezzy::PersistentOrdMap<(EventType, String), String>,
     auth: &HashMap<String, LeanEvent>,
     change: LeanEvent,
 ) -> bool {
@@ -965,7 +967,7 @@ fn test_v2_1_strictness_future_v2_2_should_pass() {
 fn make_ghost_moderator_events() -> (
     HashMap<String, LeanEvent>,
     HashMap<String, LeanEvent>,
-    imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>,
 ) {
     let auth_evs = utils::parse_jsonl_events(
         r#"
@@ -1301,7 +1303,7 @@ fn test_missing_auth_diff_mainline_distortion() {
     events_map.insert("PL_B", pl_b);
 
     // Call resolve_iterative_sort directly
-    let mut unconflicted_state = imbl::OrdMap::new();
+    let mut unconflicted_state = rezzy::PersistentOrdMap::new();
     unconflicted_state.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
@@ -1676,7 +1678,7 @@ fn test_v2_1_1_ban_supplementation_return_path() {
 
 fn progressively_banned_sender_scenario(
     version: StateResVersion,
-) -> imbl::OrdMap<(EventType, String), String> {
+) -> rezzy::PersistentOrdMap<(EventType, String), String> {
     let auth_evs = utils::parse_jsonl_events(
         r#"
         {"event_id": "$create",     "type": "m.room.create",       "state_key": "", "sender": "@admin:x", "origin_server_ts": 100, "content": {"room_version": "12"}}

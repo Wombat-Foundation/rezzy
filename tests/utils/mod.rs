@@ -24,8 +24,8 @@ pub fn parse_events_value(value: &rezzy::JsonValue) -> Result<Vec<LeanEvent>, St
 /// fallback in the production state resolution algorithm just for test fixtures.
 pub fn build_unconflicted_state_test_helper(
     auth_context: &HashMap<String, LeanEvent>,
-) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
-    let mut unconflicted = imbl::OrdMap::new();
+) -> rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String> {
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
 
     // Find the create event in the auth_context
     let mut create_events = auth_context

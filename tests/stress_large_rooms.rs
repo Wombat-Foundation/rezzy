@@ -34,7 +34,8 @@ fn load_events_json(path: &str) -> Vec<LeanEvent> {
     utils::parse_events_value(&data["events"]).unwrap()
 }
 
-type ResolvedState = imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>;
+type ResolvedState =
+    rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>;
 
 /// Resolves an already-built event map at the given state resolution version.
 fn resolve_map(map: &HashMap<String, LeanEvent>, version: StateResVersion) -> ResolvedState {
@@ -510,7 +511,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_lattice = std::time::Instant::now();
-    let lattice_unconflicted = imbl::OrdMap::new();
+    let lattice_unconflicted = rezzy::PersistentOrdMap::new();
     let lattice_conflicted = map.clone();
     let resolved_lattice = rezzy::resolve_semilattice_fold(
         &lattice_unconflicted,
@@ -546,10 +547,22 @@ fn test_unredacted_spam_storm_v2_1_1() {
 #[allow(clippy::too_many_lines)]
 fn verify_spam_storm_results(
     events: &[LeanEvent],
-    resolved_v2: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    resolved_v21: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    resolved_v211: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    resolved_lattice: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    resolved_v2: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
+    resolved_v21: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
+    resolved_v211: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
+    resolved_lattice: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
     durs: (
         std::time::Duration,
         std::time::Duration,

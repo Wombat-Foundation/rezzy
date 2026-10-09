@@ -44,7 +44,7 @@ fn ruma_to_lean_event<E: Event>(ev: &E) -> LeanEvent {
 }
 
 type PartitionedState = (
-    imbl::OrdMap<(EventType, String), String>,
+    rezzy::PersistentOrdMap<(EventType, String), String>,
     std::collections::HashSet<(ruma_events::StateEventType, String)>,
 );
 
@@ -67,7 +67,7 @@ where
 
     let num_maps = state_sets.len();
     let mut conflicted_keys = HashSet::new();
-    let mut unconflicted_state = imbl::OrdMap::new();
+    let mut unconflicted_state = rezzy::PersistentOrdMap::new();
 
     for map in state_sets {
         for (key, id) in map {

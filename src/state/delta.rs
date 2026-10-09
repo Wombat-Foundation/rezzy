@@ -346,7 +346,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
 ///
 /// # Returns
 ///
-/// A `imbl::OrdMap<usize, state_map>` keyed by the requested indices. Missing
+/// A persistent ordered map keyed by the requested indices. Missing
 /// entries indicate broken chains or out-of-bounds indices.
 ///
 /// # Panics
@@ -357,7 +357,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
 pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     checkpoints: &[CompactedCheckpoint<Id>],
     target_indices: &[usize],
-) -> imbl::OrdMap<usize, crate::state::at::SharedState<Id>> {
+) -> crate::state::PersistentOrdMap<usize, crate::state::at::SharedState<Id>> {
     use crate::HashMap;
 
     let mut sorted_targets: Vec<usize> = target_indices
@@ -369,7 +369,7 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     sorted_targets.dedup();
 
     if sorted_targets.is_empty() {
-        return imbl::OrdMap::new();
+        return crate::state::PersistentOrdMap::new();
     }
 
     // Backward-only parent lookup: prefer immediate predecessor, fall back to
@@ -399,7 +399,7 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     }
 
     let mut known_states = HashMap::new();
-    let mut results = imbl::OrdMap::new();
+    let mut results = crate::state::PersistentOrdMap::new();
 
     // Iterate forward only through the required indices
     for idx in required_indices {

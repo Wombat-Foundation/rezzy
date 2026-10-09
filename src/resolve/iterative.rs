@@ -385,7 +385,7 @@ where
     K: Ord + Clone,
 {
     if version.is_v2_1_plus() {
-        imbl::OrdMap::new()
+        SharedState::new()
     } else {
         unconflicted_state.clone()
     }
@@ -409,7 +409,9 @@ pub(crate) fn merge_unconflicted_power_events<Id, K>(
         for event_type in [M_ROOM_POWER_LEVELS, M_ROOM_JOIN_RULES, M_ROOM_CREATE] {
             let key = (EventType::from(event_type), empty_key.clone());
             if let Some(v) = unconflicted_state.get(&key) {
-                resolved.entry(key).or_insert_with(|| v.clone());
+                if !resolved.contains_key(&key) {
+                    resolved.insert(key, v.clone());
+                }
             }
         }
     }

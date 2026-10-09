@@ -39,7 +39,6 @@ clap.workspace = true
 clap_complete.workspace = true
 ed25519-zebra = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
-imbl.workspace = true
 mimalloc = { workspace = true, optional = true }
 rezzy = { workspace = true, features = ["cli"] }
 roaring.workspace = true

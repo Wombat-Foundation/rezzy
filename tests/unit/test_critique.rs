@@ -108,7 +108,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         }
     }
 
-    let mut unconflicted_state = imbl::OrdMap::new();
+    let mut unconflicted_state = rezzy::PersistentOrdMap::new();
     let mut conflicted_state_set = Vec::new();
     for (key, ids) in occurrences {
         if ids.len() == 1 && ids.values().next().unwrap() == &num_sets {
@@ -164,7 +164,7 @@ fn resolve_full(events: &[LeanEvent], version: StateResVersion) -> ResolvedState
         }
     }
 
-    let unconflicted_state_typed: imbl::OrdMap<
+    let unconflicted_state_typed: rezzy::PersistentOrdMap<
         (rezzy::basespec::event_types::EventType, String),
         String,
     > = unconflicted_state

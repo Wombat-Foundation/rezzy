@@ -59,7 +59,7 @@ fn iteration_rng(base_seed: u64, iter: u64) -> Rng {
 }
 
 type SKey = (rezzy::basespec::event_types::EventType, String);
-type SharedState = imbl::OrdMap<SKey, String>;
+type SharedState = rezzy::PersistentOrdMap<SKey, String>;
 
 /// A generated resolution problem: base unconflicted state + conflicted
 /// candidates + the full auth context (all events).

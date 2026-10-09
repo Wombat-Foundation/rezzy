@@ -671,7 +671,6 @@ dependencies = [
  "clap_complete",
  "ed25519-zebra",
  "getrandom 0.4.3",
- "imbl",
  "mimalloc",
  "rezzy",
  "roaring",

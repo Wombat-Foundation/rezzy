@@ -61,7 +61,7 @@ fn conflicted_member_ids(events: &[LeanEvent]) -> Vec<String> {
 fn resolve_v2_1_from_subgraph(
     all_events: &[LeanEvent],
     conflicted_eids: &[String],
-) -> imbl::OrdMap<(EventType, String), String> {
+) -> rezzy::PersistentOrdMap<(EventType, String), String> {
     // Build full context map
     let mut full_context: HashMap<String, LeanEvent> = HashMap::new();
     for ev in all_events {
@@ -312,7 +312,8 @@ fn test_checkpoint_partial_join_resolution() {
 
     // Build trusted checkpoint state: for each (type, state_key) slot in the
     // bootstrap set, take the event with the highest depth (latest).
-    let mut checkpoint_state: imbl::OrdMap<(EventType, String), String> = imbl::OrdMap::new();
+    let mut checkpoint_state: rezzy::PersistentOrdMap<(EventType, String), String> =
+        rezzy::PersistentOrdMap::new();
     for ev in &bootstrap_events {
         if ev.state_key.is_some() {
             let key = (

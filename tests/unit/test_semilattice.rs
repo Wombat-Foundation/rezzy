@@ -45,7 +45,7 @@ fn topic_key() -> (rezzy::basespec::event_types::EventType, String) {
 }
 
 fn assert_topic_b(
-    resolved: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    resolved: &rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>,
     msg: &str,
 ) {
     assert_eq!(
@@ -56,7 +56,7 @@ fn assert_topic_b(
 }
 
 fn set_state(
-    state: &mut imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    state: &mut rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>,
     event_type: &str,
     event_id: &str,
 ) {

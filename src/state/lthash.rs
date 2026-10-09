@@ -1225,7 +1225,7 @@ mod tests {
         );
     }
 
-    type StateMap = imbl::OrdMap<(crate::basespec::event_types::EventType, String), String>;
+    type StateMap = crate::state::at::SharedState<String, String>;
 
     /// Builds a `StateMap` from `(event_type, state_key) -> event_id` rows.
     fn state_map(

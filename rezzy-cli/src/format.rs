@@ -37,7 +37,7 @@ pub struct FormattingContext<'a> {
     /// Forward extremities of the event DAG.
     pub heads: &'a [String],
     /// Resolved state: `(type, state_key)` to event ID.
-    pub final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
+    pub final_state_map: &'a ResolvedState,
     /// Event IDs of the resolved state.
     pub resolved_state_list: &'a [String],
     /// Event IDs in the auth chain of the resolved state.
@@ -115,7 +115,7 @@ fn decoded_node_json(node_hash: &StructuralHash, encoded: &[u8]) -> Option<rezzy
 }
 
 fn hamt_to_state_map(root: &StateHamt) -> SharedStateMap {
-    let mut map = imbl::OrdMap::new();
+    let mut map = ResolvedState::new();
     let mut no_resolver: HamtResolver = |_h| unreachable!();
     let _ = root.visit_entries(&mut no_resolver, &mut |key, event_id| {
         map.insert(key.clone(), event_id.clone());
@@ -1458,7 +1458,7 @@ mod tests {
         events_map: &'a HashMap<String, LeanEvent>,
         raw_map: &'a HashMap<String, rezzy::JsonValue>,
         heads: &'a [String],
-        final_state_map: &'a imbl::OrdMap<(EventType, String), String>,
+        final_state_map: &'a ResolvedState,
         resolved_state_list: &'a [String],
         auth_chain_ids: &'a [String],
         auth_graph: &'a rezzy::auth::roaring::AuthGraph,
@@ -1485,7 +1485,7 @@ mod tests {
         let events_map = HashMap::new();
         let raw_map = HashMap::new();
         let heads = Vec::new();
-        let final_state_map = imbl::OrdMap::new();
+        let final_state_map = ResolvedState::new();
         let resolved_state_list = Vec::new();
         let auth_chain_ids = Vec::new();
         let auth_graph = build_auth_graph(&events_map);
@@ -1539,7 +1539,7 @@ mod tests {
         let events_map = HashMap::new();
         let raw_map = HashMap::new();
         let heads = Vec::new();
-        let mut final_state_map = imbl::OrdMap::new();
+        let mut final_state_map = ResolvedState::new();
         final_state_map.insert(("m.room.create".into(), String::new()), "$create".into());
         final_state_map.insert(("m.room.member".into(), "@alice:x".into()), "$join".into());
         let resolved_state_list = vec!["$create".to_string(), "$join".to_string()];
@@ -1581,10 +1581,7 @@ mod tests {
     }
 
     /// Renders `events` as a timeline against `final_state_map`.
-    fn render_timeline_of(
-        events: &[LeanEvent],
-        final_state_map: &imbl::OrdMap<(EventType, String), String>,
-    ) -> String {
+    fn render_timeline_of(events: &[LeanEvent], final_state_map: &ResolvedState) -> String {
         let mut events_map = HashMap::new();
         for ev in events {
             events_map.insert(ev.event_id.clone(), ev.clone());
@@ -1617,7 +1614,7 @@ mod tests {
     #[test]
     fn timeline_redaction_requires_authorization() {
         let render = |events: Vec<LeanEvent>| -> String {
-            let mut final_state_map = imbl::OrdMap::new();
+            let mut final_state_map = ResolvedState::new();
             final_state_map.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
             render_timeline_of(&events, &final_state_map)
         };
@@ -1762,7 +1759,7 @@ mod tests {
             msg,
             redact,
         ];
-        let out = render_timeline_of(&events, &imbl::OrdMap::new());
+        let out = render_timeline_of(&events, &ResolvedState::new());
         assert!(
             !out.contains("secret"),
             "redaction authorized by the resolved power levels must apply; got: {out:?}"
@@ -1904,7 +1901,7 @@ mod tests {
 
         let raw_map = HashMap::new();
         let heads = vec!["$msg".into()];
-        let final_state_map = imbl::OrdMap::new();
+        let final_state_map = ResolvedState::new();
         let resolved_state_list = Vec::new();
         let auth_chain_ids = Vec::new();
         let auth_graph = build_auth_graph(&events_map);
@@ -2015,7 +2012,7 @@ mod tests {
 
         let raw_map = HashMap::new();
         let heads = vec!["$merge".into()];
-        let final_state_map = imbl::OrdMap::new();
+        let final_state_map = ResolvedState::new();
         let resolved_state_list = Vec::new();
         let auth_chain_ids = Vec::new();
         let auth_graph = build_auth_graph(&events_map);

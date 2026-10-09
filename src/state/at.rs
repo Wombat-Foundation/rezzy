@@ -356,9 +356,9 @@ where
 /// (`benches/state_backend.rs`) and lost on the access pattern that
 /// matters most here: forking a state map into several branches and
 /// diverging each (what conflict resolution does), where it was 6-22x
-/// slower than `OrdMap`'s clone. `imbl::OrdMap`'s RRB-tree is tuned
+/// slower than `OrdMap`'s clone. `imbl::OrdMap`'s persistent B-tree is tuned
 /// specifically for cheap-clone/structural-sharing workloads, so it stays.
-pub type SharedState<Id = String, K = String> = imbl::OrdMap<(EventType, K), Id>;
+pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(EventType, K), Id>;
 
 /// Computes the resolved room state *after* a given event.
 ///
@@ -1511,11 +1511,11 @@ where
     for other in &prev_states[1..] {
         for diff_item in base.diff(other) {
             match diff_item {
-                imbl::ordmap::DiffItem::Add(k, v) | imbl::ordmap::DiffItem::Remove(k, v) => {
+                crate::state::DiffItem::Add(k, v) | crate::state::DiffItem::Remove(k, v) => {
                     conflicted_keys.insert(k.clone());
                     conflicted_state_set.insert(v.clone());
                 }
-                imbl::ordmap::DiffItem::Update {
+                crate::state::DiffItem::Update {
                     old: (k, old_v),
                     new: (_, new_v),
                 } => {
@@ -2696,13 +2696,13 @@ where
         let mut hash = first.hash;
         for diff_item in first.state.diff(&resolved) {
             match diff_item {
-                imbl::ordmap::DiffItem::Add(key, new_id) => {
+                crate::state::DiffItem::Add(key, new_id) => {
                     hash.insert(key.0.as_str(), key.1.as_ref(), new_id);
                 }
-                imbl::ordmap::DiffItem::Remove(key, old_id) => {
+                crate::state::DiffItem::Remove(key, old_id) => {
                     hash.remove(key.0.as_str(), key.1.as_ref(), old_id);
                 }
-                imbl::ordmap::DiffItem::Update {
+                crate::state::DiffItem::Update {
                     old: (key, old_id),
                     new: (_, new_id),
                 } => {
@@ -2929,7 +2929,7 @@ mod tests {
         conflicted.insert("$pl_bot".to_string(), pl_bot.clone());
 
         // Create a resolved map where $pl_bot is NOT resolved yet (empty resolved map)
-        let resolved = imbl::OrdMap::new();
+        let resolved = SharedState::new();
 
         let local_auth = vec![
             (
@@ -2991,7 +2991,7 @@ mod tests {
         // `resolved`, requested on behalf of a non-power candidate
         // (`m.room.message`) during the power phase.
         let build_overlay = |version: StateResVersion| {
-            let resolved = imbl::OrdMap::new();
+            let resolved = SharedState::new();
             let auth_context = HashMap::new();
             let sort_set = HashMap::new();
             let mut local_auth = BTreeMap::new();
@@ -3060,7 +3060,7 @@ mod tests {
 
         // Runs the standard `$pl` overlay against `resolved`, expecting
         // `expect_some` from the `m.room.power_levels` query.
-        let check_pl = |resolved: &imbl::OrdMap<(EventType, String), String>,
+        let check_pl = |resolved: &SharedState<String, String>,
                         candidate_event_type: &str,
                         expect_some: bool| {
             let auth_context = HashMap::new();
@@ -3084,7 +3084,7 @@ mod tests {
 
         // 1. Test case: resolved_id is found but the event is missing from both auth_context and sort_set (returns None).
         {
-            let mut resolved = imbl::OrdMap::new();
+            let mut resolved = SharedState::new();
             resolved.insert(
                 (EventType::from(M_ROOM_POWER_LEVELS), String::new()),
                 "$pl_missing".to_string(),
@@ -3094,7 +3094,7 @@ mod tests {
 
         // 2. Test case: resolved_id is NOT found, and candidate_is_power is true (returns Some(ev)).
         {
-            let resolved = imbl::OrdMap::new();
+            let resolved = SharedState::new();
             let mut auth_context = HashMap::new();
             auth_context.insert("$jr".to_string(), jr_ev.clone());
             let mut sort_set = HashMap::new();
@@ -3120,7 +3120,7 @@ mod tests {
 
         // 3. Test case: resolved_id is NOT found, and candidate_is_power is false (returns None).
         {
-            let resolved = imbl::OrdMap::new();
+            let resolved = SharedState::new();
             check_pl(&resolved, "m.room.message", false);
         }
 
@@ -3129,7 +3129,7 @@ mod tests {
         // return is skipped; the power-phase fallback (line 176) then returns
         // the resolved event itself.
         {
-            let mut resolved = imbl::OrdMap::new();
+            let mut resolved = SharedState::new();
             resolved.insert(
                 (
                     EventType::from(crate::basespec::event_types::M_ROOM_JOIN_RULES),
@@ -3174,7 +3174,7 @@ mod tests {
         // 5. Test case: a resolved member ban is returned directly during
         // power-phase authorization across V2, V2.1, and V2.1.1.
         {
-            let mut resolved = imbl::OrdMap::new();
+            let mut resolved = SharedState::new();
             resolved.insert(
                 (
                     EventType::from(crate::basespec::event_types::M_ROOM_MEMBER),
@@ -3222,7 +3222,7 @@ mod tests {
         // `test_overlay_state_v2_1_vs_v2_1_1_power_phase_fallback_polarity`
         // for the direct comparison.
         {
-            let resolved = imbl::OrdMap::new();
+            let resolved = SharedState::new();
             let auth_context = HashMap::new();
             let sort_set = pl_sort_set(&pl_ev);
             let local_auth = pl_local_auth(&pl_ev);
@@ -3564,7 +3564,7 @@ mod tests {
         events_map.insert("shared".into(), shared);
 
         // unconflicted state includes "shared"
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = SharedState::new();
         unconflicted.insert(("m.room.member".into(), "@a:x".into()), "shared".into());
 
         // conflicted set ALSO references "shared" → prune early
@@ -3608,7 +3608,7 @@ mod tests {
         conflicted.insert("GHOST_CONFLICT".to_string());
 
         // unconflicted_state maps a state entry to "GHOST_UNCONFLICTED" (absent).
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = SharedState::new();
         unconflicted.insert(
             ("m.room.member".into(), "@ghost:x".into()),
             "GHOST_UNCONFLICTED".into(),

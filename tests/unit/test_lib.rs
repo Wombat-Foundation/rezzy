@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_v2_1_strict_resolution() {
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = rezzy::PersistentOrdMap::new();
         unconflicted.insert(
             (
                 rezzy::basespec::event_types::EventType::from("m.room.member"),
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn test_resolve_iterative_sort_functionality() {
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = rezzy::PersistentOrdMap::new();
         unconflicted.insert(
             (
                 rezzy::basespec::event_types::EventType::from("type"),
@@ -641,7 +641,7 @@ mod tests {
             auth.insert(ev.event_id.clone(), ev.clone());
         }
 
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = rezzy::PersistentOrdMap::new();
         unconflicted.insert(("m.room.create".into(), String::new()), "$create".into());
         unconflicted.insert(("m.room.member".into(), "@alice:x".into()), "$aj".into());
         unconflicted.insert(("m.room.power_levels".into(), String::new()), "$pl".into());
@@ -691,7 +691,7 @@ mod tests {
         use rezzy::json;
 
         // Uncontested state: Alice is already joined, Bob's old event is the prior state.
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = rezzy::PersistentOrdMap::new();
         unconflicted.insert(
             (
                 rezzy::basespec::event_types::EventType::from("m.room.member"),
@@ -856,7 +856,7 @@ mod tests {
             },
         );
         let sorted = super::kahn_sort(&events, rezzy::StateResVersion::V2);
-        let mut resolved_state = imbl::OrdMap::new();
+        let mut resolved_state = rezzy::PersistentOrdMap::new();
         for id in sorted {
             let ev = &events[&id];
             let key = (ev.event_type.clone(), ev.state_key.clone().unwrap());
@@ -1735,7 +1735,8 @@ mod tests {
         for ev in [&create, &admin_join, &pl, &jr] {
             auth_context.insert(ev.event_id.clone(), ev.clone());
         }
-        let mut unconflicted: imbl::OrdMap<(EventType, String), String> = imbl::OrdMap::new();
+        let mut unconflicted: rezzy::PersistentOrdMap<(EventType, String), String> =
+            rezzy::PersistentOrdMap::new();
         for ev in [&create, &admin_join, &pl, &jr] {
             let sk = ev.state_key.clone().unwrap_or_default();
             unconflicted.insert(
@@ -2228,7 +2229,7 @@ mod tests {
         // The unconflicted state includes the initial PL so sorting can
         // determine Alice's power level without relying on the cyclic
         // conflicted events.
-        let mut unconflicted = imbl::OrdMap::new();
+        let mut unconflicted = rezzy::PersistentOrdMap::new();
         unconflicted.insert(
             (
                 rezzy::basespec::event_types::EventType::from("m.room.power_levels"),
@@ -2866,9 +2867,9 @@ fn clone_events_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
         .collect()
 }
 
-fn unconflicted_create() -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>
-{
-    let mut unconflicted = imbl::OrdMap::new();
+fn unconflicted_create(
+) -> rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String> {
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -3035,7 +3036,7 @@ fn redaction(id: &str, sender: &str, origin_server_ts: u64, target: &str) -> Lea
 }
 
 /// The `String`-keyed resolved-state map used throughout these tests.
-type StateMap = imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>;
+type StateMap = rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>;
 
 fn resolve_sort(
     unconflicted: &StateMap,
@@ -5152,7 +5153,7 @@ fn test_resolve_iterative_sort_with_deltas_parity() {
         overlay_pl("pl", 3, json!({"users": {"@bob:example.com": 50}})),
     );
 
-    let mut unconflicted = imbl::OrdMap::new();
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
     unconflicted.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.member"),
@@ -5981,7 +5982,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     assert!(!is_ancestor(&"A".to_string(), &"B".to_string(), &context));
 
     // Cover resolve_semilattice_fold
-    let lattice_unconflicted = imbl::OrdMap::new();
+    let lattice_unconflicted = rezzy::PersistentOrdMap::new();
     let lattice_conflicted = context.clone();
     let lattice_res = resolve_semilattice_fold(
         &lattice_unconflicted,
@@ -5992,7 +5993,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     assert!(lattice_res.is_empty());
 
     // Cover get_initial_resolved_state for V1
-    let mut unconf = imbl::OrdMap::new();
+    let mut unconf = rezzy::PersistentOrdMap::new();
     unconf.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -6102,7 +6103,7 @@ fn test_coverage_sweeper_for_unreachable_edges() {
     conflicted.insert("$bogus_topic".into(), bogus_topic.clone());
 
     let (resolved, deltas) = resolve_sort_with_deltas(
-        &imbl::OrdMap::new(),
+        &rezzy::PersistentOrdMap::new(),
         &conflicted,
         &auth,
         StateResVersion::V2,
@@ -7026,7 +7027,7 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
     }
 
     // Fork "Eve": sees $pl0 as PL, has eve's display-name change
-    let mut state_eve = imbl::OrdMap::new();
+    let mut state_eve = rezzy::PersistentOrdMap::new();
     state_eve.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -7078,7 +7079,7 @@ fn test_msc4297_problem_b_resolve_state_maps_parity() {
     );
 
     // Fork "Zara": sees $pl2 as PL (Bob promoted Charlie), has zara's join
-    let mut state_zara = imbl::OrdMap::new();
+    let mut state_zara = rezzy::PersistentOrdMap::new();
     state_zara.insert(
         (
             rezzy::basespec::event_types::EventType::from("m.room.create"),
@@ -7278,7 +7279,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
     // Each fork k is "owned" by user k, who issues PL changes that
     // promote/demote other users differently on each fork.
     let mut fork_state_maps: Vec<
-        imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+        rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>,
     > = Vec::new();
 
     for fork in 0..NUM_FORKS {
@@ -7344,7 +7345,7 @@ fn test_performance_and_correctness_dense_bifurcations() {
         }
 
         // Build state map for this fork
-        let mut state = imbl::OrdMap::new();
+        let mut state = rezzy::PersistentOrdMap::new();
         state.insert(
             (
                 rezzy::basespec::event_types::EventType::from("m.room.create"),
