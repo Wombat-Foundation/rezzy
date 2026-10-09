@@ -232,7 +232,7 @@ impl<K, V> PersistentOrdMap<K, V> {
         V: PartialEq,
     {
         Diff {
-            items: diff_trees(self, other).0.into_iter(),
+            walker: DiffWalker::new(self, other),
         }
     }
 
@@ -243,7 +243,9 @@ impl<K, V> PersistentOrdMap<K, V> {
         K: Ord,
         V: PartialEq,
     {
-        diff_trees(self, other).1
+        let mut walker = DiffWalker::new(self, other);
+        while walker.next_item().is_some() {}
+        walker.expansions
     }
 }
 
@@ -660,15 +662,19 @@ pub enum DiffItem<'a, 'b, K, V> {
 }
 
 /// Iterator over ordered-map differences.
+///
+/// Lazy: items are produced as the dual cursors advance, so nothing is
+/// buffered and an early exit (`next().is_none()`, `take(n)`) only pays for the
+/// part of the trees it actually visited.
 pub struct Diff<'a, 'b, K, V> {
-    items: alloc::vec::IntoIter<DiffItem<'a, 'b, K, V>>,
+    walker: DiffWalker<'a, 'b, K, V>,
 }
 
-impl<'a, 'b, K, V> Iterator for Diff<'a, 'b, K, V> {
+impl<'a, 'b, K: Ord, V: PartialEq> Iterator for Diff<'a, 'b, K, V> {
     type Item = DiffItem<'a, 'b, K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.items.next()
+        self.walker.next_item()
     }
 }
 
@@ -764,98 +770,99 @@ impl<'a, K, V> Cursor<'a, K, V> {
 }
 
 /// Merges two trees in key order, skipping subtrees both sides share.
-///
-/// Returns the differences and how many nodes had to be opened.
-fn diff_trees<'a, 'b, K, V>(
-    old: &'a PersistentOrdMap<K, V>,
-    new: &'b PersistentOrdMap<K, V>,
-) -> (Vec<DiffItem<'a, 'b, K, V>>, usize)
-where
-    K: Ord,
-    V: PartialEq,
-{
-    let mut out = Vec::new();
-    let mut expansions = 0usize;
-    let mut left = Cursor::new(&old.root, old.height);
-    let mut right = Cursor::new(&new.root, new.height);
+struct DiffWalker<'a, 'b, K, V> {
+    left: Cursor<'a, K, V>,
+    right: Cursor<'b, K, V>,
+    /// Nodes opened so far; tests use it to prove subtree skipping.
+    expansions: usize,
+}
 
-    loop {
-        match (left.head(), right.head()) {
-            (None, None) => break,
-            (Some(Head::Entry(key, value)), None) => {
-                out.push(DiffItem::Remove(key, value));
-                left.skip();
-            }
-            (None, Some(Head::Entry(key, value))) => {
-                out.push(DiffItem::Add(key, value));
-                right.skip();
-            }
-            (Some(Head::Node(_)), None) => {
-                left.expand();
-                expansions = expansions
-                    .checked_add(1)
-                    .expect("diff expansion count overflow");
-            }
-            (None, Some(Head::Node(_))) => {
-                right.expand();
-                expansions = expansions
-                    .checked_add(1)
-                    .expect("diff expansion count overflow");
-            }
-            (Some(Head::Entry(lk, lv)), Some(Head::Entry(rk, rv))) => match lk.cmp(rk) {
-                Ordering::Less => {
-                    out.push(DiffItem::Remove(lk, lv));
-                    left.skip();
-                }
-                Ordering::Greater => {
-                    out.push(DiffItem::Add(rk, rv));
-                    right.skip();
-                }
-                Ordering::Equal => {
-                    if lv != rv {
-                        out.push(DiffItem::Update {
-                            old: (lk, lv),
-                            new: (rk, rv),
-                        });
-                    }
-                    left.skip();
-                    right.skip();
-                }
-            },
-            (Some(Head::Node(ln)), Some(Head::Node(rn))) => {
-                expansions = expansions
-                    .checked_add(advance_nodes(&mut left, &mut right, ln, rn))
-                    .expect("diff expansion count overflow");
-            }
-            (Some(Head::Node(ln)), Some(Head::Entry(rk, rv))) => match ln.first_key() {
-                None => left.skip(),
-                Some(lk) if lk > rk => {
-                    out.push(DiffItem::Add(rk, rv));
-                    right.skip();
-                }
-                Some(_) => {
-                    left.expand();
-                    expansions = expansions
-                        .checked_add(1)
-                        .expect("diff expansion count overflow");
-                }
-            },
-            (Some(Head::Entry(lk, lv)), Some(Head::Node(rn))) => match rn.first_key() {
-                None => right.skip(),
-                Some(rk) if rk > lk => {
-                    out.push(DiffItem::Remove(lk, lv));
-                    left.skip();
-                }
-                Some(_) => {
-                    right.expand();
-                    expansions = expansions
-                        .checked_add(1)
-                        .expect("diff expansion count overflow");
-                }
-            },
+impl<'a, 'b, K: Ord, V: PartialEq> DiffWalker<'a, 'b, K, V> {
+    fn new(old: &'a PersistentOrdMap<K, V>, new: &'b PersistentOrdMap<K, V>) -> Self {
+        Self {
+            left: Cursor::new(&old.root, old.height),
+            right: Cursor::new(&new.root, new.height),
+            expansions: 0,
         }
     }
-    (out, expansions)
+
+    fn opened(&mut self, count: usize) {
+        self.expansions = self
+            .expansions
+            .checked_add(count)
+            .expect("diff expansion count overflow");
+    }
+
+    /// Advances the cursors until the next difference, or the end.
+    fn next_item(&mut self) -> Option<DiffItem<'a, 'b, K, V>> {
+        loop {
+            match (self.left.head(), self.right.head()) {
+                (None, None) => return None,
+                (Some(Head::Entry(key, value)), None) => {
+                    self.left.skip();
+                    return Some(DiffItem::Remove(key, value));
+                }
+                (None, Some(Head::Entry(key, value))) => {
+                    self.right.skip();
+                    return Some(DiffItem::Add(key, value));
+                }
+                (Some(Head::Node(_)), None) => {
+                    self.left.expand();
+                    self.opened(1);
+                }
+                (None, Some(Head::Node(_))) => {
+                    self.right.expand();
+                    self.opened(1);
+                }
+                (Some(Head::Entry(lk, lv)), Some(Head::Entry(rk, rv))) => match lk.cmp(rk) {
+                    Ordering::Less => {
+                        self.left.skip();
+                        return Some(DiffItem::Remove(lk, lv));
+                    }
+                    Ordering::Greater => {
+                        self.right.skip();
+                        return Some(DiffItem::Add(rk, rv));
+                    }
+                    Ordering::Equal => {
+                        self.left.skip();
+                        self.right.skip();
+                        if lv != rv {
+                            return Some(DiffItem::Update {
+                                old: (lk, lv),
+                                new: (rk, rv),
+                            });
+                        }
+                    }
+                },
+                (Some(Head::Node(ln)), Some(Head::Node(rn))) => {
+                    let opened = advance_nodes(&mut self.left, &mut self.right, ln, rn);
+                    self.opened(opened);
+                }
+                (Some(Head::Node(ln)), Some(Head::Entry(rk, rv))) => match ln.first_key() {
+                    None => self.left.skip(),
+                    Some(lk) if lk > rk => {
+                        self.right.skip();
+                        return Some(DiffItem::Add(rk, rv));
+                    }
+                    Some(_) => {
+                        self.left.expand();
+                        self.opened(1);
+                    }
+                },
+                (Some(Head::Entry(lk, lv)), Some(Head::Node(rn))) => match rn.first_key() {
+                    None => self.right.skip(),
+                    Some(rk) if rk > lk => {
+                        self.left.skip();
+                        return Some(DiffItem::Remove(lk, lv));
+                    }
+                    Some(_) => {
+                        self.right.expand();
+                        self.opened(1);
+                    }
+                },
+            }
+        }
+    }
 }
 
 /// Handles two subtrees at the heads of both cursors; returns nodes opened.
