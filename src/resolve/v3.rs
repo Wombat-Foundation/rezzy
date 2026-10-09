@@ -360,10 +360,9 @@ impl<Id> Clone for CertifyParams<'_, Id> {
 ///
 /// Returns the authorization or verification failure reported by
 /// [`crate::auth::check_auth`].
-#[allow(clippy::result_large_err)]
 pub fn certify_v3_admission<'a, Id, C, K>(
     event: &'a LeanEvent<Id, C, K>,
-    branch_auth: &crate::auth::RoomState<Id, C, K>,
+    branch_auth: &'a crate::auth::RoomState<Id, C, K>,
     rank_policy: &impl V3RankPolicy<Id, C, K>,
     params: CertifyParams<'a, Id>,
 ) -> Result<V3Admission<Id, K>, crate::auth::AuthError<'a, Id>>
@@ -560,7 +559,6 @@ pub struct RepairRound<Id, K> {
 /// Returns an error instead of resolving when a state writer lacks a verified
 /// admission certificate or the provider cannot establish a required causal or
 /// branch-auth fact.
-#[allow(clippy::implicit_hasher)]
 pub fn resolve_v3<Id, C, S, K>(
     unconflicted_state: &SharedState<Id, K>,
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S>,

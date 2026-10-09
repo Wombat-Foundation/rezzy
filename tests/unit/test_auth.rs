@@ -282,7 +282,6 @@ fn assert_pl_users_rejected(users: &rezzy::JsonValue) {
 
 /// Auth-checks a `$pl0` event whose `ban` is a boolean (Rule 10.1 non-integer
 /// scalar).
-#[allow(clippy::result_large_err)]
 fn check_ban_true_pl(state: &RoomState, version: StateResVersion) -> Result<(), AuthError<'_>> {
     let events: &'static Vec<LeanEvent> = Box::leak(Box::new(utils::parse_jsonl_events(
         r#"
@@ -322,8 +321,8 @@ fn assert_incomplete_bob_member(res: &Result<(), AuthError>) {
     assert!(
         matches!(
             res,
-            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
-                if event_type == "m.room.member" && state_key == "@bob:example.com"
+            Err(AuthError::IncompleteAuthEvents { event_type, state_key })
+                if *event_type == "m.room.member" && *state_key == "@bob:example.com"
         ),
         "expected IncompleteAuthEvents for @bob:example.com, got {res:?}"
     );
@@ -331,9 +330,10 @@ fn assert_incomplete_bob_member(res: &Result<(), AuthError>) {
 
 /// Auth-checks a chain under `V2_1` against an empty initial state.
 fn check_chain(events: &[LeanEvent]) -> (Vec<String>, Vec<(String, AuthError<'_>)>) {
+    let empty: &'static RoomState = Box::leak(Box::new(RoomState::new()));
     check_auth_chain(
         events,
-        &RoomState::new(),
+        empty,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     )
 }
@@ -610,7 +610,7 @@ fn test_auth_error_display_variants() {
     let err: AuthError<String> = AuthError::InsufficientPowerLevel {
         required: 50,
         actual: 10,
-        event_type: "m.room.topic".into(),
+        event_type: "m.room.topic",
     };
     let msg = format!("{err}");
     assert!(msg.contains("10"));
@@ -656,8 +656,8 @@ fn test_auth_error_display_variants() {
     assert!(msg8.contains("m.room.create"));
 
     let err9: AuthError<String> = AuthError::IncompleteAuthEvents {
-        event_type: "m.room.power_levels".into(),
-        state_key: "".into(),
+        event_type: "m.room.power_levels",
+        state_key: "",
     };
     let msg9 = format!("{err9}");
     assert!(msg9.contains("m.room.power_levels"));
@@ -667,7 +667,7 @@ fn test_auth_error_display_variants() {
         event_id: &"$msg",
         auth_event_id: &"$foreign",
         expected: "!room_a:x.com",
-        actual: Some("!room_b:x.com".into()),
+        actual: Some("!room_b:x.com"),
     };
     let msg10 = format!("{err10}");
     assert!(msg10.contains("$msg"));
@@ -877,9 +877,10 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
     msg.auth_events = vec!["$create".into(), "$foreign_create".into()];
 
     let events = [create, foreign_create, msg];
+    let empty_state = RoomState::new();
     let (accepted, rejected) = check_auth_chain(
         &events,
-        &RoomState::new(),
+        &empty_state,
         rezzy::basespec::rezzy_types::StateResVersion::V2,
     );
 
@@ -978,9 +979,10 @@ fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
     msg.auth_events = vec!["$foreign_pl".into()];
 
     let events = [create, foreign_pl, msg];
+    let empty_state = RoomState::new();
     let (accepted, rejected) = check_auth_chain(
         &events,
-        &RoomState::new(),
+        &empty_state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
 
@@ -1000,8 +1002,9 @@ fn test_auth_chain_rejects_unauthorized() {
     "#,
     );
 
+    let empty_state = RoomState::new();
     let (accepted, rejected) =
-        check_auth_chain(&events, &RoomState::new(), rezzy::StateResVersion::V2_1);
+        check_auth_chain(&events, &empty_state, rezzy::StateResVersion::V2_1);
 
     assert_eq!(
         accepted,
@@ -1036,8 +1039,8 @@ fn test_auth_chain_propagates_rejection_via_auth_events() {
     "#,
     );
 
-    let (accepted, rejected) =
-        check_auth_chain(&events, &RoomState::new(), rezzy::StateResVersion::V2);
+    let empty_state = RoomState::new();
+    let (accepted, rejected) = check_auth_chain(&events, &empty_state, rezzy::StateResVersion::V2);
 
     assert_eq!(
         accepted,
@@ -1728,7 +1731,7 @@ fn test_ban_insufficient_power_level() {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                ref event_type
+                event_type
             }) if event_type == "ban"
         ),
         "Expected InsufficientPowerLevel for ban, got {result:?}"
@@ -1749,7 +1752,7 @@ fn test_kick_insufficient_power_level() {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                ref event_type
+                event_type
             }) if event_type == "kick"
         ),
         "Expected InsufficientPowerLevel for kick, got {result:?}"
@@ -4068,6 +4071,29 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
             _event_type: &str,
             _state_key: &str,
         ) -> Option<&EventWithSeparateStateEdges> {
+            None
+        }
+    }
+
+    impl StateProvider<String, rezzy::JsonValue, EventWithSeparateStateEdges> for &EmptyState {
+        fn get_event(
+            &self,
+            _event_type: &str,
+            _state_key: &str,
+        ) -> Option<&EventWithSeparateStateEdges> {
+            None
+        }
+    }
+
+    impl<'p>
+        rezzy::auth::StateProviderRef<'p, String, rezzy::JsonValue, EventWithSeparateStateEdges>
+        for &'p EmptyState
+    {
+        fn get_event_ref(
+            &self,
+            _event_type: &str,
+            _state_key: &str,
+        ) -> Option<&'p EventWithSeparateStateEdges> {
             None
         }
     }

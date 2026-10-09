@@ -1910,7 +1910,7 @@ mod tests {
             AuthError::InsufficientPowerLevel {
                 required: 100,
                 actual: 50,
-                event_type: "m.room.name".into(),
+                event_type: "m.room.name",
             },
             AuthError::BannedUser {
                 sender: "bob",
@@ -2128,7 +2128,7 @@ mod tests {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                event_type: "m.room.name".into()
+                event_type: "m.room.name"
             })
         );
 
@@ -2163,9 +2163,10 @@ mod tests {
             ..Default::default()
         };
         let events = [create_no_key];
+        let empty_state = RoomState::new();
         let (accepted_ids, rejected_ids) = check_auth_chain(
             &events,
-            &RoomState::new(),
+            &empty_state,
             rezzy::basespec::rezzy_types::StateResVersion::V2_1,
         );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
@@ -3079,8 +3080,8 @@ macro_rules! impl_event_like_stub {
         impl rezzy::basespec::rezzy_types::EventLike for $ty {
             type Content = $content;
 
-            fn event_type(&self) -> std::borrow::Cow<'_, str> {
-                std::borrow::Cow::Borrowed("m.room.message")
+            fn event_type(&self) -> &str {
+                "m.room.message"
             }
             fn sender(&self) -> &'static str {
                 $sender
@@ -6204,8 +6205,8 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_event_id(&self) -> &String {
         &self.id
     }
-    fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Borrowed(&self.event_type)
+    fn raw_event_type(&self) -> &str {
+        &self.event_type
     }
     fn raw_sender(&self) -> &str {
         &self.sender
@@ -6297,7 +6298,7 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.prev_state_events().len(), 0);
 
     // EventLike required methods (lines 534-556)
-    assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");
+    assert_eq!(parsed.event_type(), "m.room.power_levels");
     assert_eq!(parsed.sender(), "@admin:x");
     assert_eq!(parsed.state_key(), Some(""));
     assert_eq!(parsed.power_level(), 0); // raw_power_level default
@@ -6506,7 +6507,7 @@ fn test_lean_event_borrowed_view_accessors() {
     assert_eq!(view.depth(), event.depth);
     assert_eq!(view.prev_events(), event.prev_events.as_slice());
     assert_eq!(view.auth_events(), event.auth_events.as_slice());
-    assert_eq!(view.event_type().as_ref(), event.event_type);
+    assert_eq!(view.event_type(), event.event_type);
     assert_eq!(view.sender(), event.sender);
     assert_eq!(view.state_key(), event.state_key.as_deref());
     assert_eq!(view.power_level(), event.power_level);

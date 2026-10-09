@@ -94,6 +94,29 @@ pub(crate) struct OverlayState<'a, Id, C, S1, S2, K = String> {
     pub(crate) candidate_event_type: &'a str,
 }
 
+impl<'p, Id: EventId, C: EventContent, S1: BuildHasher, S2: BuildHasher, K>
+    crate::auth::StateProviderRef<'p, Id, C, LeanEvent<Id, C, K>>
+    for &'p OverlayState<'_, Id, C, S1, S2, K>
+where
+    K: Ord + Clone + AsRef<str>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p LeanEvent<Id, C, K>> {
+        crate::auth::StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
+impl<Id: EventId, C: EventContent, S1: BuildHasher, S2: BuildHasher, K>
+    crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for &OverlayState<'_, Id, C, S1, S2, K>
+where
+    K: Ord + Clone + AsRef<str>,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
+        crate::auth::StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
 impl<Id: EventId, C: EventContent, S1: BuildHasher, S2: BuildHasher, K>
     crate::auth::StateProvider<Id, C, LeanEvent<Id, C, K>> for OverlayState<'_, Id, C, S1, S2, K>
 where

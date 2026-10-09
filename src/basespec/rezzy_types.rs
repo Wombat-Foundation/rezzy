@@ -1741,7 +1741,7 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 ///
 /// impl EventLike for MyEvent {
 ///     type Content = rezzy::JsonValue;
-///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
+///     fn event_type(&self) -> &str { "m.room.message" }
 ///     fn sender(&self) -> &str { &self.sender }
 ///     fn state_key(&self) -> Option<&str> { None }
 ///     fn power_level(&self) -> i64 { 0 }
@@ -1755,9 +1755,9 @@ pub trait EventLike: DagNode {
 
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
     ///
-    /// Returns `Cow::Borrowed` when the type string is stored inline (e.g. `LeanEvent`),
-    /// or `Cow::Owned`/`Cow::Borrowed` from a typed enum (e.g. ruma `TimelineEventType`).
-    fn event_type(&self) -> std::borrow::Cow<'_, str>;
+    /// Implementations must return a borrowed slice, so errors built from
+    /// this value stay allocation-free (and can outlive the call site).
+    fn event_type(&self) -> &str;
 
     /// The MXID of the user who sent the event.
     fn sender(&self) -> &str;
@@ -1891,8 +1891,8 @@ pub trait EventLike: DagNode {
 impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C, K> {
     type Content = C;
 
-    fn event_type(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Borrowed(&self.event_type)
+    fn event_type(&self) -> &str {
+        &self.event_type
     }
     fn sender(&self) -> &str {
         &self.sender
@@ -1953,7 +1953,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///     type Id = String;
 ///
 ///     fn raw_event_id(&self) -> &String { &self.event_id }
-///     fn raw_event_type(&self) -> Cow<'_, str> { Cow::Borrowed(&self.kind) }
+///     fn raw_event_type(&self) -> &str { &self.kind }
 ///     fn raw_sender(&self) -> &str { &self.sender }
 ///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
 ///     fn raw_content_json(&self) -> &str { &self.content }
@@ -1988,7 +1988,7 @@ pub trait RawEvent {
     fn raw_event_id(&self) -> &Self::Id;
 
     /// The Matrix event type as a string (e.g. `"m.room.member"`).
-    fn raw_event_type(&self) -> std::borrow::Cow<'_, str>;
+    fn raw_event_type(&self) -> &str;
 
     /// The sender's MXID as a string slice.
     fn raw_sender(&self) -> &str;
@@ -2105,7 +2105,7 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
 impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
     type Content = crate::json::Value;
 
-    fn event_type(&self) -> std::borrow::Cow<'_, str> {
+    fn event_type(&self) -> &str {
         self.raw.raw_event_type()
     }
 
@@ -2570,8 +2570,8 @@ impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
 impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_, Id, C, K> {
     type Content = C;
 
-    fn event_type(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Borrowed(self.event_type)
+    fn event_type(&self) -> &str {
+        self.event_type
     }
     fn sender(&self) -> &str {
         self.sender

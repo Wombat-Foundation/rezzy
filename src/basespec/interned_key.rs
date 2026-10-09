@@ -278,6 +278,36 @@ where
     }
 }
 
+impl<'p, 'a, Id, C> crate::auth::StateProviderRef<'p, Id, C, LeanEvent<Id, C, InternId<'a>>>
+    for &'p InternedRoomState<'a, Id, C>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    fn get_event_ref(
+        &self,
+        event_type: &str,
+        state_key: &str,
+    ) -> Option<&'p LeanEvent<Id, C, InternId<'a>>> {
+        StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
+impl<'a, Id, C> StateProvider<Id, C, LeanEvent<Id, C, InternId<'a>>>
+    for &InternedRoomState<'a, Id, C>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    fn get_event(
+        &self,
+        event_type: &str,
+        state_key: &str,
+    ) -> Option<&LeanEvent<Id, C, InternId<'a>>> {
+        StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {

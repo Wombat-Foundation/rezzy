@@ -17,8 +17,6 @@
 //! Implements iterative auth-checking of events against the room state at
 //! their `prev_events` — never the current time.
 
-#![allow(clippy::result_large_err)]
-
 pub mod roaring;
 pub mod user;
 
@@ -38,14 +36,13 @@ use crate::basespec::rezzy_types::{
     apply_redaction, is_valid_mxid, EventContent, EventId, EventLike, EventProvider, EventVerifier,
     LeanEvent, StateKey, StateResVersion,
 };
-use crate::errors::{InlineStr, VerifyError};
+use crate::errors::VerifyError;
 
 /// An error indicating why an event failed authorization.
 ///
 /// Payloads borrow from the event/state under check (or are inline
 /// integers/statics), so constructing an error never allocates.
 #[derive(Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
 pub enum AuthError<'a, Id = String> {
     /// The sender is not a member of the room (or membership is not "join").
     NotMember { sender: &'a str, event_id: &'a Id },
@@ -53,7 +50,7 @@ pub enum AuthError<'a, Id = String> {
     InsufficientPowerLevel {
         required: i64,
         actual: i64,
-        event_type: InlineStr<256>,
+        event_type: &'a str,
     },
     /// The sender is banned from the room.
     BannedUser { sender: &'a str, event_id: &'a Id },
@@ -68,7 +65,7 @@ pub enum AuthError<'a, Id = String> {
     /// The `m.room.third_party_invite` event's sender differs from the
     /// inviting event's sender.
     TpiIssuerSenderMismatch {
-        tpi_sender: InlineStr<256>,
+        tpi_sender: &'a str,
         event_sender: &'a str,
     },
     /// The `m.room.create` event has `prev_events`, which is forbidden.
@@ -96,8 +93,8 @@ pub enum AuthError<'a, Id = String> {
     /// "missing" from "stale citation" -- both name the same `(event_type,
     /// state_key)`.
     IncompleteAuthEvents {
-        event_type: InlineStr<256>,
-        state_key: InlineStr<256>,
+        event_type: &'a str,
+        state_key: &'a str,
     },
     /// Rule 2.5: an `auth_events` entry carries a [`RoomId`](crate::RoomId)
     /// that doesn't match the citing event's own room, OR carries no
@@ -118,9 +115,9 @@ pub enum AuthError<'a, Id = String> {
         auth_event_id: &'a Id,
         expected: &'a str,
         /// `None` if the cited auth event carries no `room_id` at all
-        /// (rather than a populated, differing one). Inline because the
+        /// (rather than a populated, differing one). Borrowed because the
         /// cited auth event may live in `check_auth_chain`'s local map.
-        actual: Option<InlineStr<256>>,
+        actual: Option<&'a str>,
     },
     /// MSC4242 Rule 4.3: an auth event derived from state was rejected during PDU receipt.
     RejectedAuthEvent {
@@ -137,13 +134,13 @@ pub enum AuthError<'a, Id = String> {
     /// The room has `m.federate = false` but the sender is from another domain.
     CrossDomainSender { sender: &'a str },
     /// An `auth_events` entry has a type outside the allowed auth set.
-    UnexpectedAuthEventType { auth_type: InlineStr<256> },
+    UnexpectedAuthEventType { auth_type: &'a str },
     /// A `m.room.power_levels` scalar field is not an integer.
     NonIntegerPowerLevel { field: &'a str },
     /// A `m.room.power_levels` map field is not an object of integers.
     NonIntegerMapPowerLevel { field: &'a str },
     /// The room creator appears in `m.room.power_levels.users`.
-    UsersContainsCreator { creator: InlineStr<256> },
+    UsersContainsCreator { creator: &'a str },
     /// An additional creator-capable user appears in the users map.
     UsersContainsAdditionalCreator { user_id: &'a str },
     /// A `users` map key is not a valid user ID.
@@ -152,7 +149,7 @@ pub enum AuthError<'a, Id = String> {
     UnknownMembership { membership: &'a str },
     /// Rule 10.7: an `events` entry was changed/removed above the sender's PL.
     CannotChangeEvents {
-        key: InlineStr<256>,
+        key: &'a str,
         old_val: i64,
         sender_pl: i64,
     },
@@ -164,7 +161,7 @@ pub enum AuthError<'a, Id = String> {
     },
     /// Rule 10.7 (`notifications`): changed/removed above the sender's PL.
     CannotChangeNotifications {
-        key: InlineStr<256>,
+        key: &'a str,
         old_val: i64,
         sender_pl: i64,
     },
@@ -176,7 +173,7 @@ pub enum AuthError<'a, Id = String> {
     },
     /// Rule 10.9: a `users` entry was changed/removed at or above the sender's PL.
     CannotChangeUsers {
-        key: InlineStr<256>,
+        key: &'a str,
         old_val: i64,
         sender_pl: i64,
     },
@@ -606,9 +603,29 @@ impl Ord for dyn StateKeyDyn + '_ {
 /// The built-in implementation is [`RoomState`] (a `BTreeMap`), but the
 /// resolution engine uses a more complex `OverlayState` internally
 /// that layers resolved state, local auth context, and the create event.
+///
+/// Lookups return events borrowed from `&self`. Authorization paths whose
+/// *error payloads* reference state events use [`StateProviderRef`] instead,
+/// which decouples the returned borrow from the lookup.
 pub trait StateProvider<Id = String, C = crate::json::Value, E = LeanEvent<Id, C>> {
     /// Look up a state event by its type and state key.
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E>;
+}
+
+/// State lookup whose events are borrowed from the provider's *storage*
+/// (`'p`), not from the `&self` lookup itself.
+///
+/// Implementations that store events behind a longer-lived owner (maps of
+/// `&'p LeanEvent`, or `&'p` of an owned map) return `'p`-borrowed events,
+/// so the authorization errors built from those lookups can outlive the
+/// call while the provider value itself stays a local. Owned storage
+/// implements this for `&'p` of itself.
+pub trait StateProviderRef<'p, Id = String, C = crate::json::Value, E = LeanEvent<Id, C>>:
+    StateProvider<Id, C, E>
+{
+    /// Look up a state event by its type and state key, borrowing from the
+    /// provider's storage (`'p`) rather than the `&self` lookup.
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p E>;
 }
 
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
@@ -623,6 +640,102 @@ where
     fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
         let query: &dyn StateKeyDyn = &(event_type, state_key);
         self.get(query)
+    }
+}
+
+impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for &RoomState<Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
+        (**self).get_event(event_type, state_key)
+    }
+}
+
+impl<'p, Id, C, K> StateProviderRef<'p, Id, C, LeanEvent<Id, C, K>> for &'p RoomState<Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p LeanEvent<Id, C, K>> {
+        let query: &dyn StateKeyDyn = &(event_type, state_key);
+        (*self).get(query)
+    }
+}
+
+/// Room state that stores events *by reference* (`&'p LeanEvent`).
+///
+/// Used by [`check_auth_chain`]: the evolving auth state is a map of
+/// pointers into the caller's event slice and initial state, so lookups
+/// return `'p`-borrowed events (and therefore build `'p`-borrowed
+/// [`AuthError`]s) while the map itself stays a local that the chain can
+/// mutate freely.
+pub(crate) struct BorrowedState<'p, Id, C, K> {
+    map: std::collections::BTreeMap<(String, K), &'p LeanEvent<Id, C, K>>,
+}
+
+impl<'p, Id, C, K> BorrowedState<'p, Id, C, K>
+where
+    Id: EventId,
+    C: EventContent,
+    K: StateKey + Clone,
+{
+    /// Seed from an initial room state (events borrowed for `'p`).
+    fn seeded(initial: &'p RoomState<Id, C, K>) -> Self {
+        Self {
+            map: initial
+                .iter()
+                .map(|(key, event)| (key.clone(), event))
+                .collect(),
+        }
+    }
+
+    /// Apply an accepted event (`'p`-borrowed) to the evolving state.
+    fn insert(&mut self, key: (String, K), event: &'p LeanEvent<Id, C, K>) {
+        self.map.insert(key, event);
+    }
+}
+
+impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for BorrowedState<'_, Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
+        let query: &dyn StateKeyDyn = &(event_type, state_key);
+        self.map.get(query).copied()
+    }
+}
+
+impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for &BorrowedState<'_, Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
+        StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
+impl<'p, Id, C, K> StateProviderRef<'p, Id, C, LeanEvent<Id, C, K>> for &BorrowedState<'p, Id, C, K>
+where
+    K: Ord,
+    for<'r> (String, K): Borrow<dyn StateKeyDyn + 'r>,
+{
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p LeanEvent<Id, C, K>> {
+        StateProviderRef::get_event_ref(*self, event_type, state_key)
+    }
+}
+
+impl<'p, Id, C, K> StateProviderRef<'p, Id, C, LeanEvent<Id, C, K>> for BorrowedState<'p, Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p LeanEvent<Id, C, K>> {
+        let query: &dyn StateKeyDyn = &(event_type, state_key);
+        self.map.get(query).copied()
     }
 }
 
@@ -827,10 +940,10 @@ pub fn validate_forward_extremity<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &'a E,
-    auth_events_state: &impl StateProvider<Id, C, E>,
-    current_room_state: &impl StateProvider<Id, C, E>,
+    auth_events_state: impl StateProviderRef<'a, Id, C, E>,
+    current_room_state: impl StateProviderRef<'a, Id, C, E>,
     version: StateResVersion,
-    verifier: Option<&'a dyn EventVerifier<Id>>,
+    verifier: Option<&'a dyn EventVerifier<E::Id>>,
 ) -> ForwardExtremityResult<'a, Id> {
     if let Err(e) = check_auth(event, auth_events_state, version, verifier) {
         return ForwardExtremityResult::Rejected(e);
@@ -857,7 +970,7 @@ pub fn validate_forward_extremity<
 /// Returns an `AuthError` if the event fails authorization validation.
 pub fn check_auth<'a, E: EventLike>(
     event: &'a E,
-    state: &impl StateProvider<E::Id, E::Content, E>,
+    state: impl StateProviderRef<'a, E::Id, E::Content, E>,
     version: StateResVersion,
     verifier: Option<&'a dyn EventVerifier<E::Id>>,
 ) -> Result<(), AuthError<'a, E::Id>>
@@ -874,7 +987,13 @@ where
 /// # Errors
 ///
 /// Returns an `AuthError` if the event fails authorization validation.
-#[allow(clippy::too_many_lines)]
+//
+// The state parameter is taken by value because callers pass `&RoomState`
+// / `&BorrowedState` directly: the `StateProviderRef` impls live on the
+// reference types (owned storage can't yield `'a`-borrowed events), so the
+// reference itself *is* the provider value. Taking `&impl` would force a
+// double reference at every call site for no benefit.
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 pub fn check_auth_with_context<
     'a,
     Id: EventId + 'static,
@@ -882,10 +1001,10 @@ pub fn check_auth_with_context<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &'a E,
-    state: &impl StateProvider<Id, C, E>,
+    state: impl StateProviderRef<'a, Id, C, E>,
     version: StateResVersion,
     verifier: Option<&'a dyn EventVerifier<Id>>,
-    auth_context: Option<&dyn EventProvider<Id, C, E>>,
+    auth_context: Option<&'a dyn EventProvider<Id, C, E>>,
 ) -> Result<(), AuthError<'a, Id>> {
     // Rule 0: Basic syntactic validation
     if event.prev_events().len() > 20 {
@@ -910,7 +1029,7 @@ pub fn check_auth_with_context<
     // Cache event_type once — avoids repeated Cow allocations for
     // RawEvent impls that return Cow::Owned.
     let event_type = event.event_type();
-    let event_type: &str = &event_type;
+    let event_type: &str = event_type;
 
     if event_type.is_empty() {
         return Err(AuthError::InvalidSyntax("event_type cannot be empty"));
@@ -924,7 +1043,7 @@ pub fn check_auth_with_context<
             "rejected events must not be auth-checked",
         ));
     }
-    reject_flagged_auth_state(event, state)?;
+    reject_flagged_auth_state(event, &state)?;
 
     // Optional verification pipeline (steps 1-3).
     // Callers pass None during state resolution; Some during PDU receipt.
@@ -971,7 +1090,7 @@ pub fn check_auth_with_context<
     // Reject a present unsupported room-version label before any
     // authorization rule interprets it as a legacy version. Missing create
     // state remains valid for partial-state resolution.
-    validated_room_version_or_v1(state)?;
+    validated_room_version_or_v1(&state)?;
 
     // Rule 3: m.federate check
     if let Some(create_ev) = state.get_event(M_ROOM_CREATE, "") {
@@ -992,7 +1111,7 @@ pub fn check_auth_with_context<
     // gating on `version == StateResVersion::V1` would only ever match real
     // room version "1" and silently skip versions 2-5.
     if event_type == crate::basespec::event_types::M_ROOM_ALIASES {
-        let room_version = room_version_str_or_v1(state)?;
+        let room_version = room_version_str_or_v1(&state)?;
         if matches!(room_version, "1" | "2" | "3" | "4" | "5") {
             let Some(state_key) = event.state_key() else {
                 return Err(AuthError::InvalidSyntax(
@@ -1015,10 +1134,10 @@ pub fn check_auth_with_context<
     // Rule 4 above, from the m.room.create event's content, not the
     // collapsed `StateResVersion` enum.
     if event_type == M_ROOM_REDACTION {
-        let room_version = room_version_str_or_v1(state)?;
+        let room_version = room_version_str_or_v1(&state)?;
         if matches!(room_version, "1" | "2") {
-            let sender_pl = user::get_sender_power_level(event.sender(), state, version);
-            let redact_pl = get_redact_power_level(state);
+            let sender_pl = user::get_sender_power_level(event.sender(), &state, version);
+            let redact_pl = get_redact_power_level(&state);
             let same_domain = event
                 .get_redacts()
                 .is_some_and(|target| domain_matches_display(target, &event.event_id()));
@@ -1095,14 +1214,12 @@ pub fn check_auth_with_context<
                 ));
             }
 
-            if !VALID_AUTH_TYPES.contains(&auth_type.as_ref()) {
-                return Err(AuthError::UnexpectedAuthEventType {
-                    auth_type: auth_type.into(),
-                });
+            if !VALID_AUTH_TYPES.contains(&auth_type) {
+                return Err(AuthError::UnexpectedAuthEventType { auth_type });
             }
 
             let sk = auth_ev.state_key().unwrap_or("");
-            let key = (auth_type.into_owned(), std::string::String::from(sk));
+            let key = (auth_type.to_string(), std::string::String::from(sk));
             if seen_tuples.insert(key, auth_id.clone()).is_some() {
                 return Err(AuthError::InvalidSyntax(
                     "auth_events contains duplicate (type, state_key) pair",
@@ -1122,7 +1239,7 @@ pub fn check_auth_with_context<
         // The selection is room-version-aware (the v8+ restricted-join
         // authorising member), so read the actual version from the create
         // event rather than the collapsed `StateResVersion` enum.
-        let room_version = room_version_str_or_v1(state)?;
+        let room_version = room_version_str_or_v1(&state)?;
         for (req_type, req_key) in required_auth_types_for(event, event_type, version, room_version)
         {
             let Some(state_ev) = state.get_event(req_type, req_key) else {
@@ -1136,8 +1253,8 @@ pub fn check_auth_with_context<
                 Some(cited_id) if cited_id == state_ev.event_id() => {}
                 _ => {
                     return Err(AuthError::IncompleteAuthEvents {
-                        event_type: req_type.into(),
-                        state_key: req_key.into(),
+                        event_type: req_type,
+                        state_key: req_key,
                     });
                 }
             }
@@ -1189,14 +1306,14 @@ pub fn check_auth_with_context<
         let is_first_pl = no_pl_event && event_type == M_ROOM_POWER_LEVELS;
 
         if !is_first_pl {
-            let sender_pl = user::get_sender_power_level(event.sender(), state, version);
-            let required_pl = get_required_power_level(event_type, event.state_key(), state);
+            let sender_pl = user::get_sender_power_level(event.sender(), &state, version);
+            let required_pl = get_required_power_level(event_type, event.state_key(), &state);
 
             if sender_pl < required_pl {
                 return Err(AuthError::InsufficientPowerLevel {
                     required: required_pl,
                     actual: sender_pl,
-                    event_type: event_type.into(),
+                    event_type,
                 });
             }
         }
@@ -1228,7 +1345,7 @@ pub fn check_auth_with_context<
         );
 
         // Rules 10.1–10.3 were added in room version 10.
-        let is_room_v10_plus = get_room_version_num(state)? >= 10;
+        let is_room_v10_plus = get_room_version_num(&state)? >= 10;
 
         if is_room_v10_plus {
             // Rule 10.1 (V10+): Scalar PL properties must be integers.
@@ -1244,13 +1361,11 @@ pub fn check_auth_with_context<
 
         // Rule 10.4 (V12+ only): `users` must not contain creator or additional_creators.
         if is_v12_plus {
-            if let Some(create_event) = state.get_event(M_ROOM_CREATE, "") {
+            if let Some(create_event) = state.get_event_ref(M_ROOM_CREATE, "") {
                 let create_content = create_event.content();
                 if let Some(creator) = create_content.get_creator() {
                     if new_content.has_user_in_users(creator) {
-                        return Err(AuthError::UsersContainsCreator {
-                            creator: creator.into(),
-                        });
+                        return Err(AuthError::UsersContainsCreator { creator });
                     }
                 }
                 // Check additional_creators — use key-only iteration so non-integer
@@ -1287,8 +1402,8 @@ pub fn check_auth_with_context<
 
         // Rules 10.5–10.10: only when a previous PL event exists.
         // (Rule 10.5 — first PL event — is handled above by the is_first_pl skip.)
-        if let Some(prev_pl_event) = state.get_event(M_ROOM_POWER_LEVELS, "") {
-            let sender_pl = user::get_sender_power_level(event.sender(), state, version);
+        if let Some(prev_pl_event) = state.get_event_ref(M_ROOM_POWER_LEVELS, "") {
+            let sender_pl = user::get_sender_power_level(event.sender(), &state, version);
             check_power_levels_rules(
                 event.sender(),
                 new_content,
@@ -1312,7 +1427,7 @@ pub fn check_auth_with_context<
         };
 
         let current_membership = state
-            .get_event(M_ROOM_MEMBER, target_user)
+            .get_event_ref(M_ROOM_MEMBER, target_user)
             .and_then(EventLike::get_membership)
             .unwrap_or("");
 
@@ -1324,20 +1439,20 @@ pub fn check_auth_with_context<
         }
 
         match new_membership {
-            MEM_JOIN => check_join_rules(event, state, target_user, version, verifier)?,
+            MEM_JOIN => check_join_rules(event, &state, target_user, version, verifier)?,
             MEM_LEAVE => {
-                check_leave_rules(event, state, target_user, current_membership, version)?;
+                check_leave_rules(event, &state, target_user, current_membership, version)?;
             }
-            MEM_BAN => check_ban_rules(event, state, version)?,
+            MEM_BAN => check_ban_rules(event, &state, version)?,
             MEM_INVITE => check_invite_rules(
                 event,
-                state,
+                &state,
                 target_user,
                 current_membership,
                 version,
                 verifier,
             )?,
-            MEM_KNOCK => check_knock_rules(event, state, target_user)?,
+            MEM_KNOCK => check_knock_rules(event, &state, target_user)?,
             // Rule 5.8: Unknown membership — reject
             _ => {
                 return Err(AuthError::UnknownMembership {
@@ -1346,7 +1461,7 @@ pub fn check_auth_with_context<
             }
         }
 
-        check_membership_pl_hierarchies(event, state, target_user, new_membership, version)?;
+        check_membership_pl_hierarchies(event, &state, target_user, new_membership, version)?;
     }
 
     Ok(())
@@ -1361,7 +1476,7 @@ pub fn check_auth_with_context<
 fn check_power_levels_rules<'n, Id: EventId, C: EventContent>(
     sender: &str,
     new_content: &'n C,
-    prev_pl: &C,
+    prev_pl: &'n C,
     sender_pl: i64,
 ) -> Result<(), AuthError<'n, Id>> {
     use std::collections::BTreeMap;
@@ -1420,7 +1535,7 @@ fn check_power_levels_rules<'n, Id: EventId, C: EventContent>(
         let changed = new_events.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
             return Err(AuthError::CannotChangeEvents {
-                key: (*key).into(),
+                key,
                 old_val,
                 sender_pl,
             });
@@ -1452,7 +1567,7 @@ fn check_power_levels_rules<'n, Id: EventId, C: EventContent>(
         let changed = new_notifications.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val > sender_pl {
             return Err(AuthError::CannotChangeNotifications {
-                key: (*key).into(),
+                key,
                 old_val,
                 sender_pl,
             });
@@ -1488,7 +1603,7 @@ fn check_power_levels_rules<'n, Id: EventId, C: EventContent>(
         let changed = new_users.get(key).is_none_or(|&nv| nv != old_val);
         if changed && old_val >= sender_pl {
             return Err(AuthError::CannotChangeUsers {
-                key: (*key).into(),
+                key,
                 old_val,
                 sender_pl,
             });
@@ -1980,7 +2095,7 @@ fn check_leave_rules<'a, E: EventLike>(
         return Err(AuthError::InsufficientPowerLevel {
             required,
             actual: sender_pl,
-            event_type: label.into(),
+            event_type: label,
         });
     }
 
@@ -2000,21 +2115,24 @@ fn check_ban_rules<'a, Id: EventId, C: EventContent, E: EventLike<Id = Id, Conte
         return Err(AuthError::InsufficientPowerLevel {
             required: ban_pl,
             actual: sender_pl,
-            event_type: "ban".into(),
+            event_type: "ban",
         });
     }
     Ok(())
 }
 
 /// Validate invite transition rules.
-fn check_invite_rules<'a, E: EventLike>(
+fn check_invite_rules<'a, E: EventLike, S>(
     event: &'a E,
-    state: &impl StateProvider<E::Id, E::Content, E>,
+    state: &S,
     target_user: &'a str,
     current_membership: &str,
     version: StateResVersion,
     verifier: Option<&'a dyn EventVerifier<E::Id>>,
-) -> Result<(), AuthError<'a, E::Id>> {
+) -> Result<(), AuthError<'a, E::Id>>
+where
+    S: StateProviderRef<'a, E::Id, E::Content, E>,
+{
     // Inviting requires invite power level, and sender != target
     if target_user == event.sender() {
         return Err(AuthError::SelfTarget {
@@ -2063,7 +2181,7 @@ fn check_invite_rules<'a, E: EventLike>(
         }
 
         let tpi_event = state
-            .get_event(
+            .get_event_ref(
                 crate::basespec::event_types::M_ROOM_THIRD_PARTY_INVITE,
                 token,
             )
@@ -2074,7 +2192,7 @@ fn check_invite_rules<'a, E: EventLike>(
 
         if tpi_event.sender() != event.sender() {
             return Err(AuthError::TpiIssuerSenderMismatch {
-                tpi_sender: tpi_event.sender().into(),
+                tpi_sender: tpi_event.sender(),
                 event_sender: event.sender(),
             });
         }
@@ -2084,7 +2202,7 @@ fn check_invite_rules<'a, E: EventLike>(
             return Err(AuthError::InsufficientPowerLevel {
                 required: invite_pl,
                 actual: issuer_pl,
-                event_type: "invite".into(),
+                event_type: "invite",
             });
         }
 
@@ -2096,7 +2214,7 @@ fn check_invite_rules<'a, E: EventLike>(
         return Err(AuthError::InsufficientPowerLevel {
             required: invite_pl,
             actual: sender_pl,
-            event_type: "invite".into(),
+            event_type: "invite",
         });
     }
 
@@ -2132,7 +2250,7 @@ fn check_membership_pl_hierarchies<
             return Err(AuthError::InsufficientPowerLevel {
                 required: target_pl.saturating_add(1),
                 actual: sender_pl,
-                event_type: "m.rezzy.member_pl_greater_than_target".into(),
+                event_type: "m.rezzy.member_pl_greater_than_target",
             });
         }
     }
@@ -2388,7 +2506,7 @@ where
 fn check_room_id_matches_accepted_create<'a, Id, C, K>(
     event: &'a LeanEvent<Id, C, K>,
     is_v12_plus: bool,
-    state: &RoomState<Id, C, K>,
+    state: &impl StateProvider<Id, C, LeanEvent<Id, C, K>>,
     rejected_ids: &crate::HashSet<Id>,
 ) -> Result<(), AuthError<'a, Id>>
 where
@@ -2459,7 +2577,7 @@ where
 /// triggered, is not a free pass).
 fn check_foreign_room_citation<'a, Id, C, K>(
     event: &'a LeanEvent<Id, C, K>,
-    event_map: &crate::HashMap<Id, LeanEvent<Id, C, K>>,
+    event_map: &'a crate::HashMap<Id, LeanEvent<Id, C, K>>,
 ) -> Result<(), AuthError<'a, Id>>
 where
     Id: EventId,
@@ -2482,7 +2600,7 @@ where
             event_id: &event.event_id,
             auth_event_id,
             expected,
-            actual: actual.map(|a| InlineStr::from(&**a)),
+            actual: actual.map(|a| &**a),
         })
     } else {
         Ok(())
@@ -2495,7 +2613,7 @@ where
 #[must_use]
 pub fn check_auth_chain<'a, Id, C, K>(
     sorted_events: &'a [LeanEvent<Id, C, K>],
-    initial_state: &RoomState<Id, C, K>,
+    initial_state: &'a RoomState<Id, C, K>,
     version: StateResVersion,
 ) -> (Vec<Id>, Vec<(Id, AuthError<'a, Id>)>)
 where
@@ -2503,14 +2621,23 @@ where
     C: EventContent,
     K: StateKey + 'static + for<'b> From<&'b str>,
 {
-    let mut state = initial_state.clone();
+    // Evolving auth state as `'a`-borrowed pointers into the input slice
+    // and initial state, so the errors this function returns can borrow
+    // state events without the map itself outliving the call.
+    let mut state = BorrowedState::seeded(initial_state);
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
 
-    let mut event_map: crate::HashMap<Id, LeanEvent<Id, C, K>> = sorted_events
-        .iter()
-        .map(|ev| (ev.event_id.clone(), ev.clone()))
-        .collect();
+    // Auth-context lookups may feed error payloads, so the by-id map is
+    // leaked once (bounded by the input size; this replaces a prior owned
+    // clone of the same data). Leaking keeps the map `'a`-borrowable while
+    // the loop mutates only the separate `BorrowedState`.
+    let event_map: &'a mut crate::HashMap<Id, LeanEvent<Id, C, K>> = Box::leak(Box::new(
+        sorted_events
+            .iter()
+            .map(|ev| (ev.event_id.clone(), ev.clone()))
+            .collect(),
+    ));
     // Include initial-state events so Rule 2.5 foreign-room checks cannot be
     // bypassed by citing an auth event that lives only in initial_state.
     for ev in initial_state.values() {
@@ -2518,6 +2645,7 @@ where
             .entry(ev.event_id.clone())
             .or_insert_with(|| ev.clone());
     }
+    let event_map: &'a crate::HashMap<Id, LeanEvent<Id, C, K>> = event_map;
 
     let mut rejected_ids = crate::HashSet::new();
 
@@ -2540,7 +2668,7 @@ where
                 check_room_id_matches_accepted_create(event, is_v12_plus, &state, &rejected_ids)
             })
             .and_then(|()| check_not_citing_rejected_auth_event(event, &rejected_ids))
-            .and_then(|()| check_foreign_room_citation(event, &event_map));
+            .and_then(|()| check_foreign_room_citation(event, event_map));
 
         if let Err(err) = pre_check {
             rejected.push((event.event_id.clone(), err));
@@ -2548,15 +2676,15 @@ where
             continue;
         }
 
-        match check_auth_with_context(event, &state, version, None, Some(&event_map)) {
+        match check_auth_with_context(event, &state, version, None, Some(event_map)) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
-                    state.insert((event.event_type.clone(), state_key.clone()), event.clone());
+                    state.insert((event.event_type.clone(), state_key.clone()), event);
                 } else if event.event_type == M_ROOM_CREATE {
                     // Fallback for m.room.create if it somehow lacks a state_key
                     let empty: K = K::from(&*String::new());
-                    state.insert((event.event_type.clone(), empty), event.clone());
+                    state.insert((event.event_type.clone(), empty), event);
                 }
                 accepted.push(event.event_id.clone());
             }
@@ -2636,7 +2764,7 @@ fn required_auth_types_for<
     event: &'a E,
     event_type: &'a str,
     version: StateResVersion,
-    room_version: &'a str,
+    room_version: &str,
 ) -> Vec<(&'a str, &'a str)> {
     auth_types_for_event_core(
         event_type,
@@ -2767,7 +2895,7 @@ pub fn auth_types_for_event_like<'a, E: EventLike + ?Sized>(
     room_version: &str,
 ) -> Vec<(&'static str, &'a str)> {
     auth_types_for_event_core(
-        event.event_type().as_ref(),
+        event.event_type(),
         event.sender(),
         event.state_key(),
         event.get_membership(),
@@ -3253,7 +3381,8 @@ mod tests {
             "@creator:example.com",
             json!({ "room_version": "0" }),
         );
-        let result = check_auth(&create, &RoomState::new(), StateResVersion::V1, None);
+        let empty_state = RoomState::new();
+        let result = check_auth(&create, &empty_state, StateResVersion::V1, None);
         assert!(
             matches!(result, Err(AuthError::InvalidSyntax(message)) if message.contains("room_version")),
             "unsupported create room version must fail auth: {result:?}"
@@ -3429,8 +3558,9 @@ mod tests {
         create.room_id = Some("!QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE".into());
 
         let sorted_events = vec![create];
+        let empty_state = RoomState::new();
         let (accepted, rejected) =
-            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2_1);
+            check_auth_chain(&sorted_events, &empty_state, StateResVersion::V2_1);
 
         assert!(
             accepted.is_empty(),
@@ -3459,8 +3589,9 @@ mod tests {
         assert_eq!(create.room_id, None);
 
         let sorted_events = vec![create];
+        let empty_state = RoomState::new();
         let (accepted, rejected) =
-            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2_1);
+            check_auth_chain(&sorted_events, &empty_state, StateResVersion::V2_1);
 
         assert!(
             rejected.is_empty(),
@@ -3489,8 +3620,9 @@ mod tests {
         create.room_id = Some("!legacy:example.com".into());
 
         let sorted_events = vec![create];
+        let empty_state = RoomState::new();
         let (accepted, rejected) =
-            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2);
+            check_auth_chain(&sorted_events, &empty_state, StateResVersion::V2);
 
         assert!(
             rejected.is_empty(),
@@ -3515,8 +3647,9 @@ mod tests {
         create.room_id = Some("!legacy:other.org".into());
 
         let sorted_events = vec![create];
+        let empty_state = RoomState::new();
         let (accepted, rejected) =
-            check_auth_chain(&sorted_events, &RoomState::new(), StateResVersion::V2);
+            check_auth_chain(&sorted_events, &empty_state, StateResVersion::V2);
 
         assert!(
             accepted.is_empty(),

@@ -43,7 +43,7 @@ where
     // Spec compliance: only check immediate auth_events (or prev_state_events for V2.2).
     for aid in event.dag_edges(version) {
         if let Some(aev) = auth_context.get_event(aid) {
-            if aev.event_type().as_ref() == M_ROOM_POWER_LEVELS && aev.state_key() == Some("") {
+            if aev.event_type() == M_ROOM_POWER_LEVELS && aev.state_key() == Some("") {
                 pl_event = Some(aev);
                 break;
             }
@@ -336,7 +336,7 @@ where
                     continue;
                 }
                 if let Some(auth_ev) = auth_context.get_event(q_id) {
-                    if auth_ev.event_type().as_ref() == M_ROOM_POWER_LEVELS {
+                    if auth_ev.event_type() == M_ROOM_POWER_LEVELS {
                         found = Some(q_id.clone());
                         break;
                     }

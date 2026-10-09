@@ -20,14 +20,15 @@
 //! use rezzy::json;
 //!
 //! let mut keys = Ed25519ConsensusVerifier::new();
-//! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])?;
+//! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])
+//!     .map_err(|e| e.to_string())?;
 //!
 //! let event = json!({
 //!     "type": "m.room.message",
 //!     "content": { "body": "hi" },
 //!     "signatures": { "example.com": {} },
 //! });
-//! verify_event_signatures(&event, "10", &keys)
+//! verify_event_signatures(&event, "10", &keys).map_err(|e| e.to_string())
 //! # }
 //! ```
 

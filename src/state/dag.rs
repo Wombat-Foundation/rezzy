@@ -1490,7 +1490,6 @@ where
 ///
 /// # Errors
 /// Returns [`AuthError`] if any calculated auth event was itself rejected (MSC4242 Rule 4.3).
-#[allow(clippy::result_large_err)]
 pub fn derive_auth_events_from_state_dag<'a, Id, C, S, K>(
     event: &'a LeanEvent<Id, C, K>,
     state_before: &'a SharedState<Id, K>,

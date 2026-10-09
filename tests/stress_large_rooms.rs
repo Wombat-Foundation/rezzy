@@ -115,9 +115,10 @@ fn test_ruma_bootstrap_auth_chain() {
     use rezzy::auth::{check_auth_chain, RoomState};
 
     let events = load_fixture(&format!("{FIXTURE_DIR}/bootstrap-public-chat.json"));
+    let empty_state = RoomState::new();
     let (accepted, rejected) = check_auth_chain(
         &events,
-        &RoomState::new(),
+        &empty_state,
         rezzy::basespec::rezzy_types::StateResVersion::V2,
     );
 

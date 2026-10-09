@@ -93,7 +93,6 @@ impl rezzy::EventVerifier<String> for RejectAuthorisingSignature {
 }
 
 /// Runs Bob's join event (with the given content) against `state`.
-#[allow(clippy::result_large_err)]
 fn check_bob_join(state: &RoomState, content: rezzy::JsonValue) -> Result<(), AuthError<'_>> {
     let join_event: &'static LeanEvent = Box::leak(Box::new(make_event(
         "$bob_join",
@@ -118,9 +117,8 @@ fn assert_bob_join_not_member(result: &Result<(), AuthError>, msg: &str) {
 }
 
 /// Runs Dave's knock event against a room with the given join rule.
-#[allow(clippy::result_large_err)]
-fn check_dave_knock(join_rule: &str) -> Result<(), AuthError<'_>> {
-    let state = room_with_join_rule(join_rule);
+fn check_dave_knock(join_rule: &str) -> Result<(), AuthError<'static>> {
+    let state: &'static RoomState = Box::leak(Box::new(room_with_join_rule(join_rule)));
     let knock_event: &'static LeanEvent = Box::leak(Box::new(make_event(
         "$dave_knock",
         "m.room.member",
@@ -128,7 +126,7 @@ fn check_dave_knock(join_rule: &str) -> Result<(), AuthError<'_>> {
         "@dave:example.com",
         json!({"membership": "knock"}),
     )));
-    check_auth(knock_event, &state, StateResVersion::V2, None)
+    check_auth(knock_event, state, StateResVersion::V2, None)
 }
 
 // ─── Restricted join rules (room version 8+) ────────────────────────────

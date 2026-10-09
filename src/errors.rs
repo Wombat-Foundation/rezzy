@@ -64,67 +64,6 @@ impl fmt::Debug for ComputedHash {
     }
 }
 
-/// A fixed-capacity inline string for error payloads that must outlive a
-/// borrow of local working state (e.g. `check_auth_chain`'s cloned
-/// state/event maps). Values longer than `N` bytes are truncated on a
-/// UTF-8 boundary; truncation affects only the rendered message, never
-/// control flow.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct InlineStr<const N: usize> {
-    buf: [u8; N],
-    len: usize,
-}
-
-impl<const N: usize> InlineStr<N> {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        // Bytes are copied from a `&str` on a char boundary.
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
-    }
-}
-
-impl<const N: usize> From<&str> for InlineStr<N> {
-    fn from(s: &str) -> Self {
-        let mut len = s.len().min(N);
-        while !s.is_char_boundary(len) {
-            len = len.saturating_sub(1);
-        }
-        let mut buf = [0u8; N];
-        buf[..len].copy_from_slice(&s.as_bytes()[..len]);
-        Self { buf, len }
-    }
-}
-
-impl<const N: usize> From<std::borrow::Cow<'_, str>> for InlineStr<N> {
-    fn from(s: std::borrow::Cow<'_, str>) -> Self {
-        Self::from(s.as_ref())
-    }
-}
-
-impl<const N: usize> PartialEq<str> for InlineStr<N> {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl<const N: usize> PartialEq<&str> for InlineStr<N> {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl<const N: usize> fmt::Debug for InlineStr<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.as_str(), f)
-    }
-}
-
-impl<const N: usize> fmt::Display for InlineStr<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Errors returned by the reference-hash, content-hash, and canonical-JSON
 /// functions.
 ///
