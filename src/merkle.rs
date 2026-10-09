@@ -1,11 +1,11 @@
 //! MSC4511 Merkleized event-metadata primitives.
 
+use core::fmt;
 use std::{
     format,
     string::{String, ToString},
     vec::Vec,
 };
-use core::fmt;
 
 use crate::json::Value;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -73,13 +73,51 @@ impl From<Hash> for UnsignedRoot {
     }
 }
 
+/// A field name copied into a fixed inline buffer so error variants never
+/// allocate. Names longer than [`FieldName::MAX_LEN`] bytes are truncated on a
+/// UTF-8 boundary (Matrix event field names are far shorter; the truncation
+/// affects only the rendered message, never control flow).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FieldName {
+    buf: [u8; Self::MAX_LEN],
+    len: usize,
+}
+
+impl FieldName {
+    pub const MAX_LEN: usize = 64;
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        // Bytes are copied from a `&str` on a char boundary.
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl From<&str> for FieldName {
+    fn from(name: &str) -> Self {
+        let mut len = name.len().min(Self::MAX_LEN);
+        while !name.is_char_boundary(len) {
+            len = len.saturating_sub(1);
+        }
+        let mut buf = [0u8; Self::MAX_LEN];
+        buf[..len].copy_from_slice(&name.as_bytes()[..len]);
+        Self { buf, len }
+    }
+}
+
+impl fmt::Debug for FieldName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.as_str(), f)
+    }
+}
+
 /// Errors returned by MSC4511 Merkle and canonical JSON operations.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MerkleError {
     EmptyFieldName,
     InvalidFieldName,
-    DuplicateField(String),
-    FieldNotFound(String),
+    DuplicateField(FieldName),
+    FieldNotFound(FieldName),
     NoLeaves,
     IntegerRange,
     UnsupportedNumber,
@@ -90,8 +128,8 @@ impl fmt::Display for MerkleError {
         match self {
             Self::EmptyFieldName => f.write_str("merkle: empty field name"),
             Self::InvalidFieldName => f.write_str("merkle: invalid field name"),
-            Self::DuplicateField(name) => write!(f, "merkle: duplicate field: {name}"),
-            Self::FieldNotFound(name) => write!(f, "merkle: field not found: {name}"),
+            Self::DuplicateField(name) => write!(f, "merkle: duplicate field: {}", name.as_str()),
+            Self::FieldNotFound(name) => write!(f, "merkle: field not found: {}", name.as_str()),
             Self::NoLeaves => f.write_str("merkle: no leaves"),
             Self::IntegerRange => f.write_str("canonical json integer out of range"),
             Self::UnsupportedNumber => f.write_str("unsupported canonical json number"),
@@ -154,8 +192,8 @@ pub struct ContentHash(pub Hash);
 #[derive(Clone, Copy)]
 pub struct OtherSignedFieldsHash(pub Hash);
 
-struct Leaf {
-    name: String,
+struct Leaf<'a> {
+    name: &'a str,
     hash: Hash,
 }
 
@@ -406,7 +444,7 @@ fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<Pro
                     inner_hash(hashes[0], hashes[1]),
                     vec![ProofStep {
                         side: Side::Right,
-                        hash: hashes[1]
+                        hash: hashes[1],
                     }],
                 ))
             } else {
@@ -414,7 +452,7 @@ fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<Pro
                     inner_hash(hashes[0], hashes[1]),
                     vec![ProofStep {
                         side: Side::Left,
-                        hash: hashes[0]
+                        hash: hashes[0],
                     }],
                 ))
             }
@@ -445,7 +483,7 @@ fn merkle_root_and_path(hashes: &[Hash], target: usize) -> Option<(Hash, Vec<Pro
     }
 }
 
-fn leaves(fields: &[Field]) -> Result<Vec<Leaf>, MerkleError> {
+fn leaves(fields: &[Field]) -> Result<Vec<Leaf<'_>>, MerkleError> {
     let mut leaves = fields
         .iter()
         .map(field_leaf)
@@ -453,23 +491,23 @@ fn leaves(fields: &[Field]) -> Result<Vec<Leaf>, MerkleError> {
     leaves.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
     for pair in leaves.windows(2) {
         if pair[0].name == pair[1].name {
-            return Err(MerkleError::DuplicateField(pair[0].name.clone()));
+            return Err(MerkleError::DuplicateField(pair[0].name.into()));
         }
     }
     Ok(leaves)
 }
 
-fn field_leaf(field: &Field) -> Result<Leaf, MerkleError> {
+fn field_leaf(field: &Field) -> Result<Leaf<'_>, MerkleError> {
     validate_field_name(&field.name)?;
     let canonical = canonical_json(&field.value)?;
     let hash = leaf_hash(&field.name, &canonical)?;
     Ok(Leaf {
-        name: field.name.clone(),
+        name: field.name.as_str(),
         hash,
     })
 }
 
-fn root_from_leaves(leaves: &[Leaf]) -> Result<Hash, MerkleError> {
+fn root_from_leaves(leaves: &[Leaf<'_>]) -> Result<Hash, MerkleError> {
     let hashes = leaves.iter().map(|leaf| leaf.hash).collect::<Vec<_>>();
     merkle_root(&hashes).ok_or(MerkleError::NoLeaves)
 }
@@ -1383,8 +1421,9 @@ pub mod causal {
             }
         }
         // Under `std`, `empty_table` is built once and reused by root, proof,
-        // and verification operations. The no_std fallback retains allocation-
-        // free portability without requiring a synchronization primitive.
+        // and verification operations. The non-`std` fallback retains
+        // allocation-free portability without requiring a synchronization
+        // primitive.
         verify_causal_path(
             empty_table()[terminal_depth],
             0,
@@ -1875,9 +1914,7 @@ pub mod causal {
                             let proof_keys: std::borrow::Cow<'_, [Hash]> = if n > 16 {
                                 let mut sorted = keys.clone();
                                 sorted.sort_unstable();
-                                std::borrow::Cow::Owned(
-                                    sorted.into_iter().step_by(n / 4).collect(),
-                                )
+                                std::borrow::Cow::Owned(sorted.into_iter().step_by(n / 4).collect())
                             } else {
                                 std::borrow::Cow::Borrowed(&keys)
                             };
