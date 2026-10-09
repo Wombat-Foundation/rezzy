@@ -1,16 +1,18 @@
 //! Backend-neutral persistent ordered map used by room-state resolution.
 //!
-//! This is intentionally a small compatibility layer.  The initial backend is
-//! `imbl::OrdMap`; keeping it behind this type lets us benchmark and replace the
-//! implementation without exposing `imbl` through `SharedState`.
+//! This is intentionally a small compatibility layer. The current backend is
+//! an `Arc<BTreeMap>` baseline; it can be replaced by a path-copying tree after
+//! real workloads establish that copy-on-write is insufficient.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::borrow::Borrow;
+use core::cmp::Ordering;
 use core::fmt;
+use core::iter::Peekable;
 use core::ops::{Index, RangeBounds};
 /// An ordered, cloneable map with shared persistent snapshots.
 #[derive(Clone, Default)]
-pub struct PersistentOrdMap<K, V>(imbl::OrdMap<K, V>);
+pub struct PersistentOrdMap<K, V>(Arc<BTreeMap<K, V>>);
 
 impl<K: Ord + fmt::Debug, V: fmt::Debug> fmt::Debug for PersistentOrdMap<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,13 +32,13 @@ impl<K, V> PersistentOrdMap<K, V> {
     /// Creates an empty map.
     #[must_use]
     pub fn new() -> Self {
-        Self(imbl::OrdMap::new())
+        Self(Arc::new(BTreeMap::new()))
     }
 
     /// Returns whether two maps share the same persistent root.
     #[must_use]
     pub fn ptr_eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// Returns the value associated with `key`.
@@ -112,7 +114,10 @@ impl<K, V> PersistentOrdMap<K, V> {
         K: Ord,
         V: PartialEq,
     {
-        Diff(self.0.diff(&other.0))
+        Diff {
+            left: self.0.iter().peekable(),
+            right: other.0.iter().peekable(),
+        }
     }
 }
 
@@ -135,7 +140,7 @@ where
     V: Clone,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
+        Self(Arc::new(iter.into_iter().collect()))
     }
 }
 
@@ -150,7 +155,7 @@ impl<'a, K: Ord, V> IntoIterator for &'a PersistentOrdMap<K, V> {
 
 impl<K: Ord + Clone, V: Clone> IntoIterator for PersistentOrdMap<K, V> {
     type Item = (K, V);
-    type IntoIter = std::vec::IntoIter<(K, V)>;
+    type IntoIter = alloc::vec::IntoIter<(K, V)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0
@@ -175,7 +180,7 @@ where
 {
     /// Inserts a key/value pair, returning the previous value if present.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        self.0.insert(key, value)
+        Arc::make_mut(&mut self.0).insert(key, value)
     }
 
     /// Removes a key, returning its value if present.
@@ -184,12 +189,12 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.0.remove(key)
+        Arc::make_mut(&mut self.0).remove(key)
     }
 }
 
 /// Ordered map iterator.
-pub struct Iter<'a, K, V>(imbl::ordmap::Iter<'a, K, V, imbl::shared_ptr::ArcK>);
+pub struct Iter<'a, K, V>(alloc::collections::btree_map::Iter<'a, K, V>);
 
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
@@ -216,7 +221,10 @@ pub enum DiffItem<'a, 'b, K, V> {
 }
 
 /// Iterator over ordered-map differences.
-pub struct Diff<'a, 'b, K, V>(imbl::ordmap::DiffIter<'a, 'b, K, V, imbl::shared_ptr::ArcK>);
+pub struct Diff<'a, 'b, K, V> {
+    left: Peekable<alloc::collections::btree_map::Iter<'a, K, V>>,
+    right: Peekable<alloc::collections::btree_map::Iter<'b, K, V>>,
+}
 
 impl<'a, 'b, K, V> Iterator for Diff<'a, 'b, K, V>
 where
@@ -226,11 +234,39 @@ where
     type Item = DiffItem<'a, 'b, K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|item| match item {
-            imbl::ordmap::DiffItem::Add(key, value) => DiffItem::Add(key, value),
-            imbl::ordmap::DiffItem::Remove(key, value) => DiffItem::Remove(key, value),
-            imbl::ordmap::DiffItem::Update { old, new } => DiffItem::Update { old, new },
-        })
+        loop {
+            match (self.left.peek(), self.right.peek()) {
+                (Some((left_key, left_value)), Some((right_key, right_value))) => {
+                    match left_key.cmp(right_key) {
+                        Ordering::Less => {
+                            let (key, value) = self.left.next().expect("peeked entry disappeared");
+                            return Some(DiffItem::Remove(key, value));
+                        }
+                        Ordering::Greater => {
+                            let (key, value) = self.right.next().expect("peeked entry disappeared");
+                            return Some(DiffItem::Add(key, value));
+                        }
+                        Ordering::Equal => {
+                            let changed = left_value != right_value;
+                            let old = self.left.next().expect("peeked entry disappeared");
+                            let new = self.right.next().expect("peeked entry disappeared");
+                            if changed {
+                                return Some(DiffItem::Update { old, new });
+                            }
+                        }
+                    }
+                }
+                (Some(_), None) => {
+                    let (key, value) = self.left.next().expect("peeked entry disappeared");
+                    return Some(DiffItem::Remove(key, value));
+                }
+                (None, Some(_)) => {
+                    let (key, value) = self.right.next().expect("peeked entry disappeared");
+                    return Some(DiffItem::Add(key, value));
+                }
+                (None, None) => return None,
+            }
+        }
     }
 }
 

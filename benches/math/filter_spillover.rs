@@ -651,7 +651,10 @@ fn simulate_strategy(
                 }
                 total_wall += round_cpu + Duration::from_millis(network_latency_ms);
             }
-            ClientAction::ResolveRoots { roots, ladder_failed } => {
+            ClientAction::ResolveRoots {
+                roots,
+                ladder_failed,
+            } => {
                 resolved = ladder_failed.is_empty();
                 // Charge 1 RTT for the sketch exchange that discovered resolution.
                 if network_latency_ms > 0 {

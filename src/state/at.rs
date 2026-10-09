@@ -21,7 +21,7 @@
 //! Key optimizations:
 //!
 //! - `O(1)` structural sharing: persistent state is represented via
-//!   [`imbl::OrdMap`](`SharedState`). Fork branches are created and merged
+//!   the persistent ordered map (`SharedState`). Fork branches are created and merged
 //!   incrementally with zero allocations for identical shared subtrees.
 //! - **Batch mode:** computes state at multiple targets in a single topological
 //!   pass, amortizing the graph traversal cost.
@@ -356,8 +356,8 @@ where
 /// (`benches/state_backend.rs`) and lost on the access pattern that
 /// matters most here: forking a state map into several branches and
 /// diverging each (what conflict resolution does), where it was 6-22x
-/// slower than `OrdMap`'s clone. `imbl::OrdMap`'s persistent B-tree is tuned
-/// specifically for cheap-clone/structural-sharing workloads, so it stays.
+/// slower than an ordered map's clone. The current B-tree backend is retained
+/// as the baseline for cheap-clone/structural-sharing workloads.
 pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(EventType, K), Id>;
 
 /// Computes the resolved room state *after* a given event.
@@ -2420,7 +2420,7 @@ where
 /// Represents an optimization-friendly state update yielded during topological streaming.
 ///
 /// Manual `Clone`/`Debug`/`PartialEq`/`Eq` impls (rather than `#[derive]`) because
-/// `SharedState<Id, K>` (an `imbl::OrdMap`) requires `K: Ord` structurally, which
+/// `SharedState<Id, K>` requires `K: Ord` structurally, which
 /// `#[derive]`'s naive per-field bound inference does not add automatically.
 pub enum StateUpdate<'b, Id, K = String> {
     /// The state has been newly resolved, or modified by a state-changing event.
@@ -2566,7 +2566,7 @@ where
 /// A wrapper that pairs a `SharedState` map with its incrementally maintained `LtHash`.
 ///
 /// Manual `Clone`/`Debug` impls (rather than `#[derive]`) because `SharedState<Id, K>`
-/// (an `imbl::OrdMap`) requires `K: Ord` structurally, which `#[derive]`'s naive
+/// requires `K: Ord` structurally, which `#[derive]`'s naive
 /// per-field bound inference does not add automatically.
 pub struct HashedState<Id, K = String> {
     /// The underlying state map.

@@ -599,7 +599,7 @@ impl<'a, Id, C, K, S1, S2, Spl> IterativeInputs<'a, Id, C, K, S1, S2, Spl> {
 ///
 /// # Returns
 ///
-/// A [`SharedState<Id, K>`](SharedState) (`imbl::OrdMap<(EventType, K), Id>`)
+/// A [`SharedState<Id, K>`](SharedState) (a persistent ordered map keyed by `(EventType, K)`)
 /// representing the resolved room state — the union of unconflicted state and the winners
 /// from the conflicted set.
 ///
@@ -611,10 +611,10 @@ impl<'a, Id, C, K, S1, S2, Spl> IterativeInputs<'a, Id, C, K, S1, S2, Spl> {
 /// ```rust,no_run
 /// # use rezzy::{resolve_iterative_sort, IterativeInputs, LeanEvent, StateResVersion, HashMap};
 /// # use rezzy::basespec::event_types::EventType;
-/// # use imbl::OrdMap;
+/// # use rezzy::SharedState;
 /// // State snapshot from /send_join response
-/// let checkpoint: imbl::OrdMap<(EventType, String), String> = /* ... */
-/// # imbl::OrdMap::new();
+/// let checkpoint: SharedState<String, String> = /* ... */
+/// # SharedState::new();
 /// let new_events: HashMap<String, LeanEvent> = /* events since join */
 /// # HashMap::new();
 /// let auth_ctx: HashMap<String, LeanEvent> = /* auth chain for new_events */

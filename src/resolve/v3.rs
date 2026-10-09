@@ -164,7 +164,7 @@ where
 /// and branch-local authorization.
 pub struct BranchAuthSnapshot<Id, K: Ord> {
     /// Canonical state selected from this event's verified causal history.
-    /// `imbl::OrdMap` makes snapshot clones structural, so certificates may
+    /// The persistent map makes snapshot clones structural, so certificates may
     /// share most of their branch state without copying a whole room map.
     state: SharedState<Id, K>,
 }

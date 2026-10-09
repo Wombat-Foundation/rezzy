@@ -344,7 +344,7 @@ where
 
     // Fast path: all maps identical. Check pointer identity first (O(1) per
     // comparison, O(N) total): sibling forks derived from a common ancestor
-    // often share the same `imbl::OrdMap` root, so a full structural `==`
+    // often share the same persistent-map root, so a full structural `==`
     // comparison is wasted. Generalized to N maps -- not just the 2-map
     // case -- since `ptr_eq` is cheap enough that checking every map against
     // the first costs nothing extra when it hits, and only degrades to the
@@ -959,7 +959,7 @@ mod tests {
     fn test_resolve_identical_maps_ptr_eq_fast_path() {
         let map = fork(&[("m.room.create", "", "$create")]);
 
-        // A clone of an imbl::OrdMap shares its root, so `ptr_eq` is true and
+        // A clone of the persistent map shares its root, so `ptr_eq` is true and
         // resolve_state_maps takes the O(1) identity fast path rather than a
         // full structural `==` comparison.
         let fork_a = map.clone();
