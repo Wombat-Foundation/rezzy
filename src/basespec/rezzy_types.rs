@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::vec::Vec;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
+use crate::errors::HashError;
 
 type SyntacticWarnings<Id> = Vec<crate::warnings::Warning<Id>>;
 
@@ -404,9 +405,10 @@ impl RoomVersionFormat {
 /// Error type for canonical JSON number validation failures.
 ///
 /// Distinguishes between invalid number values and writer failures so callers
-/// can provide precise diagnostics.
+/// can provide precise diagnostics. Embedded by value in
+/// [`crate::errors::HashError::CanonicalWrite`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CanonicalizationError {
+pub enum CanonicalizationError {
     /// A fractional or exponent-form number was encountered in a strict room
     /// version that requires integer-only canonical JSON.
     FractionalOrExponentNumber,
@@ -939,19 +941,17 @@ pub const HASH_B64_MAX_LEN: usize = 43;
 ///
 /// # Errors
 /// Returns `Err` when `out` is shorter than [`HASH_B64_MAX_LEN`].
-pub fn encode_hash_slice(
+pub fn encode_hash_slice<'a>(
     hash: &[u8; 32],
-    room_version: &str,
+    room_version: &'a str,
     out: &mut [u8],
-) -> Result<usize, std::string::String> {
+) -> Result<usize, HashError<'a>> {
     if out.len() < HASH_B64_MAX_LEN {
-        return Err(std::string::String::from(
-            "encode_hash_slice: output buffer shorter than 43 bytes",
-        ));
+        return Err(HashError::EncodeBufferTooSmall);
     }
     hash_base64_engine(room_version)
         .encode_slice(hash, out)
-        .map_err(|e| format!("failed to encode hash: {e}"))
+        .map_err(HashError::Encode)
 }
 
 /// Computes the raw SHA-256 **reference hash** of a PDU `Value` (the event ID
@@ -965,31 +965,26 @@ pub fn encode_hash_slice(
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2), when the
 /// room version is unsupported, or when the canonical JSON writer fails.
-pub fn reference_hash_bytes(
+pub fn reference_hash_bytes<'a>(
     value: &Value,
-    room_version: &str,
-) -> Result<[u8; 32], std::string::String> {
+    room_version: &'a str,
+) -> Result<[u8; 32], HashError<'a>> {
     let major = room_version
         .split('.')
         .next()
         .and_then(|m| m.parse::<u32>().ok());
     if major.is_some_and(|m| m <= 2) {
-        return Err(format!(
-            "no reference hash for room version {room_version}: v1/v2 event IDs are opaque server-assigned strings, not hashes"
-        ));
+        return Err(HashError::ReferenceHashV1V2 { room_version });
     }
 
     if StateResVersion::from_room_version(room_version).is_none() {
-        return Err(format!(
-            "no reference hash for unsupported room version {room_version}: its event ID hash rules are undefined"
-        ));
+        return Err(HashError::UnsupportedReferenceHash { room_version });
     }
 
     let mut hasher = Sha256::new();
     {
         let mut w = ShaWriter(&mut hasher);
-        write_redacted_canonical(&mut w, value, room_version)
-            .map_err(|e| format!("failed to write canonical JSON: {e}"))?;
+        write_redacted_canonical(&mut w, value, room_version).map_err(HashError::CanonicalWrite)?;
     }
     Ok(hasher.finalize().into())
 }
@@ -1005,14 +1000,12 @@ pub fn reference_hash_bytes(
 /// # Errors
 /// Returns `Err` when `room_version` is not a recognised room version, or when
 /// the canonical JSON writer fails.
-pub fn content_hash_bytes(
+pub fn content_hash_bytes<'a>(
     value: &Value,
-    room_version: &str,
-) -> Result<[u8; 32], std::string::String> {
+    room_version: &'a str,
+) -> Result<[u8; 32], HashError<'a>> {
     if !is_supported_room_version(room_version) {
-        return Err(format!(
-            "no content hash for unsupported room version {room_version}: its canonical JSON rules are undefined"
-        ));
+        return Err(HashError::UnsupportedContentHash { room_version });
     }
 
     let strict_numbers = room_version_is_v6_or_later(room_version);
@@ -1020,7 +1013,7 @@ pub fn content_hash_bytes(
     {
         let mut w = ShaWriter(&mut hasher);
         write_content_hash_canonical(&mut w, value, strict_numbers)
-            .map_err(|e| format!("failed to write canonical JSON: {e}"))?;
+            .map_err(HashError::CanonicalWrite)?;
     }
     Ok(hasher.finalize().into())
 }
@@ -1044,10 +1037,10 @@ pub fn content_hash_bytes(
 /// event IDs are opaque server-assigned strings, not hashes), or when the
 /// canonical JSON writer fails (e.g. strict-number validation rejects a
 /// fractional value in a v6+ room).
-pub fn reference_hash(
+pub fn reference_hash<'a>(
     value: &Value,
-    room_version: &str,
-) -> Result<std::string::String, std::string::String> {
+    room_version: &'a str,
+) -> Result<std::string::String, HashError<'a>> {
     let digest = reference_hash_bytes(value, room_version)?;
     let mut out = std::string::String::with_capacity(HASH_B64_MAX_LEN);
     hash_base64_engine(room_version).encode_string(digest, &mut out);
@@ -1066,10 +1059,10 @@ pub fn reference_hash(
 /// Returns `Err` when `room_version` is not a recognised room version, or
 /// when the canonical JSON writer fails (e.g. strict-number validation
 /// rejects a fractional value in a v6+ room).
-pub fn compute_content_hash(
+pub fn compute_content_hash<'a>(
     value: &Value,
-    room_version: &str,
-) -> Result<std::string::String, std::string::String> {
+    room_version: &'a str,
+) -> Result<std::string::String, HashError<'a>> {
     let digest = content_hash_bytes(value, room_version)?;
     let mut out = std::string::String::with_capacity(HASH_B64_MAX_LEN);
     base64::engine::general_purpose::STANDARD_NO_PAD.encode_string(digest, &mut out);
@@ -1088,26 +1081,29 @@ pub fn compute_content_hash(
 /// # Errors
 /// Returns `Err` when `hashes.sha256` is missing/not a string, when the room
 /// version is unsupported, or when the recomputed content hash does not match.
-pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), std::string::String> {
+pub fn verify_content_hash<'a>(
+    value: &'a Value,
+    room_version: &'a str,
+) -> Result<(), HashError<'a>> {
     let Some(expected) = value
         .get(crate::basespec::event_types::FIELD_HASHES)
         .and_then(|h| h.get("sha256"))
         .and_then(Value::as_str)
     else {
-        return Err(std::string::String::from(
-            "hashes.sha256 is missing or not a string",
-        ));
+        return Err(HashError::MissingContentHash);
     };
     let digest = content_hash_bytes(value, room_version)?;
     let mut buf = [0u8; HASH_B64_MAX_LEN];
     let n = base64::engine::general_purpose::STANDARD_NO_PAD
         .encode_slice(digest, &mut buf)
-        .map_err(|e| format!("failed to encode hash: {e}"))?;
+        .map_err(HashError::Encode)?;
     if expected.as_bytes() != &buf[..n] {
-        return Err(format!(
-            "content hash mismatch: hashes.sha256={expected}, computed={}",
-            core::str::from_utf8(&buf[..n]).unwrap_or("<invalid base64>")
-        ));
+        return Err(HashError::ContentHashMismatch {
+            expected,
+            computed: core::str::from_utf8(&buf[..n])
+                .unwrap_or("<invalid base64>")
+                .into(),
+        });
     }
     Ok(())
 }
@@ -1147,18 +1143,15 @@ pub fn canonical_redacted_json(value: &Value, room_version: &str) -> std::string
 /// # Errors
 /// Returns `Err` for unsupported room versions or canonical JSON write
 /// failures (e.g. strict-number validation).
-pub fn try_canonical_redacted_json(
+pub fn try_canonical_redacted_json<'a>(
     value: &Value,
-    room_version: &str,
-) -> Result<std::string::String, std::string::String> {
+    room_version: &'a str,
+) -> Result<std::string::String, HashError<'a>> {
     if !is_supported_room_version(room_version) {
-        return Err(format!(
-            "no canonical redacted JSON for unsupported room version {room_version}"
-        ));
+        return Err(HashError::UnsupportedCanonical { room_version });
     }
     let mut out = std::string::String::new();
-    write_redacted_canonical(&mut out, value, room_version)
-        .map_err(|e| format!("failed to write canonical JSON: {e}"))?;
+    write_redacted_canonical(&mut out, value, room_version).map_err(HashError::CanonicalWrite)?;
     Ok(out)
 }
 

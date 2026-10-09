@@ -272,6 +272,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
     fn verify_content_hash(&self, event_id: &Id) -> Result<(), String> {
         let value = self.event(event_id)?;
         crate::basespec::rezzy_types::verify_content_hash(value, &self.room_version)
+            .map_err(String::from)
     }
 }
 

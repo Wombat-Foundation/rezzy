@@ -55,6 +55,7 @@ pub mod auth;
 pub mod basespec;
 pub mod cuckoo_verify;
 pub mod dense_index;
+pub mod errors;
 pub mod hamt;
 pub mod merkle;
 pub mod raw_event;
