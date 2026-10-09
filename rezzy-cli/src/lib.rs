@@ -590,7 +590,7 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
     };
 
     let resolved_state_list: Vec<String> = final_state_map.values().cloned().collect();
-    let mut auth_chain_bitmap = roaring::RoaringBitmap::new();
+    let mut auth_chain_bitmap = rezzy::bitmap::Bitmap::new();
     for id in &resolved_state_list {
         if let Some(idx) = auth_graph.index.index_of(id) {
             auth_chain_bitmap |= &auth_graph.auth_bitmaps[idx as usize];

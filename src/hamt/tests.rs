@@ -3343,7 +3343,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     assert!((&bitmap_audit.reachable & &bitmap_audit.unreachable).is_empty());
     let mut recombined = bitmap_audit.reachable.clone();
     recombined |= &bitmap_audit.unreachable;
-    let all_indices: roaring::RoaringBitmap =
+    let all_indices: crate::bitmap::Bitmap =
         (0..u32::try_from(universe.len()).expect("small test universe")).collect();
     assert_eq!(recombined, all_indices);
 

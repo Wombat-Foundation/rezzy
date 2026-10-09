@@ -18,7 +18,7 @@ use crate::HashSet;
 use alloc::{sync::Arc, vec::Vec};
 use core::fmt;
 
-use roaring::RoaringBitmap;
+use crate::bitmap::Bitmap;
 
 use super::{
     delta::{walk_reachable_node_hashes, HamtTraversalError},
@@ -62,7 +62,7 @@ impl core::error::Error for UniverseTooLarge {}
 /// A `universe` of node hashes assigned dense `u32` indexes, in the order the
 /// hashes were given.
 ///
-/// This is the compaction step a `RoaringBitmap`-backed audit needs:
+/// This is the compaction step a `Bitmap`-backed audit needs:
 /// `StructuralHash` (32 bytes, high-entropy, not locally dense) cannot be
 /// used as a roaring index directly, so every hash in `universe` is given a
 /// stable position instead. Identity always resolves back through
@@ -134,18 +134,18 @@ impl IndexedUniverse {
 }
 
 /// The result of a multi-root reachability audit, expressed as
-/// [`RoaringBitmap`]s over an [`IndexedUniverse`] rather than as
+/// [`Bitmap`]s over an [`IndexedUniverse`] rather than as
 /// `StructuralHash` collections.
 ///
 /// Use this instead of [`NodeReachabilityAudit`] when the caller needs to keep
 /// many audits in memory, diff them, or intersect/union them repeatedly —
-/// operations `RoaringBitmap` is built for and a `HashSet<StructuralHash>`
+/// operations `Bitmap` is built for and a `HashSet<StructuralHash>`
 /// is not. `universe` is the only place `StructuralHash` identity lives;
 /// `reachable`/`unreachable` are addressed purely through its dense indexes.
 pub struct BitmapNodeReachabilityAudit {
     pub universe: IndexedUniverse,
-    pub reachable: RoaringBitmap,
-    pub unreachable: RoaringBitmap,
+    pub reachable: Bitmap,
+    pub unreachable: Bitmap,
 }
 
 /// Errors from [`bitmap_node_reachability_audit`]: either the traversal itself
@@ -191,11 +191,11 @@ impl<E> From<HamtTraversalError<E>> for BitmapAuditError<E> {
     }
 }
 
-/// Partitions `universe` into reachable/unreachable [`RoaringBitmap`]s over a
+/// Partitions `universe` into reachable/unreachable [`Bitmap`]s over a
 /// freshly built [`IndexedUniverse`].
 ///
 /// Same traversal and semantics as [`node_reachability_audit`], but marks
-/// directly into a `RoaringBitmap` via `universe`'s dense index instead of
+/// directly into a `Bitmap` via `universe`'s dense index instead of
 /// accumulating a `HashSet<StructuralHash>` mark set first — this is the
 /// version worth using when the caller actually wants the roaring
 /// representation, not `node_reachability_audit`'s result reshaped afterward.
@@ -236,7 +236,7 @@ where
 
     let universe = IndexedUniverse::try_build(universe)?;
 
-    let mut reachable = RoaringBitmap::new();
+    let mut reachable = Bitmap::new();
     // Hashes outside `universe` still need dedup so a subtree shared across
     // roots (or reachable from inside and outside `universe`) is walked
     // once, same as `node_reachability_audit`. `reachable`'s own membership
@@ -259,8 +259,8 @@ where
     // range as a bitmap and subtract. `MultiOps::difference` reduces over many
     // bitmaps; for a pair, call `Sub::sub` by name to sidestep clippy's
     // `arithmetic_side_effects` (a false positive for set-difference).
-    let full_range: RoaringBitmap = (0..universe_len).collect();
-    let unreachable: RoaringBitmap = core::ops::Sub::sub(full_range, &reachable);
+    let full_range: Bitmap = (0..universe_len).collect();
+    let unreachable: Bitmap = core::ops::Sub::sub(full_range, &reachable);
 
     Ok(BitmapNodeReachabilityAudit {
         universe,

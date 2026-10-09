@@ -948,7 +948,7 @@ where
 {
     use alloc::collections::BinaryHeap;
 
-    use roaring::RoaringBitmap;
+    use crate::bitmap::Bitmap;
 
     if extremities.is_empty() {
         return None;
@@ -964,7 +964,7 @@ where
     // Max-heap: (depth, &Id) — highest depth pops first, ensuring a parent
     // is never processed until all of its descendants have propagated bits.
     let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
-    let mut masks: FastMap<&Id, RoaringBitmap> = FastMap::default();
+    let mut masks: FastMap<&Id, Bitmap> = FastMap::default();
 
     for (i, &head) in extremities.iter().enumerate() {
         if let Some((k, ev)) = events_map.get_key_value(head) {
@@ -2740,7 +2740,7 @@ where
 }
 
 /// Computes the true forward extremities (DAG leaves) from a batched set of events.
-/// This uses `RoaringBitmap` set differences (`all_events - all_parents`) to
+/// This uses `Bitmap` set differences (`all_events - all_parents`) to
 /// instantly find the leaves of a DAG, no matter how deep.
 ///
 /// # Arguments
@@ -2757,7 +2757,7 @@ where
     I: IntoIterator<Item = (Id, P)>,
     P: IntoIterator<Item = Id>,
 {
-    use roaring::RoaringBitmap;
+    use crate::bitmap::Bitmap;
     let mut id_map = crate::HashMap::default();
     let mut reverse_map = alloc::vec::Vec::new();
 
@@ -2772,8 +2772,8 @@ where
         })
     };
 
-    let mut all_events = RoaringBitmap::new();
-    let mut has_children = RoaringBitmap::new();
+    let mut all_events = Bitmap::new();
+    let mut has_children = Bitmap::new();
 
     for (id, prevs) in events {
         let idx = get_or_insert(id, &mut id_map, &mut reverse_map);

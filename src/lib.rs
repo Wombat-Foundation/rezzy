@@ -62,6 +62,7 @@ use alloc::vec::Vec;
 
 pub mod auth;
 pub mod basespec;
+pub mod bitmap;
 pub mod cuckoo_verify;
 pub mod dense_index;
 pub mod hamt;
