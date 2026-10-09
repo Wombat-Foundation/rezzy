@@ -101,8 +101,6 @@ pub fn verify_sequential(
     room_version: &str,
     keys: &Ed25519ConsensusVerifier,
 ) -> Result<(), String> {
-    use base64::Engine as _;
-
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
         return Err(alloc::format!(
             "unsupported room version {room_version}: cannot verify signatures over an undefined format"
@@ -141,10 +139,14 @@ pub fn verify_sequential(
                         "signature for {server}/{key_id} is not a string"
                     ));
                 };
-                let raw = base64::engine::general_purpose::STANDARD_NO_PAD
-                    .decode(sig_str)
-                    .map_err(|e| alloc::format!("bad base64 for {server}/{key_id}: {e}"))?;
-                let sig_bytes: [u8; 64] = raw
+                let mut raw = [0_u8; 64];
+                let raw_len = crate::base64_utils::decode_into(
+                    &base64::engine::general_purpose::STANDARD_NO_PAD,
+                    sig_str,
+                    &mut raw,
+                )
+                .map_err(|e| alloc::format!("bad base64 for {server}/{key_id}: {e}"))?;
+                let sig_bytes: [u8; 64] = raw[..raw_len]
                     .try_into()
                     .map_err(|_| alloc::string::String::from("signature must be 64 bytes"))?;
                 let signature = Signature::from(sig_bytes);

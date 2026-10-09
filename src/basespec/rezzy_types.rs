@@ -20,7 +20,6 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use base64::Engine as _;
 use core::cmp::Ordering;
 use sha2::{Digest, Sha256};
 
@@ -954,7 +953,10 @@ pub fn reference_hash(
         write_redacted_canonical(&mut w, value, room_version)
             .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
     }
-    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
+    Ok(crate::base64_utils::encode(
+        &hash_base64_engine(room_version),
+        &hasher.finalize(),
+    ))
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
@@ -983,7 +985,10 @@ pub fn compute_content_hash(
         write_content_hash_canonical(&mut w, value, strict_numbers)
             .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
     }
-    Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
+    Ok(crate::base64_utils::encode(
+        &base64::engine::general_purpose::STANDARD_NO_PAD,
+        &hasher.finalize(),
+    ))
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content

@@ -1,6 +1,6 @@
 use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
-    Engine as _,
+    Engine,
 };
 use rezzy_recon::{
     verify_residual, AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator, SyndromeSketch,
@@ -8,7 +8,21 @@ use rezzy_recon::{
 };
 
 fn event_id(bytes: [u8; 32]) -> String {
-    format!("${}", URL_SAFE_NO_PAD.encode(bytes))
+    let mut encoded = [0_u8; 64];
+    let length = URL_SAFE_NO_PAD.encode_slice(bytes, &mut encoded).unwrap();
+    format!("${}", core::str::from_utf8(&encoded[..length]).unwrap())
+}
+
+fn encode(engine: &impl Engine, bytes: impl AsRef<[u8]>) -> String {
+    let mut encoded = [0_u8; 64];
+    let length = engine.encode_slice(bytes, &mut encoded).unwrap();
+    core::str::from_utf8(&encoded[..length]).unwrap().to_owned()
+}
+
+fn decode(engine: &impl Engine, encoded: &str) -> ([u8; 64], usize) {
+    let mut decoded = [0_u8; 64];
+    let length = engine.decode_slice(encoded, &mut decoded).unwrap();
+    (decoded, length)
 }
 
 #[test]
@@ -57,7 +71,7 @@ fn opaque_bytes_use_sha256() {
 #[test]
 fn room_v3_event_ids_use_standard_base64() {
     let bytes = [0xfb_u8; 32];
-    let event_id = format!("${}", STANDARD_NO_PAD.encode(bytes));
+    let event_id = format!("${}", encode(&STANDARD_NO_PAD, bytes));
     assert!(event_id.contains('+') || event_id.contains('/'));
     let hash = ElementHash::from_matrix_event_id(&event_id, EventIdFormat::V3).unwrap();
     assert_eq!(hash.h128, u128::from_be_bytes([0xfb; 16]));
@@ -92,14 +106,14 @@ fn sketch_wire_format_matches_libminisketch_64_bit_serialization() {
     sketch.toggle(1_u64 << 63).unwrap();
     sketch.toggle(u64::MAX).unwrap();
 
-    let wire = URL_SAFE_NO_PAD.decode(sketch.encode()).unwrap();
+    let (wire, wire_length) = decode(&URL_SAFE_NO_PAD, &sketch.encode());
     // Generated independently with minisketch's tests/pyminisketch.py GF(2^64) reference.
     assert_eq!(
-        wire,
-        [
+        &wire[..wire_length],
+        &[
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xfd, 0x32, 0x33, 0x33, 0x33, 0x33,
             0x33, 0x93,
-        ]
+        ][..]
     );
     assert_eq!(SyndromeSketch::decode(2, &sketch.encode()).unwrap(), sketch);
 }
@@ -147,7 +161,7 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         ElementHash::from_matrix_event_id("$AQ", EventIdFormat::V4Plus),
         Err(AlgebraicError::InvalidEventId)
     );
-    let overlong_hash = format!("${}", URL_SAFE_NO_PAD.encode([0_u8; 33]));
+    let overlong_hash = format!("${}", encode(&URL_SAFE_NO_PAD, [0_u8; 33]));
     for format in [EventIdFormat::V3, EventIdFormat::V4Plus] {
         assert_eq!(
             ElementHash::from_matrix_event_id(&overlong_hash, format),
@@ -167,7 +181,7 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         Err(AlgebraicError::InvalidBase64)
     );
     assert_eq!(
-        RoomAccumulator::decode_digest(&URL_SAFE_NO_PAD.encode([0_u8; 15])),
+        RoomAccumulator::decode_digest(&encode(&URL_SAFE_NO_PAD, [0_u8; 15])),
         Err(AlgebraicError::InvalidDigestLength)
     );
     assert_eq!(
@@ -202,7 +216,7 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         Err(AlgebraicError::InvalidBase64)
     );
     assert_eq!(
-        SyndromeSketch::decode(2, &URL_SAFE_NO_PAD.encode([0_u8; 8])),
+        SyndromeSketch::decode(2, &encode(&URL_SAFE_NO_PAD, [0_u8; 8])),
         Err(AlgebraicError::InvalidSketchLength)
     );
     assert_eq!(

@@ -55,6 +55,8 @@ extern crate alloc;
 pub use rezzy_json as json;
 pub use rezzy_json::json;
 
+mod base64_utils;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 

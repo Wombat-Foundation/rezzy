@@ -8,7 +8,7 @@ use alloc::{
 use core::fmt;
 
 use crate::json::Value;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha3::{Digest, Sha3_256};
 
 /// SHA3-256 digest size used by MSC4511.
@@ -335,7 +335,10 @@ pub fn event_root(
 /// Derives "$" || unpadded base64url(`event_root`).
 #[must_use]
 pub fn event_id(event_root: Hash) -> String {
-    format!("${}", URL_SAFE_NO_PAD.encode(event_root))
+    format!(
+        "${}",
+        crate::base64_utils::encode(&URL_SAFE_NO_PAD, &event_root)
+    )
 }
 
 /// Which side a sibling hash sits on relative to the running hash in a

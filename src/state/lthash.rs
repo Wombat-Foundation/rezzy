@@ -1102,7 +1102,7 @@ pub fn compute_state_hash<Id: crate::basespec::rezzy_types::EventId, K: Ord + As
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use core::fmt::Write as _;
 
     use super::*;
@@ -1195,7 +1195,7 @@ mod tests {
         });
         // Pinned identically in gomatrixcrypto/lthash.
         assert_eq!(
-            URL_SAFE_NO_PAD.encode(x.digest()),
+            crate::base64_utils::encode(&URL_SAFE_NO_PAD, &x.digest()),
             "zDnrgYKfPuS6ztctVfakvKVx6rM7l8QVDUuGXcibrnE"
         );
     }
@@ -1220,7 +1220,7 @@ mod tests {
         let mut x = ResolutionInputs::ZERO;
         x.insert(&r);
         assert_eq!(
-            URL_SAFE_NO_PAD.encode(x.digest()),
+            crate::base64_utils::encode(&URL_SAFE_NO_PAD, &x.digest()),
             "IGytaez3uh-Y5gPuZ7o2bZxlaufNhkXH558n-Unor_Y"
         );
     }
@@ -1731,8 +1731,8 @@ mod tests {
             )
         }
         fn b64u(bytes: &[u8]) -> String {
-            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-            URL_SAFE_NO_PAD.encode(bytes)
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            crate::base64_utils::encode(&URL_SAFE_NO_PAD, bytes)
         }
         fn lanes_hex(hash: &LtHash) -> String {
             hex(&hash.to_bytes()[..16])

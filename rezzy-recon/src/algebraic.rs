@@ -15,14 +15,34 @@
 //! The MSC4521 `algebraic_v1` set reconciliation profile.
 
 use alloc::{string::String, vec, vec::Vec};
-use base64::{
-    engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
-    Engine as _,
-};
+use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use core::fmt::Write as _;
 use sha2::{Digest as Sha2Digest, Sha256};
 
 pub use super::gf64::mul as gf64_mul;
+
+fn encode_base64<E: base64::Engine + ?Sized>(engine: &E, input: &[u8]) -> String {
+    let capacity = input
+        .len()
+        .checked_add(2)
+        .and_then(|length| length.checked_mul(4))
+        .map(|length| length / 3)
+        .expect("base64 output length overflow");
+    let mut output = vec![0; capacity];
+    let length = engine
+        .encode_slice(input, &mut output)
+        .expect("base64 output buffer is sufficiently sized");
+    output.truncate(length);
+    String::from_utf8(output).expect("base64 output is ASCII")
+}
+
+fn decode_base64<E: base64::Engine + ?Sized>(
+    engine: &E,
+    input: &str,
+    output: &mut [u8],
+) -> Result<usize, base64::DecodeSliceError> {
+    engine.decode_slice(input, output)
+}
 
 /// Maximum extraction capacity for an unbucketed `algebraic_v1` sketch.
 pub const MAX_SKETCH_CAPACITY: usize = 32;
@@ -245,20 +265,17 @@ impl ElementHash {
         if encoded.len() > EVENT_HASH_ENCODED_LEN {
             return Err(AlgebraicError::InvalidBase64);
         }
-        let digest = match format {
-            EventIdFormat::V3 => STANDARD_NO_PAD
-                .decode(encoded)
+        let mut digest = [0_u8; 32];
+        let digest_len = match format {
+            EventIdFormat::V3 => decode_base64(&STANDARD_NO_PAD, encoded, &mut digest)
                 .map_err(|_| AlgebraicError::InvalidBase64)?,
-            EventIdFormat::V4Plus => URL_SAFE_NO_PAD
-                .decode(encoded)
+            EventIdFormat::V4Plus => decode_base64(&URL_SAFE_NO_PAD, encoded, &mut digest)
                 .map_err(|_| AlgebraicError::InvalidBase64)?,
         };
-        if digest.len() != 32 {
+        if digest_len != 32 {
             return Err(AlgebraicError::InvalidEventId);
         }
-        digest
-            .try_into()
-            .map_err(|_| AlgebraicError::InvalidEventId)
+        Ok(digest)
     }
 }
 
@@ -327,7 +344,7 @@ impl RoomAccumulator {
     #[must_use]
     /// The digest as unpadded base64url of its big-endian bytes.
     pub fn encode_digest(self) -> String {
-        URL_SAFE_NO_PAD.encode(self.digest.to_be_bytes())
+        encode_base64(&URL_SAFE_NO_PAD, &self.digest.to_be_bytes())
     }
 
     /// Decodes a level-0 digest.
@@ -341,13 +358,12 @@ impl RoomAccumulator {
         if encoded.len() != 22 {
             return Err(AlgebraicError::InvalidDigestLength);
         }
-        let bytes = URL_SAFE_NO_PAD
-            .decode(encoded)
+        let mut bytes = [0_u8; 16];
+        let length = decode_base64(&URL_SAFE_NO_PAD, encoded, &mut bytes)
             .map_err(|_| AlgebraicError::InvalidBase64)?;
-        let bytes: [u8; 16] = bytes
-            .as_slice()
-            .try_into()
-            .expect("digest length is validated before decode");
+        if length != bytes.len() {
+            return Err(AlgebraicError::InvalidDigestLength);
+        }
         Ok(u128::from_be_bytes(bytes))
     }
 
@@ -392,7 +408,7 @@ impl RoomAccumulator {
         let mut etag = Vec::with_capacity(24);
         etag.extend_from_slice(&self.digest.to_be_bytes());
         etag.extend_from_slice(&frontier_hash[..8]);
-        URL_SAFE_NO_PAD.encode(etag)
+        encode_base64(&URL_SAFE_NO_PAD, &etag)
     }
 }
 
@@ -594,7 +610,7 @@ impl SyndromeSketch {
         for coordinate in &self.coordinates {
             bytes.extend_from_slice(&coordinate.to_le_bytes());
         }
-        URL_SAFE_NO_PAD.encode(bytes)
+        encode_base64(&URL_SAFE_NO_PAD, &bytes)
     }
 
     /// Decodes a sketch with an externally negotiated capacity.
@@ -621,10 +637,10 @@ impl SyndromeSketch {
         if encoded.len() != expected_encoded_len {
             return Err(AlgebraicError::InvalidSketchLength);
         }
-        let bytes = URL_SAFE_NO_PAD
-            .decode(encoded)
+        let mut bytes = [0_u8; MAX_SKETCH_CAPACITY * 8];
+        let length = decode_base64(&URL_SAFE_NO_PAD, encoded, &mut bytes)
             .map_err(|_| AlgebraicError::InvalidBase64)?;
-        Self::from_encoded_bytes(capacity, &bytes)
+        Self::from_encoded_bytes(capacity, &bytes[..length])
     }
 
     fn from_encoded_bytes(capacity: usize, bytes: &[u8]) -> Result<Self, AlgebraicError> {
