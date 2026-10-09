@@ -4,7 +4,7 @@
 //! MSC4500's original instantiation expands each element with SHAKE256 and
 //! collapses the 2048-byte lattice with BLAKE2b-256 under
 //! `msc4500:lthash16:v1`. rezzy now does both halves with the BLAKE3 XOF under
-//! `msc4500:lthash16:blake3:v1` (see `rezzy::state::lthash`). This bench puts
+//! `msc4500:lthash16:blake3:v1` (see `rezzy::incremental::lthash`). This bench puts
 //! the two stacks back side by side over the *same* element encoding, so the
 //! only variable is the primitive, and measures every place the primitives
 //! appear:
@@ -236,7 +236,7 @@ fn feed_element(
 }
 
 /// Truncates a string to the 65535-byte `u16` length-prefix limit, exactly as
-/// `rezzy::state::lthash` does (event IDs are streamed untruncated).
+/// `rezzy::incremental::lthash` does (event IDs are streamed untruncated).
 fn truncate_to_u16_limit(s: &str) -> (&str, u16) {
     let limit = usize::from(u16::MAX);
     let s_len = s.len();

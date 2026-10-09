@@ -1,6 +1,6 @@
 //! Sparse-Merkle commitments and selective proofs for resolved room state.
 //!
-//! This is deliberately complementary to [`super::LtHash`]: it proves a
+//! This is deliberately complementary to [`crate::incremental::LtHash`]: it proves a
 //! particular `(event_type, state_key) -> event_id` binding or its absence,
 //! whereas `LtHash` is the efficient homomorphic accumulator for a whole map.
 
