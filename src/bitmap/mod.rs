@@ -106,6 +106,11 @@ impl Chunk {
     /// Builds a canonical chunk from a bitset, recounting its cardinality.
     fn from_words(key: u16, words: Words) -> Option<Self> {
         let len = popcount(&words);
+        Self::from_counted_words(key, words, len)
+    }
+
+    /// Builds a canonical chunk from a bitset whose cardinality is `len`.
+    fn from_counted_words(key: u16, words: Words, len: u32) -> Option<Self> {
         if len == 0 {
             return None;
         }
@@ -250,11 +255,15 @@ impl Chunk {
                 Self::from_array(key, out)
             }
             (Store::Dense(a), Store::Dense(b)) => {
-                let mut w = a.clone();
-                for (x, y) in w.iter_mut().zip(b.iter()) {
-                    *x &= y;
+                // One pass: AND into a fresh bitset while counting, so the
+                // result needs neither a clone of `a` nor a recount.
+                let mut w = empty_words();
+                let mut len = 0;
+                for ((o, x), y) in w.iter_mut().zip(a.iter()).zip(b.iter()) {
+                    *o = x & y;
+                    len += o.count_ones();
                 }
-                Self::from_words(key, w)
+                Self::from_counted_words(key, w, len)
             }
             (Store::Array(v), Store::Dense(d)) | (Store::Dense(d), Store::Array(v)) => {
                 let out = v.iter().copied().filter(|&x| test_bit(d, x)).collect();
