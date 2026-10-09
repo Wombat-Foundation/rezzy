@@ -48,11 +48,12 @@
 )]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use rezzy::{
-    compute_state_at, compute_state_at_batch, InternedKey, JsonValue, LeanEvent, StateResVersion,
+    compute_state_at, compute_state_at_batch, EventId, InternedKey, JsonValue, LeanEvent,
+    StateKey, StateResVersion,
 };
 
 use crate::common::{join_rules_event, member_event, new_room_with_power_levels};
@@ -412,6 +413,141 @@ fn assert_u32_matches_string(
     );
 }
 
+type Fixture = (usize, HashMap<String, LeanEvent>, Vec<String>);
+
+/// Rebuilds a room with event ids (`event_id`, `prev_events`, `auth_events`,
+/// map keys) as `I` and state keys as `K`. Done once, outside timing.
+fn convert<I, K>(
+    events: &HashMap<String, LeanEvent>,
+    mk_id: impl Fn(&str) -> I,
+    mk_k: impl Fn(&str) -> K,
+) -> HashMap<I, LeanEvent<I, JsonValue, K>>
+where
+    I: Eq + std::hash::Hash,
+{
+    events
+        .values()
+        .map(|ev| {
+            let id = mk_id(&ev.event_id);
+            let converted = LeanEvent {
+                event_id: mk_id(&ev.event_id),
+                event_type: ev.event_type.clone(),
+                state_key: ev.state_key.as_deref().map(&mk_k),
+                power_level: ev.power_level,
+                origin_server_ts: ev.origin_server_ts,
+                sender: ev.sender.clone(),
+                content: ev.content.clone(),
+                prev_events: ev.prev_events.iter().map(|e| mk_id(e)).collect(),
+                auth_events: ev.auth_events.iter().map(|e| mk_id(e)).collect(),
+                depth: ev.depth,
+                rejected: ev.rejected,
+                soft_fail: ev.soft_fail,
+                room_id: ev.room_id.clone(),
+            };
+            (id, converted)
+        })
+        .collect()
+}
+
+/// Mean ms/run of one resolution variant.
+fn run_variant<I, K>(
+    events: &HashMap<I, LeanEvent<I, JsonValue, K>>,
+    targets: &[String],
+    empty: &K,
+    reps: usize,
+    batch: bool,
+) -> f64
+where
+    I: EventId + std::borrow::Borrow<str>,
+    K: StateKey,
+    for<'q> (rezzy::basespec::event_types::EventType, K):
+        std::borrow::Borrow<dyn rezzy::auth::StateKeyDyn + 'q>,
+{
+    let refs: Vec<&str> = targets.iter().map(String::as_str).collect();
+    let last = *refs.last().unwrap();
+    let f = || {
+        if batch {
+            let r = compute_state_at_batch(&refs, events, StateResVersion::V2_1, empty);
+            assert_eq!(r.len(), refs.len());
+            std::hint::black_box(&r);
+        } else {
+            let st = compute_state_at::<I, JsonValue, str, _, K>(
+                last,
+                events,
+                StateResVersion::V2_1,
+                empty,
+            )
+            .expect("must resolve");
+            std::hint::black_box(st.len());
+        }
+    };
+    f();
+    f();
+    let start = Instant::now();
+    for _ in 0..reps {
+        f();
+    }
+    start.elapsed().as_secs_f64() * 1000.0 / reps as f64
+}
+
+/// Four-way matrix: {String, InternedKey} keys x {String, Arc<str>} event ids.
+/// All conversion happens before timing. Reports ms/run and ratio to
+/// String/String.
+fn run_id_matrix(rooms: &[Fixture], conflict_rooms: &[Fixture]) {
+    println!();
+    println!("=== key x event-id representation matrix (ms/run; ratio vs String/String) ===");
+    let cases = rooms
+        .iter()
+        .map(|f| ("linear", f, true))
+        .chain(rooms.iter().map(|f| ("linear", f, false)))
+        .chain(conflict_rooms.iter().map(|f| ("conflict", f, false)));
+    for (kind, (n, events, targets), batch) in cases {
+        let reps = match (kind, *n) {
+            ("linear", 100) => 2_000,
+            ("linear", 1_000) | ("conflict", 500) => 50,
+            ("conflict", 50) => 500,
+            ("conflict", _) => 2,
+            _ => 5,
+        };
+        let mode = if batch { "batch " } else { "serial" };
+        let ss = run_variant(
+            &convert(events, |s| s.to_owned(), |s| s.to_owned()),
+            targets,
+            &String::new(),
+            reps,
+            batch,
+        );
+        let is = run_variant(
+            &convert(events, |s| s.to_owned(), |s| InternedKey::new(s)),
+            targets,
+            &InternedKey::default(),
+            reps,
+            batch,
+        );
+        let sa = run_variant(
+            &convert(events, |s| Arc::<str>::from(s), |s| s.to_owned()),
+            targets,
+            &String::new(),
+            reps,
+            batch,
+        );
+        let ia = run_variant(
+            &convert(events, |s| Arc::<str>::from(s), |s| InternedKey::new(s)),
+            targets,
+            &InternedKey::default(),
+            reps,
+            batch,
+        );
+        println!(
+            "  {kind:<8} {mode} n={n:<5} String/String {ss:>9.3}  Interned/String {is:>9.3} ({:.2}x)  \
+             String/Arc {sa:>9.3} ({:.2}x)  Interned/Arc {ia:>9.3} ({:.2}x)",
+            is / ss,
+            sa / ss,
+            ia / ss,
+        );
+    }
+}
+
 pub fn run() {
     println!("=== full resolution bench (compute_state_at / compute_state_at_batch) ===");
     let sizes = [100usize, 1_000, 5_000];
@@ -610,4 +746,6 @@ pub fn run() {
             delta / str_dur.as_secs_f64() * 100.0
         );
     }
+
+    run_id_matrix(&rooms, &conflict_rooms);
 }
