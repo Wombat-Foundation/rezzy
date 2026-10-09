@@ -156,7 +156,7 @@ fn process_lattice_event<'a, Id, C, K, S2: BuildHasher, S3: BuildHasher>(
     local_auth_cache: &mut LocalAuthCache<Id, C, K>,
     winners: &mut HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>,
 ) where
-    Id: EventId,
+    Id: EventId + 'static,
     C: EventContent + Clone,
     K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {
@@ -208,7 +208,7 @@ fn fold_lattice_chunk<'a, Id, C, K, S2: BuildHasher, S3: BuildHasher>(
     ctx: &LatticeFoldCtx<'_, Id, C, K, S2, S3>,
 ) -> HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>
 where
-    Id: EventId,
+    Id: EventId + 'static,
     C: EventContent + Clone,
     K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {
@@ -233,7 +233,7 @@ fn compute_lattice_coordinatized_winners<
     ctx: &LatticeFoldCtx<'_, Id, C, K, S2, S3>,
     key_winners: &mut HashMap<(EventType, K), &'a LeanEvent<Id, C, K>>,
 ) where
-    Id: EventId + Sync + Send,
+    Id: EventId + Sync + Send + 'static,
     C: EventContent + Clone + Sync + Send,
     K: crate::basespec::rezzy_types::StateKey + Send + Sync + 'static,
 {

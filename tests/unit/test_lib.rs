@@ -1902,10 +1902,10 @@ mod tests {
         use rezzy::json;
 
         // 1. Format every single variant of AuthError to ensure 100% Display coverage
-        let errs = vec![
+        let errs: Vec<AuthError<'static, &str>> = vec![
             AuthError::NotMember {
-                sender: "alice".into(),
-                event_id: "1".into(),
+                sender: "alice",
+                event_id: &"1",
             },
             AuthError::InsufficientPowerLevel {
                 required: 100,
@@ -1913,16 +1913,16 @@ mod tests {
                 event_type: "m.room.name".into(),
             },
             AuthError::BannedUser {
-                sender: "bob".into(),
-                event_id: "2".into(),
+                sender: "bob",
+                event_id: &"2",
             },
             AuthError::InvalidStateKey {
-                expected: "x".into(),
-                actual: "y".into(),
+                expected: "x",
+                actual: "y",
             },
-            AuthError::<String>::CreateWithPrevEvents,
-            AuthError::MissingAuthEvent("3".into()),
-            AuthError::InvalidSyntax("invalid JSON".into()),
+            AuthError::CreateWithPrevEvents,
+            AuthError::MissingAuthEvent(&"3"),
+            AuthError::InvalidSyntax("invalid JSON"),
         ];
         for err in errs {
             let formatted = format!("{err}");
@@ -1994,8 +1994,8 @@ mod tests {
                 None
             ),
             Err(AuthError::NotMember {
-                sender: "@bob:example.com".into(),
-                event_id: "$name".into()
+                sender: "@bob:example.com",
+                event_id: &"$name".to_string()
             })
         );
 
@@ -2049,8 +2049,8 @@ mod tests {
                 None
             ),
             Err(AuthError::BannedUser {
-                sender: "@bob:example.com".into(),
-                event_id: "$join".into()
+                sender: "@bob:example.com",
+                event_id: &"$join".to_string()
             })
         );
 
@@ -2088,8 +2088,8 @@ mod tests {
                 None
             ),
             Err(AuthError::InvalidStateKey {
-                expected: "@alice:example.com".into(),
-                actual: "@bob:example.com".into()
+                expected: "@alice:example.com",
+                actual: "@bob:example.com"
             })
         );
 
@@ -2149,8 +2149,8 @@ mod tests {
                 None
             ),
             Err(AuthError::BannedUser {
-                sender: "@bob:example.com".into(),
-                event_id: "$invite_banned".into()
+                sender: "@bob:example.com",
+                event_id: &"$invite_banned".to_string()
             })
         );
 
@@ -2162,8 +2162,9 @@ mod tests {
             state_key: None, // lacks state_key
             ..Default::default()
         };
+        let events = [create_no_key];
         let (accepted_ids, rejected_ids) = check_auth_chain(
-            &[create_no_key],
+            &events,
             &RoomState::new(),
             rezzy::basespec::rezzy_types::StateResVersion::V2_1,
         );

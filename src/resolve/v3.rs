@@ -281,7 +281,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    for<'a> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    for<'q> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     fn rank(
         &self,
@@ -360,17 +360,18 @@ impl<Id> Clone for CertifyParams<'_, Id> {
 ///
 /// Returns the authorization or verification failure reported by
 /// [`crate::auth::check_auth`].
-pub fn certify_v3_admission<Id, C, K>(
-    event: &LeanEvent<Id, C, K>,
+#[allow(clippy::result_large_err)]
+pub fn certify_v3_admission<'a, Id, C, K>(
+    event: &'a LeanEvent<Id, C, K>,
     branch_auth: &crate::auth::RoomState<Id, C, K>,
     rank_policy: &impl V3RankPolicy<Id, C, K>,
-    params: CertifyParams<'_, Id>,
-) -> Result<V3Admission<Id, K>, crate::auth::AuthError<Id>>
+    params: CertifyParams<'a, Id>,
+) -> Result<V3Admission<Id, K>, crate::auth::AuthError<'a, Id>>
 where
-    Id: EventId,
+    Id: EventId + 'static,
     C: EventContent,
-    K: StateKey,
-    for<'a> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'a>,
+    K: StateKey + 'static,
+    for<'q> (std::string::String, K): Borrow<dyn crate::auth::StateKeyDyn + 'q>,
 {
     crate::auth::check_auth(
         event,

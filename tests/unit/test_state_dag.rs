@@ -988,8 +988,8 @@ fn test_derive_auth_events_rejects_if_auth_event_is_rejected() {
     assert_eq!(
         err,
         rezzy::auth::AuthError::RejectedAuthEvent {
-            event_id: "$msg".to_string(),
-            auth_event_id: "$pl_rejected".to_string(),
+            event_id: &"$msg".to_string(),
+            auth_event_id: &"$pl_rejected".to_string(),
         }
     );
 }

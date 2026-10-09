@@ -268,7 +268,7 @@ pub(crate) fn run_power_phase_iterative_checks<Id, C, S2, S3, S4, Spl, K>(
     pl_cache: &mut HashMap<Id, i64, Spl>,
     conflicted_keys: &crate::FastSet<(EventType, K)>,
 ) where
-    Id: EventId,
+    Id: EventId + 'static,
     S2: BuildHasher,
     S3: BuildHasher,
     S4: BuildHasher,
@@ -341,7 +341,7 @@ fn event_auth_ok<Id, C, K, S1, S2>(
     is_power: bool,
 ) -> bool
 where
-    Id: EventId,
+    Id: EventId + 'static,
     C: EventContent,
     K: StateKey,
     S1: BuildHasher,
@@ -908,7 +908,7 @@ where
 /// across calls, so `build_mainline`'s BFS-per-call turns into an `O(M)`
 /// cache-hit walk instead of restarting from scratch every time.
 pub(crate) fn resolve_iterative_sort_with_all_caches<
-    Id: EventId,
+    Id: EventId + 'static,
     C: EventContent + Clone,
     S1: BuildHasher,
     S2: BuildHasher,
@@ -1149,7 +1149,7 @@ where
     clippy::too_many_arguments
 )]
 pub fn resolve_iterative_sort_with_cache_and_deltas<
-    Id: EventId,
+    Id: EventId + 'static,
     C: EventContent + Clone,
     S1: BuildHasher,
     S2: BuildHasher,

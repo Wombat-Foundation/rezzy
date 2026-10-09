@@ -189,7 +189,7 @@ pub(crate) fn iterative_auth_ok<Id, C, S1, S2, K>(
     is_power_phase: bool,
 ) -> bool
 where
-    Id: EventId,
+    Id: EventId + 'static,
     S1: BuildHasher,
     S2: BuildHasher,
     C: EventContent,

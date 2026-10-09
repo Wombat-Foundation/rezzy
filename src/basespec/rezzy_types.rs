@@ -53,11 +53,14 @@ impl MxidField {
 /// the core crate uses that representation when computing content-addressed
 /// state hashes.
 pub trait EventId:
-    Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
+    Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display + 'static
 {
 }
 
-impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
+impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display + 'static>
+    EventId for T
+{
+}
 
 /// Trait alias for types that can serve as the "key" half of a Matrix state
 /// tuple `(event_type, state_key)`.

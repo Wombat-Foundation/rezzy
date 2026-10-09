@@ -1490,12 +1490,13 @@ where
 ///
 /// # Errors
 /// Returns [`AuthError`] if any calculated auth event was itself rejected (MSC4242 Rule 4.3).
-pub fn derive_auth_events_from_state_dag<Id, C, S, K>(
-    event: &LeanEvent<Id, C, K>,
-    state_before: &SharedState<Id, K>,
+#[allow(clippy::result_large_err)]
+pub fn derive_auth_events_from_state_dag<'a, Id, C, S, K>(
+    event: &'a LeanEvent<Id, C, K>,
+    state_before: &'a SharedState<Id, K>,
     events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     room_version: &str,
-) -> Result<Vec<Id>, AuthError<Id>>
+) -> Result<Vec<Id>, AuthError<'a, Id>>
 where
     Id: EventId,
     C: EventContent,
@@ -1518,12 +1519,12 @@ where
             if let Some(auth_ev) = events_map.get(auth_id) {
                 if auth_ev.rejected {
                     return Err(AuthError::RejectedAuthEvent {
-                        event_id: event.event_id.clone(),
-                        auth_event_id: auth_id.clone(),
+                        event_id: &event.event_id,
+                        auth_event_id: auth_id,
                     });
                 }
             } else {
-                return Err(AuthError::MissingAuthEvent(auth_id.clone()));
+                return Err(AuthError::MissingAuthEvent(auth_id));
             }
             derived_auth.push(auth_id.clone());
         }

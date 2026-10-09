@@ -7,7 +7,7 @@
 use crate::test_lib::make_event;
 use rezzy::auth::{check_auth, AuthError, RoomState};
 use rezzy::json;
-use rezzy::StateResVersion;
+use rezzy::{LeanEvent, StateResVersion};
 
 /// Set up a standard room state with a create event, power levels, and
 /// join rules set to the given rule.
@@ -93,15 +93,16 @@ impl rezzy::EventVerifier<String> for RejectAuthorisingSignature {
 }
 
 /// Runs Bob's join event (with the given content) against `state`.
-fn check_bob_join(state: &RoomState, content: rezzy::JsonValue) -> Result<(), AuthError> {
-    let join_event = make_event(
+#[allow(clippy::result_large_err)]
+fn check_bob_join(state: &RoomState, content: rezzy::JsonValue) -> Result<(), AuthError<'_>> {
+    let join_event: &'static LeanEvent = Box::leak(Box::new(make_event(
         "$bob_join",
         "m.room.member",
         Some("@bob:example.com"),
         "@bob:example.com",
         content,
-    );
-    check_auth(&join_event, state, StateResVersion::V2, None)
+    )));
+    check_auth(join_event, state, StateResVersion::V2, None)
 }
 
 /// Asserts Bob's join was rejected with `NotMember`.
@@ -109,24 +110,25 @@ fn assert_bob_join_not_member(result: &Result<(), AuthError>, msg: &str) {
     assert_eq!(
         result,
         &Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_join".into(),
+            sender: "@bob:example.com",
+            event_id: &"$bob_join".to_string(),
         }),
         "{msg}"
     );
 }
 
 /// Runs Dave's knock event against a room with the given join rule.
-fn check_dave_knock(join_rule: &str) -> Result<(), AuthError> {
+#[allow(clippy::result_large_err)]
+fn check_dave_knock(join_rule: &str) -> Result<(), AuthError<'_>> {
     let state = room_with_join_rule(join_rule);
-    let knock_event = make_event(
+    let knock_event: &'static LeanEvent = Box::leak(Box::new(make_event(
         "$dave_knock",
         "m.room.member",
         Some("@dave:example.com"),
         "@dave:example.com",
         json!({"membership": "knock"}),
-    );
-    check_auth(&knock_event, &state, StateResVersion::V2, None)
+    )));
+    check_auth(knock_event, &state, StateResVersion::V2, None)
 }
 
 // ─── Restricted join rules (room version 8+) ────────────────────────────
@@ -208,7 +210,7 @@ fn test_restricted_join_requires_authorising_server_signature_when_verified() {
         Some(&RejectAuthorisingSignature),
     );
     assert!(
-        matches!(result, Err(AuthError::InvalidSyntax(ref reason)) if reason.contains("authorising-server signature")),
+        matches!(result, Err(AuthError::Verification(rezzy::errors::VerifyError::Reason(reason))) if reason.contains("authorising-server signature")),
         "a restricted join must require the authorising user's server signature: {result:?}"
     );
 }
@@ -225,8 +227,8 @@ fn test_restricted_rules_are_rejected_before_v8() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_join".into(),
+            sender: "@bob:example.com",
+            event_id: &"$bob_join".to_string(),
         })
     );
 }
@@ -246,8 +248,8 @@ fn test_knock_restricted_is_rejected_before_v10() {
     assert_eq!(
         check_auth(&knock_event, &state, StateResVersion::V2, None),
         Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_knock".into(),
+            sender: "@bob:example.com",
+            event_id: &"$bob_knock".to_string(),
         })
     );
 }
@@ -335,8 +337,8 @@ fn test_restricted_knock_rejected() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@dave:example.com".into(),
-            event_id: "$dave_knock".into()
+            sender: "@dave:example.com",
+            event_id: &"$dave_knock".to_string()
         }),
         "knocking must NOT be allowed in plain restricted room (only knock_restricted)"
     );
@@ -349,8 +351,8 @@ fn test_invite_only_knock_rejected() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@dave:example.com".into(),
-            event_id: "$dave_knock".into()
+            sender: "@dave:example.com",
+            event_id: &"$dave_knock".to_string()
         }),
         "knocking must NOT be allowed in invite-only room"
     );
@@ -363,8 +365,8 @@ fn test_public_knock_rejected() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@dave:example.com".into(),
-            event_id: "$dave_knock".into()
+            sender: "@dave:example.com",
+            event_id: &"$dave_knock".to_string()
         }),
         "knocking must NOT be allowed in public room"
     );
@@ -408,8 +410,8 @@ fn test_banned_user_cannot_knock() {
     assert_eq!(
         result,
         Err(AuthError::BannedUser {
-            sender: "@evil:example.com".into(),
-            event_id: "$evil_knock".into()
+            sender: "@evil:example.com",
+            event_id: &"$evil_knock".to_string()
         }),
         "banned user must NOT be able to knock"
     );
@@ -446,8 +448,8 @@ fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
     assert_eq!(
         result,
         Err(AuthError::BannedUser {
-            sender: "@evil:example.com".into(),
-            event_id: "$evil_join".into()
+            sender: "@evil:example.com",
+            event_id: &"$evil_join".to_string()
         }),
         "banned user must NOT be able to join even with authorized_via"
     );
@@ -631,8 +633,8 @@ fn test_joined_user_cannot_knock() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@alice:example.com".into(),
-            event_id: "$alice_knock".into()
+            sender: "@alice:example.com",
+            event_id: &"$alice_knock".to_string()
         }),
         "Joined user must NOT be able to knock"
     );
@@ -670,8 +672,8 @@ fn test_invited_user_cannot_knock() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_knock".into()
+            sender: "@bob:example.com",
+            event_id: &"$bob_knock".to_string()
         }),
         "Invited user must NOT be able to knock"
     );
