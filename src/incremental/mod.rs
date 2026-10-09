@@ -2,4 +2,4 @@
 
 pub mod lthash;
 
-pub use lthash::*;
+pub use lthash::{LtHash, LtLattice, WrongLatticeLength};

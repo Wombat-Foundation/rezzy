@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rezzy::hamt::{self, HamtNode};
-use rezzy::state::LtHash;
+use rezzy::incremental::LtHash;
 
 use crate::common::{
     collect_all_nodes, collect_new_nodes, encode_full_map, sha256_sorted_hash, to_persisted,

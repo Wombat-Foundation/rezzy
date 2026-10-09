@@ -76,4 +76,4 @@ mod lattice;
 mod tests;
 
 pub(crate) use self::encoding::{seed_lattice, truncate_to_u16_limit};
-pub use self::lattice::*;
+pub use self::lattice::{LtHash, LtLattice, WrongLatticeLength};

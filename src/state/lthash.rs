@@ -5,12 +5,12 @@
 //! pieces that depend on room state or define Matrix-specific encodings:
 //! [`LtLattice::from_state`], [`compute_state_hash`], [`RedactionOverlay`],
 //! [`ResolutionInputs`], [`PduLtHash`] and [`StateDigest`]. The generic
-//! accumulator is re-exported so existing `state::lthash::*` paths keep working.
+//! accumulator is not re-exported here; import it from [`crate::incremental`].
 
 use alloc::vec::Vec;
 
-pub use crate::incremental::lthash::*;
 use crate::incremental::lthash::{seed_lattice, truncate_to_u16_limit};
+use crate::incremental::{LtHash, LtLattice};
 
 impl<const LANES: usize> LtLattice<LANES> {
     /// Compute the full hash from a state map (non-incremental).

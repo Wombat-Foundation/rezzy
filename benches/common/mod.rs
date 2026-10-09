@@ -465,7 +465,7 @@ pub fn apply_state_op(state: &mut HashMap<StateKey, String>, op: &StateOp) {
 /// Applies `op` to the state map and incrementally updates `lt` to match.
 pub fn apply_state_op_lthash(
     state: &mut HashMap<StateKey, String>,
-    lt: &mut rezzy::state::LtHash,
+    lt: &mut rezzy::incremental::LtHash,
     op: &StateOp,
 ) {
     match op {
@@ -485,8 +485,8 @@ pub fn apply_state_op_lthash(
 }
 
 /// Builds an `LtHash` covering every entry of `state`.
-pub fn lthash_of(state: &HashMap<StateKey, String>) -> rezzy::state::LtHash {
-    let mut lt = rezzy::state::LtHash::ZERO;
+pub fn lthash_of(state: &HashMap<StateKey, String>) -> rezzy::incremental::LtHash {
+    let mut lt = rezzy::incremental::LtHash::ZERO;
     for ((event_type, state_key), event_id) in state {
         lt.insert(event_type, state_key, event_id);
     }

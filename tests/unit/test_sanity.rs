@@ -132,7 +132,7 @@ fn build_checkpoints(events: &[rezzy::LeanEvent]) -> Vec<DeltaCheckpoint> {
             );
         }
 
-        let hash_str = rezzy::state::delta::compute_state_hash(&state_after);
+        let hash_str = rezzy::state::compute_state_hash(&state_after);
         state_after_map.insert(ev.event_id.clone(), state_after.clone());
         state_hash_map.insert(ev.event_id.clone(), hash_str);
 
