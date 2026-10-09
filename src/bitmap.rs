@@ -1,9 +1,9 @@
 //! A dependency-free compressed set of `u32` values.
 //!
-//! This is the 16/16 split behind Roaring bitmaps, restricted to what rezzy
+//! This is the 16/16 split behind Roaring bitmaps (the format, not the crate), restricted to what rezzy
 //! needs: each value is split into a high 16-bit key and a low 16-bit offset,
 //! and values sharing a key live in one container. A container is either a
-//! sorted `u16` array (at most [`ARRAY_MAX`] values) or a fixed 8 KiB bitset.
+//! sorted `u16` array (at most 4096 values) or a fixed 8 KiB bitset.
 //! There are no run containers and no SIMD; the representation is canonical
 //! (a container is an array exactly when it holds `<= ARRAY_MAX` values, and
 //! empty containers are dropped), so `==` is structural.
@@ -680,5 +680,75 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(alloc::format!("{a:?}"), "{1, 2, 3}");
         assert_eq!(Bitmap::default(), Bitmap::new());
+    }
+
+    #[test]
+    fn dense_iteration_contains_and_word_boundaries() {
+        // Bits straddling word (63/64) and chunk (65535/65536) edges in a dense chunk.
+        let mut all: BTreeSet<u32> = (0..ARRAY_MAX as u32 + 10).map(|v| v * 3).collect();
+        all.extend([63, 64, 65_535, 65_536, 131_071, 131_072]);
+        let b = build(&all);
+        check(&b, &all);
+        assert!(matches!(b.chunks[0].store, Store::Dense(_)));
+        for v in [63, 64, 65_535, 65_536, 131_071, 131_072, 0, 3] {
+            assert!(b.contains(v), "{v}");
+        }
+        for v in [1, 2, 62, 65_534, 131_070, 131_073, u32::MAX] {
+            assert!(!b.contains(v), "{v}");
+        }
+        // Owned and borrowed iteration agree and stay ascending.
+        assert!(b.iter().eq(b.clone()));
+        assert!(b.iter().zip(b.iter().skip(1)).all(|(x, y)| x < y));
+    }
+
+    #[test]
+    fn union_of_arrays_crossing_threshold_densifies() {
+        let a: BTreeSet<u32> = (0..3000).map(|v| v * 2).collect();
+        let b: BTreeSet<u32> = (0..3000).map(|v| v * 2 + 1).collect();
+        let (ba, bb) = (build(&a), build(&b));
+        assert!(matches!(ba.chunks[0].store, Store::Array(_)));
+        assert!(matches!(bb.chunks[0].store, Store::Array(_)));
+        let both = &ba | &bb;
+        assert!(matches!(both.chunks[0].store, Store::Dense(_)));
+        check(&both, &a.union(&b).copied().collect());
+        // Intersecting back down returns to an array.
+        let back = &both & &ba;
+        assert!(matches!(back.chunks[0].store, Store::Array(_)));
+        check(&back, &a);
+    }
+
+    #[test]
+    fn insert_into_middle_and_front_chunks() {
+        let mut b = Bitmap::new();
+        for v in [3 << 16, 1 << 16, 5 << 16, 2 << 16, 0, 4 << 16] {
+            assert!(b.insert(v));
+            assert!(b.contains(v));
+        }
+        assert!(!b.insert(2 << 16));
+        assert!(b.chunks.windows(2).all(|w| w[0].key < w[1].key));
+        assert_eq!(b.len(), 6);
+    }
+
+    #[test]
+    fn dense_insert_counts_and_dedups() {
+        let mut b: Bitmap = (0..=ARRAY_MAX as u32).collect();
+        assert!(matches!(b.chunks[0].store, Store::Dense(_)));
+        let before = b.len();
+        assert!(!b.insert(10));
+        assert!(b.insert(60_000));
+        assert_eq!(b.len(), before + 1);
+    }
+
+    #[test]
+    fn disjoint_chunk_keys_in_every_mode() {
+        let a: BTreeSet<u32> = [1, 2, 3, 5 << 16].into();
+        let b: BTreeSet<u32> = [4, 1 << 16, 9 << 16].into();
+        let (ba, bb) = (build(&a), build(&b));
+        check(&(&ba | &bb), &a.union(&b).copied().collect());
+        check(&(&ba & &bb), &BTreeSet::new());
+        check(&(ba.clone() - &bb), &a);
+        let mut c = ba.clone();
+        c.extend(b.iter().copied());
+        check(&c, &a.union(&b).copied().collect());
     }
 }

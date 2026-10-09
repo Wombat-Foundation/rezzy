@@ -1,4 +1,4 @@
-//! Fast auth chain operations using `roaring` bitmaps.
+//! Fast auth chain operations using [`Bitmap`] reachability sets.
 //!
 //! [`AuthGraph`] pre-computes a compressed, topologically-ordered representation
 //! of the auth DAG. Each event's full transitive auth chain is stored as a
@@ -106,7 +106,7 @@ where
     /// that are NOT in the auth chains of
     /// `unconflicted_ids`.
     ///
-    /// This is the roaring-bitmap fast path for the
+    /// This is the bitmap fast path for the
     /// same computation as
     /// [`compute_auth_chain_diff`](crate::state::at::compute_auth_chain_diff),
     /// but runs in `O(|bitmap|)` time on pre-computed

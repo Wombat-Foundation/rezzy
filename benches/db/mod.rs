@@ -1,5 +1,6 @@
 //! HAMT Storage & Persistence Benchmarks.
 
+pub mod bitmap_vs_roaring;
 pub mod cumulative_rebuild;
 pub mod hamt_audit_bitmap;
 pub mod persistence;

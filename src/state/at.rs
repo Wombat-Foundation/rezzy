@@ -899,7 +899,7 @@ where
 
 /// Computes the most recent common ancestor (merge base) of multiple DAG tips.
 ///
-/// Uses a max-heap ordered by event `depth` with roaring bitmap reachability
+/// Uses a max-heap ordered by event `depth` with bitmap reachability
 /// masks. Each extremity gets a unique bit index; as the heap walks backward
 /// through `prev_events`, bitmasks propagate via bitwise OR. The first event
 /// whose bitmask contains all extremity bits is the merge base.
@@ -912,7 +912,7 @@ where
 /// - **Time**: `O(V + E)` bounded to the subgraph between the extremities and
 ///   their merge base. Events below the merge base are never visited.
 /// - **Space**: `O(V)` for the bitmask map, where each bitmask is a compressed
-///   roaring bitmap.
+///   bitmap.
 ///
 /// ## **TODO:** Future optimization
 ///

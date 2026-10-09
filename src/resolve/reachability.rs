@@ -150,14 +150,14 @@ where
     pub fn build<C: Clone, S: BuildHasher>(graph: &HashMap<Id, LeanEvent<Id, C>, S>) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
         let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
-            .expect("graph too large for roaring bitmap index");
+            .expect("graph too large for bitmap index");
 
         let (children_by_index, _) = build_indexed_children(topo.len(), children, &index);
 
         let mut descendant_bitmaps = vec![Bitmap::new(); topo.len()];
         for idx in (0..topo.len()).rev() {
             let mut bitmap = Bitmap::new();
-            bitmap.insert(u32::try_from(idx).expect("graph too large for roaring bitmap index"));
+            bitmap.insert(u32::try_from(idx).expect("graph too large for bitmap index"));
             for &child_idx in &children_by_index[idx] {
                 bitmap |= &descendant_bitmaps[child_idx as usize];
             }

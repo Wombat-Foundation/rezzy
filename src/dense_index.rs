@@ -1,7 +1,7 @@
 //! A first-seen-order dense index over a set of items.
 //!
 //! The "assign a compact integer index to every distinct item in a set, both
-//! directions, so a `RoaringBitmap` (or a plain array) can address it" pattern
+//! directions, so a [`Bitmap`](crate::bitmap::Bitmap) (or a plain array) can address it" pattern
 //! was previously reimplemented independently across the crate (see
 //! `docs/tech_debt.md`, "dense-index" section). [`DenseIndex`] is the shared
 //! primitive that replaces those hand-rolled copies: one engine, parameterized
@@ -11,7 +11,7 @@
 //!
 //! `T` is generic so the same primitive serves `StructuralHash`, `String`
 //! event IDs, or any other `Hash + Eq` item. `Idx` defaults to `u32` (the
-//! width the roaring-based call sites need) but can be widened to `usize` for
+//! width the bitmap-based call sites need) but can be widened to `usize` for
 //! callers whose sets are too large to fit in 32 bits (or that want the
 //! overflow-free `usize` indexing).
 

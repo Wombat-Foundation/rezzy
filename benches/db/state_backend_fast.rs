@@ -235,9 +235,7 @@ pub fn run() {
             .into_iter()
             .map(|((t, k), v)| ((t, InternedKey::new(k)), Arc::from(v)))
             .collect();
-        println!(
-            "imbl vs PersistentOrdMap, (EventType, InternedKey) -> Arc<str> (n={n}), ns/op:"
-        );
+        println!("imbl vs PersistentOrdMap, (EventType, InternedKey) -> Arc<str> (n={n}), ns/op:");
         let a = measure::<imbl::OrdMap<K, V>>(&entries);
         let b = measure::<PersistentOrdMap<K, V>>(&entries);
         for (i, op) in OPS.iter().enumerate() {
