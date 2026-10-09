@@ -61,6 +61,16 @@ macro_rules! wide_bitmap {
                     .insert(value as u32)
             }
 
+            /// Merges `bitmap` into the entry for `key`.
+            fn absorb(&mut self, key: $key, bitmap: Bitmap) {
+                match self.map.entry(key) {
+                    btree_map::Entry::Vacant(slot) => {
+                        slot.insert(bitmap);
+                    }
+                    btree_map::Entry::Occupied(mut slot) => *slot.get_mut() |= &bitmap,
+                }
+            }
+
             /// Iterates the values in ascending order.
             #[must_use]
             pub fn iter(&self) -> $iter<'_> {
@@ -101,8 +111,28 @@ macro_rules! wide_bitmap {
 
         impl Extend<$value> for $name {
             fn extend<I: IntoIterator<Item = $value>>(&mut self, iter: I) {
+                // Values usually arrive grouped by high bits (sorted input), so
+                // fill one inner bitmap at a time and touch the map only when the
+                // key changes.
+                let mut current: Option<($key, Bitmap)> = None;
                 for v in iter {
-                    self.insert(v);
+                    let key = (v >> 32) as $key;
+                    match &mut current {
+                        Some((k, bitmap)) if *k == key => {
+                            bitmap.insert(v as u32);
+                        }
+                        _ => {
+                            if let Some((k, bitmap)) = current.take() {
+                                self.absorb(k, bitmap);
+                            }
+                            let mut bitmap = Bitmap::new();
+                            bitmap.insert(v as u32);
+                            current = Some((key, bitmap));
+                        }
+                    }
+                }
+                if let Some((k, bitmap)) = current {
+                    self.absorb(k, bitmap);
                 }
             }
         }
