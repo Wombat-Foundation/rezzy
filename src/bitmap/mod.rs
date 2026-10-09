@@ -239,18 +239,17 @@ impl Chunk {
         let key = self.key;
         match (&self.store, &other.store) {
             (Store::Array(a), Store::Array(b)) => {
-                let mut out = Vec::with_capacity(a.len().min(b.len()));
+                let mut out = Vec::new();
                 let (mut i, mut j) = (0, 0);
+                // Branch-free cursor advance: the three-way `match` mispredicts
+                // on interleaved random data, which dominates sparse `&`.
                 while i < a.len() && j < b.len() {
-                    match a[i].cmp(&b[j]) {
-                        core::cmp::Ordering::Less => i += 1,
-                        core::cmp::Ordering::Greater => j += 1,
-                        core::cmp::Ordering::Equal => {
-                            out.push(a[i]);
-                            i += 1;
-                            j += 1;
-                        }
+                    let (lo_a, lo_b) = (a[i], b[j]);
+                    if lo_a == lo_b {
+                        out.push(lo_a);
                     }
+                    i += usize::from(lo_a <= lo_b);
+                    j += usize::from(lo_b <= lo_a);
                 }
                 Self::from_array(key, out)
             }
