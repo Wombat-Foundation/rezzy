@@ -75,6 +75,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "db",
+        name: "state_key_repr",
+        description: "PersistentOrdMap String vs InternedKey keys and String vs Arc<str> values",
+        run_fn: db::state_key_repr::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
         name: "state_groups",
         description: "HAMT content-addressed state groups vs delta-chain storage",
         run_fn: db::state_groups::run,
