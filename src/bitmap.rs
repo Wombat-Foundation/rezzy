@@ -198,9 +198,9 @@ impl Chunk {
             (Store::Dense(a), Store::Dense(b)) => {
                 let mut added = 0;
                 for (x, y) in a.iter_mut().zip(b.iter()) {
-                    let before = *x;
+                    // Only the newly set bits need counting (one popcount per word).
+                    added += (y & !*x).count_ones();
                     *x |= y;
-                    added += (*x).count_ones() - before.count_ones();
                 }
                 self.len += added;
             }
@@ -213,12 +213,12 @@ impl Chunk {
             }
             (Store::Array(a), Store::Dense(b)) => {
                 let mut words = b.clone();
+                let mut added = 0;
                 for &x in a.iter() {
-                    set_bit(&mut words, x);
+                    added += u32::from(set_bit(&mut words, x));
                 }
-                let len = popcount(&words);
                 self.store = Store::Dense(words);
-                self.len = len;
+                self.len = other.len + added;
             }
             (Store::Array(_), Store::Array(_)) => {
                 *self = self.union(other);
