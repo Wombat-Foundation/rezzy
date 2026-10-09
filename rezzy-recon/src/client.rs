@@ -20,7 +20,7 @@ use alloc::collections::VecDeque;
 /// default operating point of ~82,000 differing elements before falling back to
 /// extremity-based frame diffing under default client policy. This is a default,
 /// not a protocol ceiling: [`ReconciliationClient::with_max_aggregate_capacity`]
-/// raises the per-round capacity (and, through [`derive_gate_threshold`], the
+/// raises the per-round capacity (and, through `derive_gate_threshold`, the
 /// derived round-budget gate) for two implementations that agree out of band to
 /// attempt larger single-exchange deltas.
 // TODO(prefix-grinding): this round budget is also the thing an attacker
