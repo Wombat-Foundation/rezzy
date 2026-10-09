@@ -22,7 +22,7 @@ use core::mem;
 use core::ops::{Bound, Index, RangeBounds};
 
 /// Maximum entries in a leaf and children in an internal node.
-const MAX_FANOUT: usize = 32;
+const MAX_FANOUT: usize = 24;
 /// Target node fill for sorted bulk builds, leaving slack for later inserts.
 const BULK_FILL: usize = MAX_FANOUT - MAX_FANOUT / 4;
 
