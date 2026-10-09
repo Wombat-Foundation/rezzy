@@ -490,7 +490,8 @@ where
     start.elapsed().as_secs_f64() * 1000.0 / reps as f64
 }
 
-/// Four-way matrix: {String, InternedKey} keys x {String, Arc<str>} event ids.
+/// Four-way matrix: {String, InternedKey} keys x {String, Arc<str>} event ids,
+/// plus `Shared` (`intern_events`: one Arc per id/key, reused everywhere).
 /// All conversion happens before timing. Reports ms/run and ratio to
 /// String/String.
 fn run_id_matrix(rooms: &[Fixture], conflict_rooms: &[Fixture]) {
@@ -538,12 +539,21 @@ fn run_id_matrix(rooms: &[Fixture], conflict_rooms: &[Fixture]) {
             reps,
             batch,
         );
+        // Realistic ingest: one shared Arc per event id / state key.
+        let sh = run_variant(
+            &rezzy::intern_events(events.values().cloned()),
+            targets,
+            &InternedKey::default(),
+            reps,
+            batch,
+        );
         println!(
             "  {kind:<8} {mode} n={n:<5} String/String {ss:>9.3}  Interned/String {is:>9.3} ({:.2}x)  \
-             String/Arc {sa:>9.3} ({:.2}x)  Interned/Arc {ia:>9.3} ({:.2}x)",
+             String/Arc {sa:>9.3} ({:.2}x)  Interned/Arc {ia:>9.3} ({:.2}x)  Shared {sh:>9.3} ({:.2}x)",
             is / ss,
             sa / ss,
             ia / ss,
+            sh / ss,
         );
     }
 }

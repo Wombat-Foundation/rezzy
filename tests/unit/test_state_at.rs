@@ -926,6 +926,49 @@ fn test_interned_key_matches_string_path() {
     );
 }
 
+/// `intern_events` converts to `Arc<str>` ids + `InternedKey` keys, resolves to
+/// the same state as the `String` path, and shares one allocation per id/key
+/// across the map key, `event_id`, `prev_events` and `auth_events`.
+#[test]
+fn test_intern_events_matches_string_path_and_shares_allocations() {
+    let events_map = dag_a_lines(&[
+        MEMBER_B_A,
+        r#"{"event_id":"C","type":"m.room.member","state_key":"@y:x","sender":"@x:x","depth":3,"content":{"membership":"join"},"prev_events":["B"],"auth_events":["A","B"]}"#,
+        r#"{"event_id":"D","type":"m.room.name","state_key":"","sender":"@x:x","depth":4,"content":{"name":"room"},"prev_events":["C"],"auth_events":["A","B"]}"#,
+    ]);
+    let fast = rezzy::intern_events(events_map.values().cloned());
+
+    let str_state = state_at_d(&events_map).unwrap();
+    let fast_state = rezzy::compute_state_at::<std::sync::Arc<str>, _, str, _, _>(
+        "D",
+        &fast,
+        StateResVersion::V2,
+        &rezzy::InternedKey::default(),
+    )
+    .unwrap();
+    let fast_keyed: std::collections::BTreeMap<(String, String), String> = fast_state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id.to_string()))
+        .collect();
+    let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k), id))
+        .collect();
+    assert_eq!(fast_keyed, str_keyed);
+
+    // One allocation per id: the map key, the event's own id, and the
+    // references from its child's prev_events/auth_events are all the same Arc.
+    let b = fast.get_key_value("B").expect("B present");
+    let d = &fast["D"];
+    assert!(std::sync::Arc::ptr_eq(b.0, &b.1.event_id));
+    let b_in_d_auth = d
+        .auth_events
+        .iter()
+        .find(|e| &***e == "B")
+        .expect("D cites B");
+    assert!(std::sync::Arc::ptr_eq(b.0, b_in_d_auth));
+}
+
 /// Verifies that an integer-backed interned key (e.g. `InternId(u32)`)
 /// satisfies `StateKey` and executes state resolution correctly.
 #[test]

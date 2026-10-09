@@ -360,6 +360,22 @@ where
 /// as the baseline for cheap-clone/structural-sharing workloads.
 pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(EventType, K), Id>;
 
+/// The fast [`SharedState`] configuration: shared `Arc<str>` event ids and
+/// [`InternedKey`](crate::InternedKey) state keys, so every path-copy clone is
+/// a refcount bump instead of a string allocation.
+///
+/// Measured against the `String`/`String` default (`state_key_repr` and the
+/// matrix in `state/interned_key` benches): inserts into a forked state take
+/// ~0.55-0.66x the time, and full resolution ~0.56x on linear rooms and
+/// ~0.62-0.68x on conflict-heavy rooms. Lookup and diff are unchanged.
+/// Ordering is still plain string order, so this is valid for live Matrix
+/// state (unlike a frozen-vocabulary `u32` interner).
+///
+/// Build the inputs with [`intern_events`](crate::intern_events), which
+/// allocates each event id and state key once and shares it everywhere.
+pub type FastSharedState =
+    SharedState<alloc::sync::Arc<str>, crate::InternedKey>;
+
 /// Computes the resolved room state *after* a given event.
 ///
 /// This walks the `prev_events` graph backwards from `target_event_id`,

@@ -15,6 +15,8 @@
 //! Core data types for Matrix state resolution.
 
 use crate::json::Value;
+use crate::{FastSet, HashMap};
+use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -2312,6 +2314,68 @@ impl<Id, C> LeanEvent<Id, C, String> {
             room_id: self.room_id,
         }
     }
+}
+
+/// Converts plain-`String` events into the fast representation
+/// (`Id = Arc<str>`, `K = InternedKey`), preserving sharing.
+///
+/// Each distinct event id is allocated exactly once and that single `Arc` is
+/// reused for the event's own `event_id`, the map key, and every
+/// `prev_events` / `auth_events` reference to it across the whole batch;
+/// likewise each distinct `state_key` becomes one shared [`InternedKey`].
+/// Resolved state maps cloned from these events then share the same
+/// allocations, so path-copy clones are refcount bumps.
+///
+/// Ids referenced by `prev_events` / `auth_events` but absent from the batch
+/// are still interned, so the returned map can be handed straight to
+/// `compute_state_at` / `compute_state_at_batch`.
+///
+/// `String` stays the default everywhere else in the crate; this is the
+/// opt-in ingest boundary for the faster configuration
+/// ([`FastSharedState`](crate::state::at::FastSharedState)).
+#[must_use]
+pub fn intern_events<C>(
+    events: impl IntoIterator<Item = LeanEvent<String, C, String>>,
+) -> HashMap<Arc<str>, LeanEvent<Arc<str>, C, InternedKey>> {
+    fn share(table: &mut FastSet<Arc<str>>, s: &str) -> Arc<str> {
+        if let Some(existing) = table.get(s) {
+            return Arc::clone(existing);
+        }
+        let arc: Arc<str> = Arc::from(s);
+        table.insert(Arc::clone(&arc));
+        arc
+    }
+    let mut ids: FastSet<Arc<str>> = FastSet::default();
+    let mut keys: FastSet<Arc<str>> = FastSet::default();
+    let mut out = HashMap::default();
+    for ev in events {
+        let event_id = share(&mut ids, &ev.event_id);
+        let prev_events = ev.prev_events.iter().map(|e| share(&mut ids, e)).collect();
+        let auth_events = ev.auth_events.iter().map(|e| share(&mut ids, e)).collect();
+        let state_key = ev
+            .state_key
+            .as_deref()
+            .map(|k| InternedKey(share(&mut keys, k)));
+        out.insert(
+            Arc::clone(&event_id),
+            LeanEvent {
+                event_id,
+                event_type: ev.event_type,
+                state_key,
+                power_level: ev.power_level,
+                origin_server_ts: ev.origin_server_ts,
+                sender: ev.sender,
+                content: ev.content,
+                prev_events,
+                auth_events,
+                depth: ev.depth,
+                rejected: ev.rejected,
+                soft_fail: ev.soft_fail,
+                room_id: ev.room_id,
+            },
+        );
+    }
+    out
 }
 
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
