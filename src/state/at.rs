@@ -360,9 +360,14 @@ where
 /// as the baseline for cheap-clone/structural-sharing workloads.
 pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(EventType, K), Id>;
 
-/// The fast [`SharedState`] configuration: shared `Arc<str>` event ids and
+/// The fast [`SharedState`] configuration: `Arc<str>` event ids and
 /// [`InternedKey`](crate::InternedKey) state keys, so every path-copy clone is
 /// a refcount bump instead of a string allocation.
+///
+/// "Interned" here means *Arc-backed*, not canonical: `InternedKey::new` on two
+/// equal strings allocates two buffers. Sharing comes from the ingest helper,
+/// which dedups within the batch it is given (see
+/// [`intern_events`](crate::intern_events)); it is not a global intern table.
 ///
 /// Measured against the `String`/`String` default (`state_key_repr` and the
 /// matrix in `state/interned_key` benches): inserts into a forked state take

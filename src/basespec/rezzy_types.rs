@@ -2317,7 +2317,8 @@ impl<Id, C> LeanEvent<Id, C, String> {
 }
 
 /// Converts plain-`String` events into the fast representation
-/// (`Id = Arc<str>`, `K = InternedKey`), preserving sharing.
+/// (`Id = Arc<str>`, `K = InternedKey`), preserving sharing *within this
+/// batch* (there is no cross-call or global intern table).
 ///
 /// Each distinct event id is allocated exactly once and that single `Arc` is
 /// reused for the event's own `event_id`, the map key, and every
