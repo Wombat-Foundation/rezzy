@@ -225,7 +225,7 @@ fn bench_state_groups(n: usize, steps: usize) {
     // that tip happens to be — see the assertion below, which fails loudly
     // if a caller picks a `steps` that accidentally aligns.
     assert!(
-        steps % SNAPSHOT_EVERY != 0,
+        !steps.is_multiple_of(SNAPSHOT_EVERY),
         "steps={steps} is a multiple of SNAPSHOT_EVERY={SNAPSHOT_EVERY}: the bounded chain's \
          tip would itself be a snapshot, trivializing the lookup benchmark below"
     );

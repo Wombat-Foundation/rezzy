@@ -207,7 +207,7 @@ pub fn generate_string_mutations(
 ) -> Vec<(String, String)> {
     let mut mutations = Vec::with_capacity(steps);
     for _ in 0..steps {
-        let key = if rng.next_u64() % 3 == 0 && !candidate_keys.is_empty() {
+        let key = if rng.next_u64().is_multiple_of(3) && !candidate_keys.is_empty() {
             candidate_keys[(rng.next_u64() as usize) % candidate_keys.len()].clone()
         } else {
             format!("room_member|@user{}:example.org", rng.next_u64())

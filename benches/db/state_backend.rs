@@ -170,7 +170,7 @@ fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
     let mut rng = Xorshift128::new(0xF00D);
     let lookups: Vec<Key> = (0..5000)
         .map(|_| {
-            if rng.next_u64() % 2 == 0 {
+            if rng.next_u64().is_multiple_of(2) {
                 entries[(rng.next_u64() as usize) % entries.len()].0.clone()
             } else {
                 (
