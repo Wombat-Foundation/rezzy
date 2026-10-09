@@ -65,6 +65,7 @@ pub mod basespec;
 pub mod cuckoo_verify;
 pub mod dense_index;
 pub mod hamt;
+pub mod incremental;
 pub mod merkle;
 pub mod raw_event;
 pub mod resolve;

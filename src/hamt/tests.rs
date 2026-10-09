@@ -2,7 +2,7 @@ use super::*;
 use crate::hamt::codec::PersistedInternalNode;
 use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
-use crate::state::LtHash;
+use crate::incremental::LtHash;
 use alloc::{boxed::Box, vec};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
