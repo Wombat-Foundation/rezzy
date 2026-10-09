@@ -189,7 +189,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u64 sub {label}"),
             iters,
             || {
-                black_box((wa.clone() - &wb));
+                black_box(wa.clone() - &wb);
             },
             || {
                 black_box(&ta - &tb);
@@ -260,7 +260,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u128 sub {label} (vs BTreeSet)"),
             iters,
             || {
-                black_box((xa.clone() - &xb));
+                black_box(xa.clone() - &xb);
             },
             || {
                 black_box(sa.difference(&sb).copied().collect::<BTreeSet<u128>>());
