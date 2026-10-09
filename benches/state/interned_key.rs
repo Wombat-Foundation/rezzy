@@ -462,12 +462,15 @@ pub fn run() {
         // Fewer reps at larger sizes to keep wall-clock bounded.
         let reps = match n {
             100 => 2_000,
-            1_000 => 300,
-            _ => 100,
+            1_000 => 50,
+            // One 5,000-member batch resolution is already about a second;
+            // five samples per variant keeps this diagnostic bench useful
+            // without turning a filtered run into a several-minute wait.
+            _ => 5,
         };
 
         // Batch path (engages the parallel lattice fold under default `std`).
-        let batch_str = measure(&format!("batch  String    n={n}"), reps, || {
+        let batch_str = measure(&format!("batch    String       n={n}"), reps, || {
             let result =
                 compute_state_at_batch(&target_refs, events, StateResVersion::V2_1, &String::new());
             assert_eq!(
@@ -477,7 +480,7 @@ pub fn run() {
             );
             std::hint::black_box(&result);
         });
-        let batch_interned = measure(&format!("batch  InternedKey n={n}"), reps, || {
+        let batch_interned = measure(&format!("batch    InternedKey  n={n}"), reps, || {
             let result = compute_state_at_batch(
                 &target_refs,
                 &interned,
@@ -491,7 +494,7 @@ pub fn run() {
             );
             std::hint::black_box(&result);
         });
-        let batch_u32 = measure(&format!("batch  u32 InternId n={n}"), reps, || {
+        let batch_u32 = measure(&format!("batch    u32 InternId n={n}"), reps, || {
             let result = compute_state_at_batch(
                 &target_refs,
                 &u32_events,
@@ -508,7 +511,7 @@ pub fn run() {
 
         // Serial (cache-free) control at the last (deepest) member.
         let last = target_refs.last().copied().unwrap();
-        let ser_str = measure(&format!("serial String    n={n}"), reps, || {
+        let ser_str = measure(&format!("serial   String       n={n}"), reps, || {
             let state = compute_state_at::<String, JsonValue, str, _, String>(
                 last,
                 events,
@@ -518,7 +521,7 @@ pub fn run() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
-        let ser_interned = measure(&format!("serial InternedKey n={n}"), reps, || {
+        let ser_interned = measure(&format!("serial   InternedKey  n={n}"), reps, || {
             let state = compute_state_at::<String, JsonValue, str, _, InternedKey>(
                 last,
                 &interned,
@@ -528,7 +531,7 @@ pub fn run() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
-        let ser_u32 = measure(&format!("serial u32 InternId n={n}"), reps, || {
+        let ser_u32 = measure(&format!("serial   u32 InternId n={n}"), reps, || {
             let state = compute_state_at::<String, JsonValue, str, _, InternId>(
                 last,
                 &u32_events,
@@ -544,19 +547,19 @@ pub fn run() {
         let ser_delta = ser_interned.as_secs_f64() - ser_str.as_secs_f64();
         let ser_delta_u32 = ser_u32.as_secs_f64() - ser_str.as_secs_f64();
         println!(
-            "  batch  InternedKey vs String: {batch_delta:+.1}ms total ({:+.1}%)",
+            "  batch    InternedKey  vs String: {batch_delta:+.1}ms total ({:+.1}%)",
             batch_delta / batch_str.as_secs_f64() * 100.0
         );
         println!(
-            "  batch  u32 InternId vs String: {batch_delta_u32:+.1}ms total ({:+.1}%)",
+            "  batch    u32 InternId vs String: {batch_delta_u32:+.1}ms total ({:+.1}%)",
             batch_delta_u32 / batch_str.as_secs_f64() * 100.0
         );
         println!(
-            "  serial InternedKey vs String: {ser_delta:+.1}ms total ({:+.1}%)",
+            "  serial   InternedKey  vs String: {ser_delta:+.1}ms total ({:+.1}%)",
             ser_delta / ser_str.as_secs_f64() * 100.0
         );
         println!(
-            "  serial u32 InternId vs String: {ser_delta_u32:+.1}ms total ({:+.1}%)",
+            "  serial   u32 InternId vs String: {ser_delta_u32:+.1}ms total ({:+.1}%)",
             ser_delta_u32 / ser_str.as_secs_f64() * 100.0
         );
     }
@@ -577,9 +580,11 @@ pub fn run() {
         let reps = match n {
             50 => 500,
             500 => 50,
-            _ => 10,
+            // The 2,000-conflict fixture contains 6,003 events; two timed
+            // samples are enough to keep the diagnostic bench bounded.
+            _ => 2,
         };
-        let str_dur = measure(&format!("conflict String    n={n}"), reps, || {
+        let str_dur = measure(&format!("conflict String       n={n}"), reps, || {
             let state = compute_state_at::<String, JsonValue, str, _, String>(
                 last,
                 events,

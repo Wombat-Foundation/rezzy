@@ -1,8 +1,7 @@
-//! Compares `imbl::OrdMap` against the HAMT (`rezzy::hamt`) as a backend for
+//! Compares `imbl::OrdMap`, `PersistentOrdMap`, and the HAMT (`rezzy::hamt`) as backends for
 //! `SharedState`, i.e. `Map<(EventType, String), Id>`.
 //!
-//! `SharedState` currently aliases to `imbl::OrdMap` (see the fork/diverge
-//! benchmark note in `src/state/at.rs`). This benchmark exists to answer,
+//! This benchmark exists to answer,
 //! with real numbers, whether the HAMT built out over the last several
 //! commits actually beats `OrdMap` for the access pattern state resolution
 //! uses: small-to-medium room state maps, lots of persistent point
@@ -29,6 +28,7 @@ use crate::common::{generate_unique_entries, unreachable_resolver, Xorshift128};
 
 type Key = (EventType, String);
 type Value = String;
+type PersistentMap = rezzy::PersistentOrdMap<Key, Value>;
 
 const STRUCTURAL_KEY: &[u8] = b"bench-state-backend";
 
@@ -85,13 +85,18 @@ fn make_entries(n: usize, seed: u64) -> Vec<(Key, Value)> {
 }
 
 /// Builds the `OrdMap` and HAMT representations of the same entry set.
-fn build_ordmap_and_hamt(
+fn build_maps(
     entries: &[(Key, Value)],
-) -> (imbl::OrdMap<Key, Value>, Arc<HamtNode<Key, Value>>) {
+) -> (
+    imbl::OrdMap<Key, Value>,
+    PersistentMap,
+    Arc<HamtNode<Key, Value>>,
+) {
     let ordmap: imbl::OrdMap<Key, Value> = entries.iter().cloned().collect();
+    let persistent: PersistentMap = entries.iter().cloned().collect();
     let hamt_root = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
         .expect("build should not collide");
-    (ordmap, hamt_root)
+    (ordmap, persistent, hamt_root)
 }
 
 /// Runs `f` `reps` times back to back and reports the average time per
@@ -141,13 +146,26 @@ fn bench_bulk_build(n: usize, entries: &[(Key, Value)]) {
         black_box(root);
     });
 
-    report_speedup(ordmap_elapsed, hamt_elapsed);
+    let persistent_elapsed = time_repeated(
+        &format!("PersistentOrdMap::from_iter (n={n})"),
+        reps,
+        || {
+            let map: PersistentMap = entries.iter().cloned().collect();
+            black_box(map);
+        },
+    );
+
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+        ("HAMT", hamt_elapsed),
+    ]);
 }
 
 /// Compares mixed hit and miss point lookups.
 fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
     println!("point lookup (n={n}, 50% hit / 50% miss):");
-    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
+    let (ordmap, persistent, hamt_root) = build_maps(entries);
 
     let mut rng = Xorshift128::new(0xF00D);
     let lookups: Vec<Key> = (0..5000)
@@ -175,13 +193,23 @@ fn bench_point_lookup(n: usize, entries: &[(Key, Value)]) {
         }
     });
 
-    report_speedup(ordmap_elapsed, hamt_elapsed);
+    let persistent_elapsed = time_once(&format!("PersistentOrdMap::get (n={n})"), op_count, || {
+        for k in &lookups {
+            black_box(persistent.get(k));
+        }
+    });
+
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+        ("HAMT", hamt_elapsed),
+    ]);
 }
 
 /// Compares path-copy inserts into an existing state map.
 fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
     println!("incremental insert on top of full map (n={n}):");
-    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
+    let (ordmap, persistent, hamt_root) = build_maps(entries);
 
     let mut rng = Xorshift128::new(0x00C0_FFEE);
     let new_keys: Vec<Key> = (0..1000)
@@ -225,13 +253,29 @@ fn bench_incremental_insert(n: usize, entries: &[(Key, Value)]) {
         },
     );
 
-    report_speedup(ordmap_elapsed, hamt_elapsed);
+    let persistent_elapsed = time_once(
+        &format!("PersistentOrdMap::update (fresh clone each op) (n={n})"),
+        op_count,
+        || {
+            for k in &new_keys {
+                let mut m = persistent.clone();
+                m.insert(k.clone(), "$new:example.org".to_string());
+                black_box(m);
+            }
+        },
+    );
+
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+        ("HAMT", hamt_elapsed),
+    ]);
 }
 
 /// Compares path-copy removals from an existing state map.
 fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
     println!("incremental remove from full map (n={n}):");
-    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
+    let (ordmap, persistent, hamt_root) = build_maps(entries);
 
     let victims: Vec<Key> = entries.iter().take(1000).map(|(k, _)| k.clone()).collect();
     let op_count = victims.len() as u32;
@@ -261,7 +305,23 @@ fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
         },
     );
 
-    report_speedup(ordmap_elapsed, hamt_elapsed);
+    let persistent_elapsed = time_once(
+        &format!("PersistentOrdMap::remove (fresh clone each op) (n={n})"),
+        op_count,
+        || {
+            for k in &victims {
+                let mut m = persistent.clone();
+                m.remove(k);
+                black_box(m);
+            }
+        },
+    );
+
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+        ("HAMT", hamt_elapsed),
+    ]);
 }
 
 /// Simulates state-resolution forking: clone the base map into `branches`
@@ -269,7 +329,7 @@ fn bench_incremental_remove(n: usize, entries: &[(Key, Value)]) {
 /// `resolve_state_maps`/conflict resolution actually exercises.
 fn bench_fork_and_diverge(n: usize, entries: &[(Key, Value)]) {
     println!("fork into 8 branches + 20 edits each (n={n}):");
-    let (ordmap, hamt_root) = build_ordmap_and_hamt(entries);
+    let (ordmap, persistent, hamt_root) = build_maps(entries);
 
     const BRANCHES: usize = 8;
     const EDITS_PER_BRANCH: usize = 20;
@@ -319,29 +379,121 @@ fn bench_fork_and_diverge(n: usize, entries: &[(Key, Value)]) {
         }
     });
 
-    report_speedup(ordmap_elapsed, hamt_elapsed);
+    let persistent_elapsed = time_once(
+        &format!("PersistentOrdMap fork+diverge (n={n})"),
+        op_count,
+        || {
+            let mut rng = Xorshift128::new(0xABCD);
+            for _ in 0..REPS {
+                for b in 0..BRANCHES {
+                    let mut branch = persistent.clone();
+                    for _ in 0..EDITS_PER_BRANCH {
+                        let key = (
+                            EventType::RoomMember,
+                            format!("@branch{b}user{}:example.org", rng.next_u64()),
+                        );
+                        branch.insert(key, "$edit:example.org".to_string());
+                    }
+                    black_box(branch);
+                }
+            }
+        },
+    );
+
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+        ("HAMT", hamt_elapsed),
+    ]);
 }
 
-/// Prints the relative elapsed-time result for a backend comparison.
-fn report_speedup(ordmap: Duration, hamt: Duration) {
-    let ordmap_ns = ordmap.as_nanos() as f64;
-    let hamt_ns = hamt.as_nanos() as f64;
-    let speedup = ordmap_ns / hamt_ns;
-    if speedup >= 1.0 {
-        println!("  => hamt is {speedup:.2}x faster than OrdMap\n");
-    } else {
-        println!("  => hamt is {:.2}x SLOWER than OrdMap\n", 1.0 / speedup);
+/// Compares forked states against a base using each backend's ordered diff.
+fn bench_diff(n: usize, entries: &[(Key, Value)]) {
+    println!("diff after 20 edits against base (n={n}):");
+    const EDITS: usize = 20;
+    let (ordmap, persistent, _) = build_maps(entries);
+    let mut ord_branch = ordmap.clone();
+    let mut persistent_branch = persistent.clone();
+    for i in 0..EDITS {
+        let key = (EventType::RoomMember, format!("@diff{i}:example.org"));
+        let value = format!("$diff{i}:example.org");
+        ord_branch.insert(key.clone(), value.clone());
+        persistent_branch.insert(key, value);
     }
+
+    let ordmap_elapsed = time_once(&format!("OrdMap::diff (n={n})"), EDITS as u32, || {
+        for _ in 0..EDITS {
+            black_box(ordmap.diff(&ord_branch).count());
+        }
+    });
+    let persistent_elapsed = time_once(
+        &format!("PersistentOrdMap::diff (n={n})"),
+        EDITS as u32,
+        || {
+            for _ in 0..EDITS {
+                black_box(persistent.diff(&persistent_branch).count());
+            }
+        },
+    );
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+    ]);
+}
+
+/// Measures full state-hash recomputation for the current backends.
+fn bench_state_hash(n: usize, entries: &[(Key, Value)]) {
+    println!("full state hash (n={n}):");
+    let (ordmap, persistent, _) = build_maps(entries);
+    let ordmap_elapsed = time_repeated(&format!("OrdMap state hash (n={n})"), 20, || {
+        let mut hash = blake3::Hasher::new();
+        for ((event_type, state_key), event_id) in &ordmap {
+            hash.update(event_type.as_str().as_bytes());
+            hash.update(state_key.as_bytes());
+            hash.update(event_id.as_bytes());
+        }
+        black_box(hash.finalize());
+    });
+    let persistent_elapsed =
+        time_repeated(&format!("PersistentOrdMap state hash (n={n})"), 20, || {
+            let mut hash = blake3::Hasher::new();
+            for ((event_type, state_key), event_id) in &persistent {
+                hash.update(event_type.as_str().as_bytes());
+                hash.update(state_key.as_bytes());
+                hash.update(event_id.as_bytes());
+            }
+            black_box(hash.finalize());
+        });
+    report_timings(&[
+        ("imbl", ordmap_elapsed),
+        ("PersistentOrdMap", persistent_elapsed),
+    ]);
+}
+
+/// Prints the elapsed time for each backend.
+fn report_timings(results: &[(&str, Duration)]) {
+    if let Some((baseline_name, baseline)) = results.first() {
+        for (name, elapsed) in results {
+            if *name == *baseline_name {
+                continue;
+            }
+            let ratio = elapsed.as_secs_f64() / baseline.as_secs_f64();
+            println!("  => {name} is {ratio:.2}x {baseline_name} time");
+        }
+    }
+    println!();
 }
 
 /// Runs the state-backend benchmark suite.
 pub fn run() {
-    for &n in &[16usize, 128, 1024, 8192] {
+    for &n in &[16usize, 128, 1024, 8192, 16384, 65536, 131072] {
         let entries = make_entries(n, 0x5EED_0000 + n as u64);
         bench_bulk_build(n, &entries);
         bench_point_lookup(n, &entries);
         bench_incremental_insert(n, &entries);
         bench_incremental_remove(n, &entries);
         bench_fork_and_diverge(n, &entries);
+        bench_diff(n, &entries);
+        bench_state_hash(n, &entries);
     }
 }
