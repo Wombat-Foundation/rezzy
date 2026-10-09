@@ -3,11 +3,11 @@
 //! `roaring` is a comparison baseline only; the library itself has no such
 //! dependency. Every case checks both implementations agree before timing.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::hint::black_box;
 use std::time::Instant;
 
-use rezzy::bitmap::Bitmap;
+use rezzy::bitmap::{Bitmap, Bitmap128, Bitmap64};
 use roaring::{RoaringBitmap, RoaringTreemap};
 
 struct Rng(u64);
@@ -117,80 +117,6 @@ fn dag_case(n: u32, fanout: u32, iters: u32) {
     );
 }
 
-/// Benchmark-only wide sets: the high bits key a `BTreeMap`, the low 32 bits
-/// live in a `Bitmap`. Not part of the library API.
-macro_rules! wide_set {
-    ($name:ident, $value:ty, $key:ty) => {
-        #[derive(Clone, Default, PartialEq, Eq)]
-        struct $name(BTreeMap<$key, Bitmap>);
-
-        impl $name {
-            fn insert(&mut self, v: $value) {
-                self.0
-                    .entry((v >> 32) as $key)
-                    .or_default()
-                    .insert(v as u32);
-            }
-            fn contains(&self, v: $value) -> bool {
-                self.0
-                    .get(&((v >> 32) as $key))
-                    .is_some_and(|b| b.contains(v as u32))
-            }
-            fn len(&self) -> u64 {
-                self.0.values().map(Bitmap::len).sum()
-            }
-            fn iter(&self) -> impl Iterator<Item = $value> + '_ {
-                self.0.iter().flat_map(|(hi, b)| {
-                    let hi = <$value>::from(*hi) << 32;
-                    b.iter().map(move |lo| hi | <$value>::from(lo))
-                })
-            }
-            fn or(&self, o: &Self) -> Self {
-                let mut out = self.clone();
-                for (k, b) in &o.0 {
-                    *out.0.entry(*k).or_default() |= b;
-                }
-                out
-            }
-            fn and(&self, o: &Self) -> Self {
-                let mut out = Self::default();
-                for (k, b) in &self.0 {
-                    if let Some(c) = o.0.get(k) {
-                        let r = b & c;
-                        if !r.is_empty() {
-                            out.0.insert(*k, r);
-                        }
-                    }
-                }
-                out
-            }
-            fn sub(&self, o: &Self) -> Self {
-                let mut out = Self::default();
-                for (k, b) in &self.0 {
-                    let r = o.0.get(k).map_or_else(|| b.clone(), |c| b.clone() - c);
-                    if !r.is_empty() {
-                        out.0.insert(*k, r);
-                    }
-                }
-                out
-            }
-        }
-
-        impl FromIterator<$value> for $name {
-            fn from_iter<I: IntoIterator<Item = $value>>(it: I) -> Self {
-                let mut s = Self::default();
-                for v in it {
-                    s.insert(v);
-                }
-                s
-            }
-        }
-    };
-}
-
-wide_set!(Bitmap64, u64, u32);
-wide_set!(Bitmap128, u128, u64);
-
 /// `n` values spread over `groups` distinct high-bit groups, `per_mille` dense
 /// within each group's first 200k low values.
 fn wide_values(rng: &mut Rng, groups: u32, per_mille: u64, hi_stride: u128) -> Vec<u128> {
@@ -207,7 +133,7 @@ fn wide_values(rng: &mut Rng, groups: u32, per_mille: u64, hi_stride: u128) -> V
 }
 
 fn wide_cases(rng: &mut Rng) {
-    println!("\nWide sets (high bits in a BTreeMap, low 32 bits in Bitmap)");
+    println!("\nBitmap64 / Bitmap128 (high bits in a BTreeMap, low 32 bits in Bitmap)");
     for &(groups, pm, label) in &[
         (4u32, 5u64, "sparse"),
         (4, 60, "boundary"),
@@ -226,9 +152,9 @@ fn wide_cases(rng: &mut Rng) {
             (a64.iter().copied().collect(), b64.iter().copied().collect());
         assert_eq!(wa.len(), ta.len());
         assert!(wa.iter().eq(ta.iter()));
-        assert!(wa.or(&wb).iter().eq((&ta | &tb).iter()));
-        assert!(wa.and(&wb).iter().eq((&ta & &tb).iter()));
-        assert!(wa.sub(&wb).iter().eq((&ta - &tb).iter()));
+        assert!((&wa | &wb).iter().eq((&ta | &tb).iter()));
+        assert!((&wa & &wb).iter().eq((&ta & &tb).iter()));
+        assert!((wa.clone() - &wb).iter().eq((&ta - &tb).iter()));
         row(
             &format!("u64 build {label} n={}", a64.len()),
             iters,
@@ -243,7 +169,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u64 or {label}"),
             iters,
             || {
-                black_box(wa.or(&wb));
+                black_box(&wa | &wb);
             },
             || {
                 black_box(&ta | &tb);
@@ -253,7 +179,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u64 and {label}"),
             iters,
             || {
-                black_box(wa.and(&wb));
+                black_box(&wa & &wb);
             },
             || {
                 black_box(&ta & &tb);
@@ -263,7 +189,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u64 sub {label}"),
             iters,
             || {
-                black_box(wa.sub(&wb));
+                black_box((wa.clone() - &wb));
             },
             || {
                 black_box(&ta - &tb);
@@ -295,11 +221,11 @@ fn wide_cases(rng: &mut Rng) {
             (a.iter().copied().collect(), b.iter().copied().collect());
         let (sa, sb): (BTreeSet<u128>, BTreeSet<u128>) =
             (a.iter().copied().collect(), b.iter().copied().collect());
-        assert_eq!(xa.len(), sa.len() as u64);
+        assert_eq!(xa.len(), sa.len() as u128);
         assert!(xa.iter().eq(sa.iter().copied()));
-        assert!(xa.or(&xb).iter().eq(sa.union(&sb).copied()));
-        assert!(xa.and(&xb).iter().eq(sa.intersection(&sb).copied()));
-        assert!(xa.sub(&xb).iter().eq(sa.difference(&sb).copied()));
+        assert!((&xa | &xb).iter().eq(sa.union(&sb).copied()));
+        assert!((&xa & &xb).iter().eq(sa.intersection(&sb).copied()));
+        assert!((xa.clone() - &xb).iter().eq(sa.difference(&sb).copied()));
         row(
             &format!("u128 build {label} n={} (vs BTreeSet)", a.len()),
             iters,
@@ -314,7 +240,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u128 or {label} (vs BTreeSet)"),
             iters,
             || {
-                black_box(xa.or(&xb));
+                black_box(&xa | &xb);
             },
             || {
                 black_box(sa.union(&sb).copied().collect::<BTreeSet<u128>>());
@@ -324,7 +250,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u128 and {label} (vs BTreeSet)"),
             iters,
             || {
-                black_box(xa.and(&xb));
+                black_box(&xa & &xb);
             },
             || {
                 black_box(sa.intersection(&sb).copied().collect::<BTreeSet<u128>>());
@@ -334,7 +260,7 @@ fn wide_cases(rng: &mut Rng) {
             &format!("u128 sub {label} (vs BTreeSet)"),
             iters,
             || {
-                black_box(xa.sub(&xb));
+                black_box((xa.clone() - &xb));
             },
             || {
                 black_box(sa.difference(&sb).copied().collect::<BTreeSet<u128>>());

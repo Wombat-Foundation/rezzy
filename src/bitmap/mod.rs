@@ -15,6 +15,10 @@
     reason = "indices are bounded by the 16-bit split and 1024-word bitsets"
 )]
 
+pub use self::wide::{Bitmap128, Bitmap64, Iter128, Iter64};
+
+mod wide;
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -578,9 +582,17 @@ impl BitAnd<&Bitmap> for &Bitmap {
     type Output = Bitmap;
 
     fn bitand(self, rhs: &Bitmap) -> Bitmap {
-        let mut out = self.clone();
-        out &= rhs;
-        out
+        // Build the result directly: cloning `self` first would copy every
+        // chunk that the intersection then discards or rewrites.
+        let mut chunks = Vec::new();
+        let mut theirs = rhs.chunks.iter().peekable();
+        for chunk in &self.chunks {
+            while theirs.next_if(|o| o.key < chunk.key).is_some() {}
+            if let Some(o) = theirs.next_if(|o| o.key == chunk.key) {
+                chunks.extend(chunk.intersection(o).map(Arc::new));
+            }
+        }
+        Bitmap { chunks }
     }
 }
 
