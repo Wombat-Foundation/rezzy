@@ -39,13 +39,13 @@ use crate::state::at::{
     take_finalized_parent, MergeContext, SharedState,
 };
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
+use core::borrow::Borrow;
+use core::fmt;
+use core::hash::BuildHasher;
 use std::collections::VecDeque;
 use std::string::{String, ToString};
 use std::vec;
 use std::vec::Vec;
-use core::borrow::Borrow;
-use core::fmt;
-use core::hash::BuildHasher;
 
 /// Status of a State DAG traversal starting from one or more events.
 pub enum StateDagCompleteness<Id> {

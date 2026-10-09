@@ -20,12 +20,12 @@
 //!   names were removed (no aliases remain), so downstream code must use the
 //!   new names; at the time of the rename neither had any caller.
 
-use std::{sync::Arc, vec, vec::Vec};
 use core::{
     borrow::Borrow,
     fmt,
     hash::{Hash, Hasher},
 };
+use std::{sync::Arc, vec, vec::Vec};
 
 pub mod audit;
 pub mod codec;

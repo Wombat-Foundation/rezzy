@@ -37,9 +37,9 @@ use crate::{
     state::delta::{ResolutionDelta, ResolvePhase},
     FastMap, HashMap,
 };
-use std::vec::Vec;
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
+use std::vec::Vec;
 
 /// The V2 iterative cascade has no V3 semantics. Keep this guard at every
 /// internal terminal entry point so `tk.nutra.cdo.12` cannot silently resolve
@@ -1459,7 +1459,7 @@ mod tests {
             auth_events: vec![
                 "$create".to_string(),
                 "$admin_join".to_string(),
-                "$pl".to_string()
+                "$pl".to_string(),
             ],
             ..Default::default()
         };
@@ -1485,7 +1485,7 @@ mod tests {
                 "$create".to_string(),
                 "$admin_join".to_string(),
                 "$bob_join".to_string(),
-                "$pl".to_string()
+                "$pl".to_string(),
             ],
             ..Default::default()
         };
@@ -1575,7 +1575,7 @@ mod tests {
             auth_events: vec![
                 "$create".to_string(),
                 "$bob_join".to_string(),
-                "$pl".to_string()
+                "$pl".to_string(),
             ],
             ..Default::default()
         };
@@ -1588,7 +1588,7 @@ mod tests {
             auth_events: vec![
                 "$create".to_string(),
                 "$carol_join".to_string(),
-                "$pl".to_string()
+                "$pl".to_string(),
             ],
             ..Default::default()
         };
@@ -1653,7 +1653,7 @@ mod tests {
             auth_events: vec![
                 "$create".to_string(),
                 "$alice_join".to_string(),
-                "$pl".to_string()
+                "$pl".to_string(),
             ],
             ..Default::default()
         };

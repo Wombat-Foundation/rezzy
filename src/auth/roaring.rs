@@ -10,11 +10,11 @@ use crate::DenseIndex;
 use crate::FastMap;
 use crate::HashMap;
 use crate::LeanEvent;
+use roaring::RoaringBitmap;
 use std::collections::VecDeque;
 use std::string::String;
 use std::vec;
 use std::vec::Vec;
-use roaring::RoaringBitmap;
 
 /// A topologically-ordered auth DAG with pre-computed transitive reachability bitmaps.
 ///

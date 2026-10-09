@@ -467,10 +467,7 @@ mod tests {
                 let mut state = StateMap::new();
                 for j in 1..=i {
                     state.insert(
-                        (
-                            "m.room.member".into(),
-                            format!("@user_{j}:example.com"),
-                        ),
+                        ("m.room.member".into(), format!("@user_{j}:example.com")),
                         format!("${j}"),
                     );
                 }
@@ -698,9 +695,7 @@ mod tests {
         };
 
         // 5 events, all producing the same state (non-state events)
-        let states: ResolvedStates = (1..=5)
-            .map(|i| (format!("${i}"), state.clone()))
-            .collect();
+        let states: ResolvedStates = (1..=5).map(|i| (format!("${i}"), state.clone())).collect();
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
         assert_eq!(checkpoints.len(), 5);

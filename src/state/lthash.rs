@@ -67,9 +67,9 @@
 //!   algebraic traits, and tri-mode output (lattice / digest / both).
 //! - [`RedactionOverlay`] and [`PduLtHash`] are thin domain layers over it.
 
-use std::vec::Vec;
 use core::iter::{Extend, FromIterator, Sum};
 use core::ops::{Add, AddAssign, Sub, SubAssign};
+use std::vec::Vec;
 
 /// A homomorphic lattice hash over `LANES` 16-bit lanes.
 ///

@@ -79,8 +79,8 @@
 //! this module exists to avoid paying in production; it's affordable only
 //! as a debug/test-time correctness check, not on the hot path.
 
-use std::vec::Vec;
 use core::fmt;
+use std::vec::Vec;
 
 use crate::{HashMap, HashSet};
 

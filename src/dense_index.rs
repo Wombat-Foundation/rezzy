@@ -16,8 +16,8 @@
 //! overflow-free `usize` indexing).
 
 use crate::HashMap;
-use std::vec::Vec;
 use core::fmt;
+use std::vec::Vec;
 
 #[cfg(test)]
 std::thread_local! {

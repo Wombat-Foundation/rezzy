@@ -540,11 +540,11 @@ impl<'a> SketchBuilder<'a> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use core::fmt;
     use std::collections::BTreeMap;
     use std::string::String;
     use std::vec;
     use std::vec::Vec;
-    use core::fmt;
 
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     struct MockId(String);

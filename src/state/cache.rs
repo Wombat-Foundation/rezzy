@@ -53,10 +53,10 @@
 
 use crate::basespec::rezzy_types::{EventContent, EventId, EventProvider, LeanEvent};
 use crate::HashMap;
-use std::collections::BTreeMap;
-use std::sync::Arc;
 use core::borrow::Borrow;
 use core::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A fixed-capacity LRU cache for pre-constructed [`LeanEvent`]s.
 ///
@@ -64,9 +64,9 @@ use core::cell::{Cell, RefCell};
 /// cache exceeds capacity, the least-recently-used entry is evicted.
 ///
 /// The cache is **not** internally synchronized — callers must wrap it in a
-/// `Mutex` or `RwLock` for concurrent access. This keeps the core `no_std`
-/// compatible while allowing `std` users to choose their synchronization
-/// strategy.
+/// `Mutex` or `RwLock` for concurrent access. This keeps the core free of any
+/// synchronization policy while allowing callers to choose their
+/// synchronization strategy.
 ///
 /// # Implementation
 ///

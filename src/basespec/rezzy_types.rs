@@ -16,13 +16,13 @@
 
 use crate::json::Value;
 use crate::{FastSet, HashMap};
+use base64::Engine as _;
+use core::cmp::Ordering;
+use sha2::{Digest, Sha256};
 use std::string::String;
 use std::string::ToString;
 use std::sync::Arc;
 use std::vec::Vec;
-use base64::Engine as _;
-use core::cmp::Ordering;
-use sha2::{Digest, Sha256};
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
@@ -3294,7 +3294,9 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         // String only for oversized Display forms (pre-v11 warning path).
         let mut id_buf = [0u8; 256];
         let id_fallback;
-        let id_len = if let Some(n) = write_display_into(&mut id_buf, &self.event_id) { n } else {
+        let id_len = if let Some(n) = write_display_into(&mut id_buf, &self.event_id) {
+            n
+        } else {
             id_fallback = format!("{}", self.event_id);
             id_fallback.len()
         };
@@ -3350,7 +3352,9 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     {
         let mut id_buf = [0u8; 256];
         let id_fallback;
-        let event_id: &str = if let Some(n) = write_display_into(&mut id_buf, &self.event_id) { core::str::from_utf8(&id_buf[..n]).unwrap_or("") } else {
+        let event_id: &str = if let Some(n) = write_display_into(&mut id_buf, &self.event_id) {
+            core::str::from_utf8(&id_buf[..n]).unwrap_or("")
+        } else {
             id_fallback = format!("{}", self.event_id);
             id_fallback.as_str()
         };

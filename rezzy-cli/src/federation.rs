@@ -50,13 +50,13 @@ impl ureq::unversioned::resolver::Resolver for SrvResolver {
     ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
         use std::net::ToSocketAddrs;
         let host = uri.host().ok_or(ureq::Error::HostNotFound)?;
-        let port = uri
-            .port_u16()
-            .unwrap_or(if uri.scheme_str() == Some("http") {
+        let port = uri.port_u16().unwrap_or_else(|| {
+            if uri.scheme_str() == Some("http") {
                 80
             } else {
                 443
-            });
+            }
+        });
         let netloc = format!("{host}:{port}");
         let target = srv_targets()
             .lock()
@@ -559,13 +559,10 @@ fn srv_lookup(destination: &str) -> (Option<String>, bool) {
     let mut failed = false;
     for service in ["_matrix-fed._tcp", "_matrix._tcp"] {
         let name = format!("{service}.{destination}");
-        let found = match dig_srv(&name) {
-            Ok(found) => found,
-            Err(()) => {
-                failed = true;
-                None
-            }
-        };
+        let found = dig_srv(&name).unwrap_or_else(|()| {
+            failed = true;
+            None
+        });
         if let Some((target, port)) = found {
             if let Ok(mut targets) = srv_targets().lock() {
                 targets.insert(format!("{destination}:443"), format!("{target}:{port}"));
@@ -600,7 +597,7 @@ fn dig_srv(name: &str) -> Result<Option<(String, u16)>, ()> {
         };
         if best
             .as_ref()
-            .map_or(true, |(best_priority, _, _)| priority < *best_priority)
+            .is_none_or(|(best_priority, _, _)| priority < *best_priority)
         {
             best = Some((priority, target.trim_end_matches('.').to_owned(), port));
         }
@@ -1008,7 +1005,7 @@ fn fetch_dag_batch(
     let empty = value
         .get("pdus")
         .and_then(JsonValue::as_array)
-        .map_or(true, Vec::is_empty);
+        .is_none_or(Vec::is_empty);
     if empty && dag_request.no_fallback {
         state.unresolved.extend(ids.iter().cloned());
         return Ok(DagBatch::Stop);

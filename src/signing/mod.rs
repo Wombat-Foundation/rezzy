@@ -156,9 +156,7 @@ pub fn verify_event_signatures_from_server(
         .map_err(|e| format!("failed to compute canonical redacted JSON: {e}"))?
         .into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
-        return Err(std::string::String::from(
-            "event has no signatures object",
-        ));
+        return Err(std::string::String::from("event has no signatures object"));
     };
     let mut verified_any = false;
     for (server, keys) in signatures {
@@ -174,9 +172,7 @@ pub fn verify_event_signatures_from_server(
             }
             verified_any = true;
             let Some(sig_str) = sig.as_str() else {
-                return Err(format!(
-                    "signature for {server}/{key_id} is not a string"
-                ));
+                return Err(format!("signature for {server}/{key_id} is not a string"));
             };
             let sig_bytes = base64::engine::general_purpose::STANDARD_NO_PAD
                 .decode(sig_str)
@@ -284,10 +280,10 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
 mod consensus_tests {
     use super::*;
     use crate::json;
-    use std::format;
-    use std::vec::Vec;
     use base64::Engine as _;
     use ed25519_zebra::SigningKey;
+    use std::format;
+    use std::vec::Vec;
 
     fn signed_event(
         mut value: Value,

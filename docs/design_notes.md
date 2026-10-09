@@ -59,8 +59,9 @@ Under the hood:
   32× CPU amplification across the full decode pass.
 - **Generic type decoupling**: Parameterized over `Id: EventId`, `K: StateKey`,
   `C: EventContent`, and `S: BuildHasher`.
-- **`no_std` compatible**: Pure `#![no_std]` core with `alloc` support and zero
-  system dependencies.
+- **`std`-based**: The workspace targets the Rust standard library directly;
+  no `#![no_std]` attribute or `extern crate alloc` / `extern crate std`
+  declarations remain.
 
 ## Synchronous model
 

@@ -165,7 +165,7 @@ where
 }
 
 /// Re-exported hashmap and hashset — uses `std::collections` when `std` is
-/// enabled, falls back to `hashbrown` for `no_std` targets.
+/// enabled, falls back to `hashbrown` when the `std` feature is disabled.
 ///
 /// All resolution functions are generic over `BuildHasher`, so this is
 /// purely a convenience for callers who don't need a specific hasher.

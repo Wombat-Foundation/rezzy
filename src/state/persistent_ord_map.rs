@@ -14,12 +14,12 @@
 //!   bound (exclusive) on every key in `children[i]`;
 //! - removal never rebalances: an emptied child is dropped and a root with a
 //!   single child is collapsed, so non-root nodes may be under-full.
-use std::{sync::Arc, vec, vec::Vec};
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt;
 use core::mem;
 use core::ops::{Bound, Index, RangeBounds};
+use std::{sync::Arc, vec, vec::Vec};
 
 /// Maximum entries in a leaf and children in an internal node.
 const MAX_FANOUT: usize = 24;

@@ -1,8 +1,8 @@
 //! Matrix Event Type Constants
 
+use core::fmt;
 use std::string::String;
 use std::sync::Arc;
-use core::fmt;
 
 pub const M_ROOM_MEMBER: &str = "m.room.member";
 pub const M_ROOM_POWER_LEVELS: &str = "m.room.power_levels";
@@ -407,10 +407,12 @@ mod event_type_tests {
             Some(core::cmp::Ordering::Less)
         );
 
-        let mut values = [EventType::RoomMessage,
+        let mut values = [
+            EventType::RoomMessage,
             EventType::from("a.custom.type"),
             EventType::RoomCreate,
-            EventType::from("z.custom.type")];
+            EventType::from("z.custom.type"),
+        ];
         values.sort();
         let strs: Vec<&str> = values.iter().map(EventType::as_str).collect();
         let mut expected = strs.clone();

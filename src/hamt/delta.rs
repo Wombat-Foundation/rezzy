@@ -1,7 +1,7 @@
 //! Subtree differencing and mutation delta tracking for HAMT tries.
 
-use std::{sync::Arc, vec::Vec};
 use core::{fmt, hash::Hash};
+use std::{sync::Arc, vec::Vec};
 
 use crate::state::LtHash;
 

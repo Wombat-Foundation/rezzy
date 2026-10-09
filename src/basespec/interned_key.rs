@@ -16,8 +16,8 @@
 //! the `StateKeyDyn` `(ev_type, state_key)` lexicographic ordering contract
 //! unconditionally — independent of interning order.
 
-use std::rc::Rc;
 use core::fmt;
+use std::rc::Rc;
 
 use crate::auth::StateProvider;
 use crate::basespec::rezzy_types::LeanEvent;
@@ -283,10 +283,10 @@ where
 mod tests {
     use super::*;
     use crate::auth::StateProvider;
+    use core::hash::BuildHasher;
     use std::string::ToString;
     use std::vec;
     use std::vec::Vec;
-    use core::hash::BuildHasher;
 
     /// A minimal member `LeanEvent` keyed by an interned state key, shared by
     /// the `StateProvider` tests below.

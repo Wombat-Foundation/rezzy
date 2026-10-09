@@ -26,11 +26,11 @@
 
 use crate::basespec::rezzy_types::{EventId, LeanEvent};
 use crate::{DenseIndex, FastMap, HashMap};
+use core::hash::BuildHasher;
+use roaring::RoaringBitmap;
 use std::collections::{BTreeSet, VecDeque};
 use std::vec;
 use std::vec::Vec;
-use core::hash::BuildHasher;
-use roaring::RoaringBitmap;
 
 /// Tri-state reachability answer.
 ///

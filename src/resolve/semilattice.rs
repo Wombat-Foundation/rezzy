@@ -57,8 +57,8 @@ use crate::{
     state::at::{compute_local_auth, iterative_auth_ok, LocalAuthCache, SharedState},
     HashMap,
 };
-use std::string::String;
 use core::hash::BuildHasher;
+use std::string::String;
 
 /// Determines whether `ev` beats `current_winner` under the Least Upper Bound (LUB)
 /// tie-breaking rules.

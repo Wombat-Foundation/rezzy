@@ -114,9 +114,7 @@ pub fn verify_sequential(
             .map_err(|e| format!("failed to compute canonical redacted JSON: {e}"))?
             .into_bytes();
         let Some(sigs_map) = value.get("signatures").and_then(Value::as_object) else {
-            return Err(std::string::String::from(
-                "event has no signatures object",
-            ));
+            return Err(std::string::String::from("event has no signatures object"));
         };
 
         let Some(origin) = super::expected_event_signer(value, room_version) else {
@@ -137,9 +135,7 @@ pub fn verify_sequential(
                     continue;
                 };
                 let Some(sig_str) = sig_val.as_str() else {
-                    return Err(format!(
-                        "signature for {server}/{key_id} is not a string"
-                    ));
+                    return Err(format!("signature for {server}/{key_id} is not a string"));
                 };
                 let raw = base64::engine::general_purpose::STANDARD_NO_PAD
                     .decode(sig_str)

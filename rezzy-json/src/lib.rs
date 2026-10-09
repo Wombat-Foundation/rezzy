@@ -29,15 +29,15 @@
 //! strings: that is the only encoding which is canonical, interoperable, and
 //! lossless. See `docs/json_numeric_limits.md` for the full matrix.
 
+use core::{
+    fmt,
+    ops::{Index, IndexMut},
+};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
     string::{String, ToString},
     vec::Vec,
-};
-use core::{
-    fmt,
-    ops::{Index, IndexMut},
 };
 
 /// A JSON object, keyed in sorted order (by key, not by source order), which

@@ -15,8 +15,8 @@
 
 use crate::dense_index::{DenseIndex, IndexTooLarge};
 use crate::HashSet;
-use std::{sync::Arc, vec::Vec};
 use core::fmt;
+use std::{sync::Arc, vec::Vec};
 
 use roaring::RoaringBitmap;
 

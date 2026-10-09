@@ -9,10 +9,10 @@
 // results consistent with the upstream Ruma state resolution implementation.
 mod utils;
 
-use std::string::String;
-use std::vec::Vec;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
+use std::string::String;
+use std::vec::Vec;
 use utils::to_event_map;
 
 /// Load a JSON fixture file into a Vec<LeanEvent>, accepting either a bare

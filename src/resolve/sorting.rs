@@ -13,9 +13,9 @@
 // limitations under the License.
 
 //! Topological and mainline sorting for Matrix state resolution.
+use core::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::vec::Vec;
-use core::cmp::Ordering;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
 use crate::basespec::rezzy_types::{

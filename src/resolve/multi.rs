@@ -839,11 +839,7 @@ mod tests {
 
     /// The canonical two-fork disagreement scenario shared by the concrete and
     /// lazy resolver parity tests.
-    fn two_fork_scenario() -> (
-        HashMap<std::string::String, LeanEvent>,
-        StateMap,
-        StateMap,
-    ) {
+    fn two_fork_scenario() -> (HashMap<std::string::String, LeanEvent>, StateMap, StateMap) {
         let mut events: HashMap<std::string::String, LeanEvent> = HashMap::new();
         events.insert("$create".into(), create_ev());
         events.insert("$alice_join".into(), join_ev("$alice_join", "@alice:x"));

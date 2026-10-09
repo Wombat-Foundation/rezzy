@@ -71,9 +71,9 @@ use crate::basespec::event_types::{
 };
 use crate::basespec::rezzy_types::{EventContent, EventId, EventVerifier, StateKey};
 use crate::{HashMap, LeanEvent, SharedState};
-use std::{string::ToString, vec::Vec};
 use core::borrow::Borrow;
 use core::hash::BuildHasher;
+use std::{string::ToString, vec::Vec};
 
 /// The non-grindable portion of the V3 concurrent-writer ordering.
 ///

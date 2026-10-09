@@ -15,9 +15,9 @@
 //! Raw event spans and selective field extraction primitives for high-throughput
 //! JSON ingestion and Matrix DAG processing without full DOM allocation.
 
+use rezzy_json::{FieldMask, Token, Tokenizer, TokenizerError, Value as JsonValue, ValueType};
 use std::string::{String, ToString};
 use std::vec::Vec;
-use rezzy_json::{FieldMask, Token, Tokenizer, TokenizerError, Value as JsonValue, ValueType};
 
 /// Byte slice range representing a raw event in an input buffer.
 #[derive(Clone, Copy)]

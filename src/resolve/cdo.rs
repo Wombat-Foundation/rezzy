@@ -73,11 +73,11 @@ use crate::basespec::event_types::{
 };
 use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use crate::HashMap;
-use std::collections::BTreeSet;
-use std::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::hash::BuildHasher;
+use std::collections::BTreeSet;
+use std::vec::Vec;
 
 /// Returns `true` if `possible_ancestor_id` is an ancestor of `child_id`.
 ///

@@ -14,13 +14,13 @@
 
 //! The MSC4521 `algebraic_v1` set reconciliation profile.
 
-use std::{string::String, vec, vec::Vec};
 use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
     Engine as _,
 };
 use core::fmt::Write as _;
 use sha2::{Digest as Sha2Digest, Sha256};
+use std::{string::String, vec, vec::Vec};
 
 pub use super::gf64::mul as gf64_mul;
 

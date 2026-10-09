@@ -20,10 +20,10 @@
 pub mod roaring;
 pub mod user;
 
+use core::fmt;
 use std::collections::VecDeque;
 use std::string::{String, ToString};
 use std::vec::Vec;
-use core::fmt;
 
 use crate::basespec::event_types::{
     DEFAULT_PL_BAN, DEFAULT_PL_INVITE, DEFAULT_PL_KICK, DEFAULT_PL_REDACT, FIELD_MEMBERSHIP,
@@ -932,10 +932,9 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
                 let mut invalid_additional_creator = None;
                 new_content.visit_user_keys(&mut |user_id| {
                     if create_content.has_additional_creator(user_id) {
-                        invalid_additional_creator =
-                            Some(AuthError::InvalidSyntax(format!(
-                                "m.room.power_levels users contains additional_creator {user_id}"
-                            )));
+                        invalid_additional_creator = Some(AuthError::InvalidSyntax(format!(
+                            "m.room.power_levels users contains additional_creator {user_id}"
+                        )));
                     }
                 });
                 if let Some(e) = invalid_additional_creator {

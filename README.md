@@ -1,7 +1,6 @@
 # rezzy
 
-Matrix state resolution engine, in Rust. `no_std` core, synchronous by design,
-no I/O.
+Matrix state resolution engine, in Rust. Synchronous by design, no I/O.
 
 Reference implementation of state resolution `v2`, `v2.1` and `v2.1.1`, plus
 experimental V2.2 ([MSC4242]).

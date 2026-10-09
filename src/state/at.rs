@@ -32,13 +32,13 @@ use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
 };
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
+use core::borrow::Borrow;
+use core::hash::BuildHasher;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::string::String;
 use std::sync::Arc;
 use std::vec::Vec;
-use core::borrow::Borrow;
-use core::hash::BuildHasher;
 
 /// Event context passed to state computation: event IDs mapped to their events.
 pub(crate) type EventMap<Id, C, K, S> = HashMap<Id, LeanEvent<Id, C, K>, S>;
@@ -2803,9 +2803,9 @@ mod tests {
     use crate::auth::StateProvider;
     use crate::basespec::event_types::M_ROOM_POWER_LEVELS;
     use crate::json;
+    use std::collections::BTreeSet;
     use std::string::ToString;
     use std::vec;
-    use std::collections::BTreeSet;
 
     /// Collects events into an id-keyed map for the fixtures below.
     fn test_events_map(events: std::vec::Vec<LeanEvent>) -> HashMap<String, LeanEvent> {

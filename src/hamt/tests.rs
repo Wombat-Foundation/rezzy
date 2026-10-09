@@ -3,7 +3,6 @@ use crate::hamt::codec::PersistedInternalNode;
 use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
 use crate::state::LtHash;
-use std::{boxed::Box, vec};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use std::collections::BTreeSet;
@@ -12,6 +11,7 @@ use std::error::Error as _;
 #[cfg(feature = "std")]
 use std::format;
 use std::sync::Arc;
+use std::{boxed::Box, vec};
 
 macro_rules! impl_u64_hamt_codec {
     ($ty:ty) => {
@@ -879,7 +879,7 @@ fn test_persist_mutations_and_chain_with_key_hash() {
     let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
         .expect("build with custom hash should work");
 
-    let batch: Vec<(u64, Option<u64>)> = vec![(100, Some(1)), (5, None), (101, Some(2)),];
+    let batch: Vec<(u64, Option<u64>)> = vec![(100, Some(1)), (5, None), (101, Some(2))];
 
     let (batched_root, displaced_vec, created) =
         crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
@@ -3643,8 +3643,8 @@ fn test_bitmap_audit_error_display_and_conversions() {
 #[test]
 #[cfg(feature = "std")]
 fn test_bitmap_audit_error_source_and_downcast() {
-    use std::string::ToString;
     use std::error::Error as _;
+    use std::string::ToString;
 
     // Universe variant: `source()` returns the wrapped UniverseTooLarge.
     let universe_err = crate::hamt::audit::UniverseTooLarge {

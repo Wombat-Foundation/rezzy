@@ -1,8 +1,8 @@
 //! Dense binary serialization and deserialization for persisted HAMT nodes.
 
 use super::hash::StructuralHash;
-use std::{string::String, vec::Vec};
 use core::hash::Hash;
+use std::{string::String, vec::Vec};
 
 /// Magic prefix for a persisted HAMT node record.
 pub const HAMT_NODE_MAGIC: &[u8; 4] = b"MTHN";
