@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::vec::Vec;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
-use crate::errors::HashError;
+use crate::errors::{HashError, VerifyError};
 
 type SyntacticWarnings<Id> = Vec<crate::warnings::Warning<Id>>;
 
@@ -2753,7 +2753,7 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), std::string::String> {
+    fn verify_event_id_hash<'a>(&'a self, _event_id: &'a Id) -> Result<(), VerifyError<'a>> {
         Ok(())
     }
 
@@ -2762,7 +2762,7 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_signatures(&self, _event_id: &Id) -> Result<(), std::string::String> {
+    fn verify_signatures<'a>(&'a self, _event_id: &'a Id) -> Result<(), VerifyError<'a>> {
         Ok(())
     }
 
@@ -2771,7 +2771,7 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_content_hash(&self, _event_id: &Id) -> Result<(), std::string::String> {
+    fn verify_content_hash<'a>(&'a self, _event_id: &'a Id) -> Result<(), VerifyError<'a>> {
         Ok(())
     }
 
@@ -2780,11 +2780,11 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_third_party_invite(
-        &self,
-        _event_id: &Id,
-        _tpi_token: &str,
-    ) -> Result<(), std::string::String> {
+    fn verify_third_party_invite<'a>(
+        &'a self,
+        _event_id: &'a Id,
+        _tpi_token: &'a str,
+    ) -> Result<(), VerifyError<'a>> {
         Ok(())
     }
 
@@ -2796,12 +2796,12 @@ pub trait EventVerifier<Id> {
     ///
     /// # Errors
     /// Return `Err(reason)` to reject the event.
-    fn verify_join_authorised_via_users_server(
-        &self,
-        _event_id: &Id,
-        _authorising_user: &str,
-    ) -> Result<(), std::string::String> {
-        Err(std::string::String::from(
+    fn verify_join_authorised_via_users_server<'a>(
+        &'a self,
+        _event_id: &'a Id,
+        _authorising_user: &'a str,
+    ) -> Result<(), VerifyError<'a>> {
+        Err(VerifyError::Reason(
             "verifier does not support join_authorised_via_users_server signatures",
         ))
     }

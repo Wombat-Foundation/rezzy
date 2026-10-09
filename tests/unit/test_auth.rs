@@ -2447,24 +2447,30 @@ impl rezzy::EventVerifier<String> for PassThroughVerifier {}
 /// A verifier that rejects on `verify_event_id_hash`.
 struct RejectEventIdHash;
 impl rezzy::EventVerifier<String> for RejectEventIdHash {
-    fn verify_event_id_hash(&self, _event_id: &String) -> Result<(), String> {
-        Err("bad event id hash".into())
+    fn verify_event_id_hash(
+        &self,
+        _event_id: &String,
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad event id hash"))
     }
 }
 
 /// A verifier that rejects on `verify_signatures`.
 struct RejectSignatures;
 impl rezzy::EventVerifier<String> for RejectSignatures {
-    fn verify_signatures(&self, _event_id: &String) -> Result<(), String> {
-        Err("bad signature".into())
+    fn verify_signatures(&self, _event_id: &String) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad signature"))
     }
 }
 
 /// A verifier that rejects on `verify_content_hash`.
 struct RejectContentHash;
 impl rezzy::EventVerifier<String> for RejectContentHash {
-    fn verify_content_hash(&self, _event_id: &String) -> Result<(), String> {
-        Err("bad content hash".into())
+    fn verify_content_hash(
+        &self,
+        _event_id: &String,
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad content hash"))
     }
 }
 
@@ -2475,8 +2481,8 @@ impl rezzy::EventVerifier<String> for RejectThirdPartyInvite {
         &self,
         _event_id: &String,
         _tpi_token: &str,
-    ) -> Result<(), String> {
-        Err("bad 3pi signature".into())
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad 3pi signature"))
     }
 }
 

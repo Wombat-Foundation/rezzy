@@ -800,8 +800,13 @@ mod tests {
 
     struct RejectVerifier;
     impl EventVerifier<String> for RejectVerifier {
-        fn verify_event_id_hash(&self, _event_id: &String) -> Result<(), String> {
-            Err(String::from("deliberate test rejection"))
+        fn verify_event_id_hash(
+            &self,
+            _event_id: &String,
+        ) -> Result<(), crate::errors::VerifyError<'_>> {
+            Err(crate::errors::VerifyError::Reason(
+                "deliberate test rejection",
+            ))
         }
     }
 

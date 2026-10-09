@@ -602,11 +602,11 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
     // implementation; this layer only sequences the checks.
     if let Some(v) = verifier {
         v.verify_event_id_hash(event.event_id())
-            .map_err(AuthError::InvalidSyntax)?;
+            .map_err(|e| AuthError::InvalidSyntax(e.to_string()))?;
         v.verify_signatures(event.event_id())
-            .map_err(AuthError::InvalidSyntax)?;
+            .map_err(|e| AuthError::InvalidSyntax(e.to_string()))?;
         v.verify_content_hash(event.event_id())
-            .map_err(AuthError::InvalidSyntax)?;
+            .map_err(|e| AuthError::InvalidSyntax(e.to_string()))?;
     }
 
     // Rule 1: m.room.create must be the first event
@@ -1718,7 +1718,7 @@ fn check_invite_rules<E: EventLike>(
         // Optional verification pipeline (step 4): 3PI signature verification.
         if let Some(v) = verifier {
             v.verify_third_party_invite(event.event_id(), token)
-                .map_err(AuthError::InvalidSyntax)?;
+                .map_err(|e| AuthError::InvalidSyntax(e.to_string()))?;
         }
 
         if mxid != target_user {
@@ -1910,7 +1910,7 @@ fn check_authorising_user<Id: EventId, C: EventContent, E: EventLike<Id = Id, Co
     if let Some(verifier) = verifier {
         verifier
             .verify_join_authorised_via_users_server(event.event_id(), authorising_user)
-            .map_err(AuthError::InvalidSyntax)?;
+            .map_err(|e| AuthError::InvalidSyntax(e.to_string()))?;
     }
 
     Ok(())

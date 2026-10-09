@@ -223,22 +223,37 @@ impl<Id, K: SignatureVerifier> NativeVerifier<Id, K> {
 impl<Id: core::hash::Hash + Eq + AsRef<str>, K> NativeVerifier<Id, K> {
     /// Looks up the raw PDU for `event_id`, or the shared "unknown event"
     /// error every `EventVerifier` method starts with.
-    fn event(&self, event_id: &Id) -> Result<&Value, String> {
+    fn event<'a>(&'a self, event_id: &'a Id) -> Result<&'a Value, crate::errors::VerifyError<'a>> {
         self.events
             .get(event_id)
-            .ok_or_else(|| format!("unknown event {}", event_id.as_ref()))
+            .ok_or(crate::errors::VerifyError::UnknownEvent {
+                event_id: event_id.as_ref(),
+            })
     }
 }
 
 impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier<Id>
     for NativeVerifier<Id, K>
 {
-    fn verify_event_id_hash(&self, event_id: &Id) -> Result<(), String> {
+    fn verify_event_id_hash<'a>(
+        &'a self,
+        event_id: &'a Id,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
         if matches!(self.room_version.as_str(), "1" | "2") {
             Ok(())
         } else {
-            let expected = crate::basespec::rezzy_types::reference_hash(value, &self.room_version)?;
+            use crate::basespec::rezzy_types::{
+                encode_hash_slice, reference_hash_bytes, HASH_B64_MAX_LEN,
+            };
+            use crate::errors::VerifyError;
+
+            let digest =
+                reference_hash_bytes(value, &self.room_version).map_err(VerifyError::Hash)?;
+            let mut buf = [0u8; HASH_B64_MAX_LEN];
+            let n = encode_hash_slice(&digest, &self.room_version, &mut buf)
+                .map_err(VerifyError::Hash)?;
+            let expected = core::str::from_utf8(&buf[..n]).unwrap_or("");
             let actual = event_id
                 .as_ref()
                 .strip_prefix('$')
@@ -246,35 +261,44 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             if actual == expected {
                 return Ok(());
             }
-            Err(format!(
-                "event id hash mismatch for {}: expected {expected}",
-                event_id.as_ref()
-            ))
+            Err(VerifyError::EventIdHashMismatch {
+                event_id: event_id.as_ref(),
+                expected: expected.into(),
+            })
         }
     }
 
-    fn verify_signatures(&self, event_id: &Id) -> Result<(), String> {
+    fn verify_signatures<'a>(
+        &'a self,
+        event_id: &'a Id,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
-        verify_event_signatures(value, &self.room_version, &self.verifier).map_err(String::from)
+        verify_event_signatures(value, &self.room_version, &self.verifier)
+            .map_err(crate::errors::VerifyError::Sign)
     }
 
-    fn verify_join_authorised_via_users_server(
-        &self,
-        event_id: &Id,
-        authorising_user: &str,
-    ) -> Result<(), String> {
+    fn verify_join_authorised_via_users_server<'a>(
+        &'a self,
+        event_id: &'a Id,
+        authorising_user: &'a str,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
+        use crate::errors::VerifyError;
+
         let server = crate::basespec::rezzy_types::extract_domain(authorising_user)
             .filter(|server| !server.is_empty())
-            .ok_or_else(|| format!("invalid authorising user ID {authorising_user}"))?;
+            .ok_or(VerifyError::InvalidAuthorisingUser { authorising_user })?;
         let value = self.event(event_id)?;
         verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
-            .map_err(String::from)
+            .map_err(VerifyError::Sign)
     }
 
-    fn verify_content_hash(&self, event_id: &Id) -> Result<(), String> {
+    fn verify_content_hash<'a>(
+        &'a self,
+        event_id: &'a Id,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
         crate::basespec::rezzy_types::verify_content_hash(value, &self.room_version)
-            .map_err(String::from)
+            .map_err(crate::errors::VerifyError::Hash)
     }
 }
 

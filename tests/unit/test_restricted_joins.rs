@@ -85,8 +85,10 @@ impl rezzy::EventVerifier<String> for RejectAuthorisingSignature {
         &self,
         _event_id: &String,
         _authorising_user: &str,
-    ) -> Result<(), String> {
-        Err("missing authorising-server signature".into())
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason(
+            "missing authorising-server signature",
+        ))
     }
 }
 

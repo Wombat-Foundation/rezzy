@@ -29,9 +29,9 @@ use std::string::ToString;
 
 use crate::basespec::rezzy_types::{CanonicalizationError, HASH_B64_MAX_LEN};
 
-/// The computed half of a content-hash mismatch: a base64 digest stored in a
-/// fixed inline buffer so the error can escape the local buffer it was
-/// encoded into inside `verify_content_hash`.
+/// The computed or expected half of a hash mismatch: a base64 digest stored
+/// in a fixed inline buffer so the error can escape the local buffer it was
+/// encoded into (e.g. inside `verify_content_hash`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ComputedHash {
     buf: [u8; HASH_B64_MAX_LEN],
@@ -258,6 +258,66 @@ impl fmt::Display for SignError<'_> {
 /// errors `String` until the `VerifyError` trait conversion.
 impl From<SignError<'_>> for String {
     fn from(err: SignError<'_>) -> Self {
+        err.to_string()
+    }
+}
+
+/// Errors returned by the [`EventVerifier`](crate::EventVerifier) pipeline.
+///
+/// Payloads are borrowed or inline, so building and displaying an error
+/// performs no allocation. [`VerifyError::Reason`] lets custom verifier
+/// implementations carry their own borrowed rejection reason; the built-in
+/// `NativeVerifier` paths report structured variants.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VerifyError<'a> {
+    /// A caller-supplied rejection reason from a custom verifier impl.
+    Reason(&'a str),
+    /// The verifier holds no stored event for this ID.
+    UnknownEvent {
+        /// The unresolvable event ID.
+        event_id: &'a str,
+    },
+    /// The event ID does not match the reference hash of the event body.
+    EventIdHashMismatch {
+        /// The event ID that failed to match.
+        event_id: &'a str,
+        /// The recomputed reference hash (base64, no `$` prefix).
+        expected: ComputedHash,
+    },
+    /// The authorising user ID yields no usable server domain.
+    InvalidAuthorisingUser {
+        /// The rejected authorising user ID.
+        authorising_user: &'a str,
+    },
+    /// Signature verification failed.
+    Sign(SignError<'a>),
+    /// Hashing or canonicalization of the event failed.
+    Hash(HashError<'a>),
+}
+
+impl fmt::Display for VerifyError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reason(reason) => f.write_str(reason),
+            Self::UnknownEvent { event_id } => write!(f, "unknown event {event_id}"),
+            Self::EventIdHashMismatch { event_id, expected } => write!(
+                f,
+                "event id hash mismatch for {event_id}: expected {}",
+                expected.as_str()
+            ),
+            Self::InvalidAuthorisingUser { authorising_user } => {
+                write!(f, "invalid authorising user ID {authorising_user}")
+            }
+            Self::Sign(err) => fmt::Display::fmt(err, f),
+            Self::Hash(err) => fmt::Display::fmt(err, f),
+        }
+    }
+}
+
+/// Transitional bridge: `AuthError::InvalidSyntax` still holds a formatted
+/// `String` until the structured `AuthError` conversion.
+impl From<VerifyError<'_>> for String {
+    fn from(err: VerifyError<'_>) -> Self {
         err.to_string()
     }
 }
