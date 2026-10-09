@@ -378,8 +378,7 @@ pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(
 ///
 /// Build the inputs with [`intern_events`](crate::intern_events), which
 /// allocates each event id and state key once and shares it everywhere.
-pub type FastSharedState =
-    SharedState<alloc::sync::Arc<str>, crate::InternedKey>;
+pub type FastSharedState = SharedState<alloc::sync::Arc<str>, crate::InternedKey>;
 
 /// Computes the resolved room state *after* a given event.
 ///
