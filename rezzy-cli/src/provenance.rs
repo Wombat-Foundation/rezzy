@@ -234,6 +234,10 @@ pub fn build_sidecar(
 ///
 /// The binding lets readers reject a sidecar published beside a different
 /// aggregate generation after a crash or interrupted two-file commit.
+///
+/// # Errors
+/// Returns an error when a record cannot be written or an event cannot be
+/// serialized to canonical JSON.
 pub fn build_sidecar_bound(
     sources: &[SourceInfo],
     observations: &[(usize, RawObservation)],

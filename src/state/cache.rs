@@ -63,10 +63,13 @@ use std::sync::Arc;
 /// Events are stored as `Arc<LeanEvent<Id, C>>` for cheap cloning. When the
 /// cache exceeds capacity, the least-recently-used entry is evicted.
 ///
-/// The cache is **not** internally synchronized — callers must wrap it in a
-/// `Mutex` or `RwLock` for concurrent access. This keeps the core free of any
-/// synchronization policy while allowing callers to choose their
-/// synchronization strategy.
+/// The cache is **not** internally synchronized and is not [`Sync`]: its LRU
+/// bookkeeping uses [`RefCell`] and [`Cell`]. For cross-thread access wrap it
+/// in a [`std::sync::Mutex`], not a [`std::sync::RwLock`] -- `RwLock<T>` is
+/// only [`Sync`] when `T` is both [`Send`] and [`Sync`], so an `RwLock` around
+/// this cache could not be shared across threads either, whereas `Mutex<T>`
+/// needs only `T: Send`. This keeps the core free of any synchronization
+/// policy while allowing callers to choose their synchronization strategy.
 ///
 /// # Implementation
 ///

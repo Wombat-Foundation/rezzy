@@ -405,7 +405,7 @@ where
                 let pl_edge = node.dag_edges(version).iter().find(|aid| {
                     auth_context
                         .get_event(aid)
-                        .is_some_and(|a| a.event_type().as_ref() == M_ROOM_POWER_LEVELS)
+                        .is_some_and(|a| a.event_type() == M_ROOM_POWER_LEVELS)
                 });
                 if let Some(aid) = pl_edge {
                     if let Some(&child_pos) = memo.get(aid) {
@@ -626,23 +626,23 @@ mod tests {
     /// PL edge, and must not make the event inherit a position via other edges.
     #[test]
     fn test_closest_mainline_missing_pl_event_clamps_to_len() {
-        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mainline: Vec<String> = vec!["pl0".into()];
         let mem = LeanEvent::<String> {
             event_id: "mem".into(),
             event_type: "m.room.member".into(),
-            auth_events: alloc::vec![],
+            auth_events: vec![],
             ..Default::default()
         };
         let ev = LeanEvent::<String> {
             event_id: "ev".into(),
             event_type: "m.room.topic".into(),
-            auth_events: alloc::vec!["pl_missing".into(), "mem".into()],
+            auth_events: vec!["pl_missing".into(), "mem".into()],
             ..Default::default()
         };
         let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
         ctx.insert("mem".into(), mem);
         ctx.insert("ev".into(), ev.clone());
-        let mut events = alloc::vec![&ev];
+        let mut events = vec![&ev];
         let dist =
             compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2_1);
         assert_eq!(dist["ev"], 1);
@@ -652,26 +652,26 @@ mod tests {
     /// newer must take the OLD PL's position (the V2.1 state-reset scenario).
     #[test]
     fn test_closest_mainline_uses_own_pl_edge_not_min_over_edges() {
-        let mainline: Vec<String> = alloc::vec!["pl_new".into(), "pl_old".into()];
+        let mainline: Vec<String> = vec!["pl_new".into(), "pl_old".into()];
         let pl_old = pl_event("pl_old");
         let pl_new = pl_event("pl_new");
         let mem_new = LeanEvent::<String> {
             event_id: "mem_new".into(),
             event_type: "m.room.member".into(),
-            auth_events: alloc::vec!["pl_new".into()],
+            auth_events: vec!["pl_new".into()],
             ..Default::default()
         };
         let mem_old = LeanEvent::<String> {
             event_id: "mem_old".into(),
             event_type: "m.room.member".into(),
-            auth_events: alloc::vec!["pl_old".into(), "mem_new".into()],
+            auth_events: vec!["pl_old".into(), "mem_new".into()],
             ..Default::default()
         };
         let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
         for e in [&pl_old, &pl_new, &mem_new, &mem_old] {
             ctx.insert(e.event_id.clone(), e.clone());
         }
-        let mut events = alloc::vec![&mem_old, &mem_new];
+        let mut events = vec![&mem_old, &mem_new];
         let dist =
             compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2_1);
         assert_eq!(dist["mem_new"], 0);

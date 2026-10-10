@@ -361,6 +361,39 @@ fn nul_in_field_name_rejected() {
 }
 
 #[test]
+fn oversized_field_name_rejected_before_error_payload() {
+    // Names longer than `FieldName::MAX_LEN` cannot be stored exactly, so the
+    // validated entry points reject them instead of truncating. Otherwise two
+    // distinct over-long names sharing a prefix would compare equal once the
+    // derived `Eq` on `MerkleError` sees the truncated `FieldName`.
+    let long = "a".repeat(merkle::FieldName::MAX_LEN + 1);
+    assert_eq!(
+        merkle::leaf_hash(&long, b"null").unwrap_err(),
+        MerkleError::InvalidFieldName
+    );
+    assert_eq!(
+        merkle::leaf_hash_bytes(long.as_bytes(), b"null").unwrap_err(),
+        MerkleError::InvalidFieldName
+    );
+    assert_eq!(
+        merkle::component_hash(&long, &json!("v")).unwrap_err(),
+        MerkleError::InvalidFieldName
+    );
+
+    // `leaf_path` validates before it can report `FieldNotFound`, so the
+    // oversized name never reaches the error payload.
+    let fields = [Field::new("depth", json!(7))];
+    assert!(matches!(
+        merkle::leaf_path(&fields, &long),
+        Err(MerkleError::InvalidFieldName)
+    ));
+
+    // A name exactly at the cap is still accepted.
+    let exact = "b".repeat(merkle::FieldName::MAX_LEN);
+    assert!(merkle::leaf_hash(&exact, b"null").is_ok());
+}
+
+#[test]
 fn valid_field_name_bytes_match_str_leaf_hash() {
     let canonical = br#"{"body":"hello"}"#;
 

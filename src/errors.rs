@@ -146,9 +146,10 @@ impl fmt::Display for HashError<'_> {
     }
 }
 
-/// Transitional bridge: boundary traits (such as the signing
-/// `EventVerifier` impls) still spell their errors `String`. They are
-/// converted to structured error types in a later phase.
+/// Compatibility conversion to `String` for callers that still surface
+/// `HashError` through a `String`-typed error boundary (for example the
+/// signing `EventVerifier` impls). The conversion itself is unchanged; only
+/// the boundary spelling differs from the structured type.
 impl From<HashError<'_>> for String {
     fn from(err: HashError<'_>) -> Self {
         err.to_string()
@@ -254,8 +255,10 @@ impl fmt::Display for SignError<'_> {
     }
 }
 
-/// Transitional bridge: the signing `EventVerifier` impls still spell their
-/// errors `String` until the `VerifyError` trait conversion.
+/// Compatibility conversion to `String` for callers that still surface
+/// `SignError` through a `String`-typed error boundary (the signing
+/// `EventVerifier` impls). [`VerifyError`] is the structured counterpart those
+/// impls migrate to; this conversion is unchanged.
 impl From<SignError<'_>> for String {
     fn from(err: SignError<'_>) -> Self {
         err.to_string()
@@ -314,8 +317,10 @@ impl fmt::Display for VerifyError<'_> {
     }
 }
 
-/// Transitional bridge: `AuthError::InvalidSyntax` still holds a formatted
-/// `String` until the structured `AuthError` conversion.
+/// Compatibility conversion to `String` for callers that still surface
+/// `VerifyError` through a `String`-typed error boundary. It is what lets
+/// `AuthError::InvalidSyntax` keep holding a borrowed `&'a str` reason
+/// while still accepting a structured verification failure.
 impl From<VerifyError<'_>> for String {
     fn from(err: VerifyError<'_>) -> Self {
         err.to_string()
