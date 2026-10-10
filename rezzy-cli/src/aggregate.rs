@@ -697,7 +697,12 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     sort_events(&mut events)?;
     let output = output_bytes(&events)?;
     let sidecar = if options.provenance {
-        Some(build_sidecar(&inputs, &events, room_version.as_deref())?)
+        Some(build_sidecar(
+            &inputs,
+            &events,
+            room_version.as_deref(),
+            Some(&provenance::sha256_hex(&output)),
+        )?)
     } else {
         None
     };
@@ -786,6 +791,7 @@ fn build_sidecar(
     inputs: &[RawInput],
     events: &[rezzy::JsonValue],
     room_version: Option<&str>,
+    aggregate_sha256: Option<&str>,
 ) -> Result<Vec<u8>, AppError> {
     let sources: Vec<SourceInfo> = inputs.iter().map(|input| input.source.clone()).collect();
     let mut observations = Vec::new();
@@ -798,12 +804,13 @@ fn build_sidecar(
         .iter()
         .find_map(|event| event.get("room_id").and_then(rezzy::JsonValue::as_str))
         .map(str::to_owned);
-    provenance::build_sidecar(
+    provenance::build_sidecar_bound(
         &sources,
         &observations,
         events,
         room_id.as_deref(),
         room_version,
+        aggregate_sha256,
     )
 }
 

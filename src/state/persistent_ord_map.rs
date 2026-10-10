@@ -495,7 +495,6 @@ where
     }
 }
 
-/// Removes `key`, which the caller has already checked is present.
 /// Removes `key` in a single descent, copying the path only if the key exists.
 ///
 /// An unshared node is edited in place (nothing is modified until the leaf

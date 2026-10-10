@@ -354,8 +354,8 @@ where
     mainline
 }
 
-/// Precompute the closest mainline position for every target event reachable via
-/// `auth_events` using a stack-safe O(V+E) iterative DFS upward search.
+/// Precompute the closest mainline position for every target event, following
+/// only each event's `m.room.power_levels` auth edge, using a stack-safe O(V+E) iterative DFS upward search.
 ///
 /// This entirely avoids `O(N)` cloning of the DAG, and prevents stack overflow
 /// by using an explicit stack to simulate recursion while memoizing distances.
@@ -395,11 +395,22 @@ where
             let mut all_children_done = true;
             let mut min_pos = usize::MAX;
 
+            // Spec (V2/V2.1): an event's mainline position is found by
+            // repeatedly following only its `m.room.power_levels` auth event
+            // (the first one listed), NOT every auth edge. Taking the min over
+            // all edges lets an event that cites a newer-epoch membership
+            // inherit that epoch. An event with no PL auth edge (create, early
+            // joins) has no mainline ancestor and clamps to `mainline.len()`.
             if let Some(node) = auth_context.get_event(top) {
-                for aid in node.dag_edges(version) {
+                let pl_edge = node.dag_edges(version).iter().find(|aid| {
+                    auth_context
+                        .get_event(aid)
+                        .is_some_and(|a| a.event_type().as_ref() == M_ROOM_POWER_LEVELS)
+                });
+                if let Some(aid) = pl_edge {
                     if let Some(&child_pos) = memo.get(aid) {
                         if child_pos != usize::MAX - 1 {
-                            min_pos = min_pos.min(child_pos);
+                            min_pos = child_pos;
                         }
                     } else {
                         all_children_done = false;
@@ -429,7 +440,7 @@ where
 ///
 /// The mainline is the chain of `m.room.power_levels` events reachable from
 /// the currently resolved PL state. Each event's "mainline position" is the
-/// closest PL event in its auth chain. The sort order is:
+/// closest mainline PL event reached via its power-levels auth link. The sort order is:
 ///
 /// 1. **Mainline position** descending (farther = worse = applied first).
 /// 2. **`origin_server_ts`** ascending (earlier = applied first, later wins).
@@ -585,9 +596,10 @@ mod tests {
         assert_eq!(dist["msg"], 0);
     }
 
-    /// Deep auth chain: event → intermediate → mainline event.
+    /// Per spec only the `power_levels` auth edge is followed: leaf → mid → pl0
+    /// has no PL edge on `leaf`, so it has no mainline ancestor.
     #[test]
-    fn test_closest_mainline_deep_chain() {
+    fn test_closest_mainline_ignores_non_pl_edges() {
         let pl = pl_event("pl0");
         let mid = LeanEvent::<String> {
             event_id: "mid".into(),
@@ -607,7 +619,63 @@ mod tests {
         ctx.insert("leaf".into(), leaf.clone());
 
         let dist = closest_position(&leaf, &ctx);
-        assert_eq!(dist["leaf"], 0);
+        assert_eq!(dist["leaf"], 1, "no PL edge => mainline.len()");
+    }
+
+    /// A PL auth id that is absent from `auth_context` is not recognised as a
+    /// PL edge, and must not make the event inherit a position via other edges.
+    #[test]
+    fn test_closest_mainline_missing_pl_event_clamps_to_len() {
+        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mem = LeanEvent::<String> {
+            event_id: "mem".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let ev = LeanEvent::<String> {
+            event_id: "ev".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["pl_missing".into(), "mem".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        ctx.insert("mem".into(), mem);
+        ctx.insert("ev".into(), ev.clone());
+        let mut events = alloc::vec![&ev];
+        let dist =
+            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2_1);
+        assert_eq!(dist["ev"], 1);
+    }
+
+    /// An event citing old PL directly plus a member event whose own PL is
+    /// newer must take the OLD PL's position (the V2.1 state-reset scenario).
+    #[test]
+    fn test_closest_mainline_uses_own_pl_edge_not_min_over_edges() {
+        let mainline: Vec<String> = alloc::vec!["pl_new".into(), "pl_old".into()];
+        let pl_old = pl_event("pl_old");
+        let pl_new = pl_event("pl_new");
+        let mem_new = LeanEvent::<String> {
+            event_id: "mem_new".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["pl_new".into()],
+            ..Default::default()
+        };
+        let mem_old = LeanEvent::<String> {
+            event_id: "mem_old".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["pl_old".into(), "mem_new".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        for e in [&pl_old, &pl_new, &mem_new, &mem_old] {
+            ctx.insert(e.event_id.clone(), e.clone());
+        }
+        let mut events = alloc::vec![&mem_old, &mem_new];
+        let dist =
+            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2_1);
+        assert_eq!(dist["mem_new"], 0);
+        assert_eq!(dist["mem_old"], 1);
     }
 
     /// `mainline_sort` must order events by mainline position (descending),

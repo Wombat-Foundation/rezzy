@@ -4,12 +4,6 @@
 //! [`Bitmap`], so all chunk-level behaviour (array/bitset containers,
 //! copy-on-write sharing, canonical form) is inherited. Empty inner bitmaps are
 //! never stored, so `==` is structural.
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    trivial_numeric_casts,
-    reason = "the 32-bit split keeps every shift and truncation in range"
-)]
 
 use super::Bitmap;
 use core::fmt;
@@ -27,6 +21,13 @@ macro_rules! wide_bitmap {
         }
 
         impl $name {
+            fn split(value: $value) -> ($key, u32) {
+                let key = <$key>::try_from(value >> 32).expect("wide bitmap key fits");
+                let low = u32::try_from(value & <$value>::from(u32::MAX))
+                    .expect("wide bitmap low half fits");
+                (key, low)
+            }
+
             /// Creates an empty set.
             #[must_use]
             pub const fn new() -> Self {
@@ -48,26 +49,28 @@ macro_rules! wide_bitmap {
             /// Returns `true` if `value` is in the set.
             #[must_use]
             pub fn contains(&self, value: $value) -> bool {
+                let (key, low) = Self::split(value);
                 self.map
-                    .get(&((value >> 32) as $key))
-                    .is_some_and(|b| b.contains(value as u32))
+                    .get(&key)
+                    .is_some_and(|b| b.contains(low))
             }
 
             /// Adds `value`, returning `true` if it was not already present.
             pub fn insert(&mut self, value: $value) -> bool {
+                let (key, low) = Self::split(value);
                 self.map
-                    .entry((value >> 32) as $key)
+                    .entry(key)
                     .or_default()
-                    .insert(value as u32)
+                    .insert(low)
             }
 
             /// Removes `value`, returning `true` if it was present.
             pub fn remove(&mut self, value: $value) -> bool {
-                let key = (value >> 32) as $key;
+                let (key, low) = Self::split(value);
                 let Some(bitmap) = self.map.get_mut(&key) else {
                     return false;
                 };
-                let removed = bitmap.remove(value as u32);
+                let removed = bitmap.remove(low);
                 if bitmap.is_empty() {
                     self.map.remove(&key);
                 }
@@ -98,6 +101,15 @@ macro_rules! wide_bitmap {
                     }
                     btree_map::Entry::Occupied(mut slot) => *slot.get_mut() |= &bitmap,
                 }
+            }
+
+            fn subtract_assign(&mut self, rhs: &Self) {
+                self.map.retain(|k, b| {
+                    if let Some(o) = rhs.map.get(k) {
+                        b.subtract_assign(o);
+                    }
+                    !b.is_empty()
+                });
             }
 
             /// Iterates the values in ascending order.
@@ -145,17 +157,17 @@ macro_rules! wide_bitmap {
                 // key changes.
                 let mut current: Option<($key, Bitmap)> = None;
                 for v in iter {
-                    let key = (v >> 32) as $key;
+                    let (key, low) = Self::split(v);
                     match &mut current {
                         Some((k, bitmap)) if *k == key => {
-                            bitmap.insert(v as u32);
+                            bitmap.insert(low);
                         }
                         _ => {
                             if let Some((k, bitmap)) = current.take() {
                                 self.absorb(k, bitmap);
                             }
                             let mut bitmap = Bitmap::new();
-                            bitmap.insert(v as u32);
+                            bitmap.insert(low);
                             current = Some((key, bitmap));
                         }
                     }
@@ -202,12 +214,7 @@ macro_rules! wide_bitmap {
 
         impl SubAssign<&Self> for $name {
             fn sub_assign(&mut self, rhs: &Self) {
-                self.map.retain(|k, b| {
-                    if let Some(o) = rhs.map.get(k) {
-                        *b -= o;
-                    }
-                    !b.is_empty()
-                });
+                self.subtract_assign(rhs);
             }
         }
 
@@ -242,7 +249,7 @@ macro_rules! wide_bitmap {
             type Output = Self;
 
             fn sub(mut self, rhs: &Self) -> Self {
-                self -= rhs;
+                self.subtract_assign(rhs);
                 self
             }
         }
@@ -251,7 +258,9 @@ macro_rules! wide_bitmap {
             type Output = Self;
 
             fn sub(self, rhs: Self) -> Self {
-                self - &rhs
+                let mut out = self;
+                out.subtract_assign(&rhs);
+                out
             }
         }
     };
@@ -295,7 +304,8 @@ mod tests {
     fn gen(rng: &mut Rng, groups: u64, pm: u64, stride: u64) -> BTreeSet<u128> {
         let mut out = BTreeSet::new();
         for g in 0..groups {
-            let base = (u128::from(g * stride) << 32) | (u128::from(g) << 100);
+            let base = (u128::from(g.checked_mul(stride).expect("test value fits u64")) << 32)
+                | (u128::from(g) << 100);
             for v in 0..40_000u32 {
                 if rng.next() % 1000 < pm {
                     out.insert(base | u128::from(v));

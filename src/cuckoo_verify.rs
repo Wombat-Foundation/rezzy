@@ -24,6 +24,9 @@ pub const EDGE_BITS: u32 = 29;
 pub const PROOF_SIZE: usize = 42;
 pub const NEDGES: u64 = 1_u64 << EDGE_BITS;
 pub const EDGE_MASK: u64 = NEDGES - 1;
+/// Node indices use the same width as edge indices for this algorithm.
+pub const NODE_BITS: u32 = 29;
+pub const NODE_MASK: u64 = (1_u64 << NODE_BITS) - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyError {
@@ -411,7 +414,7 @@ impl SipHashState {
 }
 
 fn sipnode(keys: SipHashKeys, edge: u64, uorv: u64) -> u64 {
-    keys.siphash24(edge.wrapping_mul(2).wrapping_add(uorv)) & ((1_u64 << (EDGE_BITS - 1)) - 1)
+    keys.siphash24(edge.wrapping_mul(2).wrapping_add(uorv)) & NODE_MASK
 }
 
 fn next_u64_le(chunks: &mut core::slice::ChunksExact<'_, u8>) -> u64 {

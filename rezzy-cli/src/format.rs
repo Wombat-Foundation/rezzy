@@ -24,6 +24,7 @@ use rezzy::auth::{apply_authorized_redactions_with_state_at, RedactionReport, Ro
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 
 /// Everything an output formatter needs from one state-resolution run.
@@ -863,7 +864,7 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     room_version: Option<&str>,
 ) -> Result<Option<StreamOrderIndex>, AppError> {
     let explicit = args.metadata.clone();
-    let paths: Vec<PathBuf> = explicit.as_ref().map_or_else(
+    let paths: Vec<(PathBuf, Option<PathBuf>)> = explicit.as_ref().map_or_else(
         || {
             args.input
                 .iter()
@@ -871,11 +872,14 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
                     path.extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
                 })
-                .map(|path| provenance::sidecar_path(path))
-                .filter(|path| path.is_file())
+                .map(|path| (provenance::sidecar_path(path), Some(path.clone())))
+                .filter(|(path, _)| path.is_file())
                 .collect()
         },
-        |path| vec![path.clone()],
+        |path| {
+            let aggregate = (args.input.len() == 1).then(|| args.input[0].clone());
+            vec![(path.clone(), aggregate)]
+        },
     );
     if paths.is_empty() {
         warn_once(
@@ -891,8 +895,9 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     let mut index = StreamOrderIndex::default();
     let mut missing = 0_usize;
     let mut mismatched = 0_usize;
+    let mut unbound = 0_usize;
     let mut room_mismatch = 0_usize;
-    for path in &paths {
+    for (path, aggregate_path) in &paths {
         let sidecar = if explicit.is_some() {
             provenance::load_sidecar(path)?
         } else {
@@ -913,6 +918,29 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
         {
             room_mismatch = room_mismatch.saturating_add(1);
             continue;
+        }
+        if let Some(aggregate_path) = aggregate_path.as_deref() {
+            match sidecar.aggregate_sha256.as_deref() {
+                Some(expected) => match fs::read(aggregate_path) {
+                    Ok(bytes) if provenance::sha256_hex(&bytes) == expected => {}
+                    Ok(_) => {
+                        mismatched = mismatched.saturating_add(1);
+                        continue;
+                    }
+                    Err(error) => {
+                        warn_once(
+                            args.quiet,
+                            &format!(
+                                "cannot validate aggregate binding for {}: {error}",
+                                aggregate_path.display()
+                            ),
+                        );
+                        mismatched = mismatched.saturating_add(1);
+                        continue;
+                    }
+                },
+                None => unbound = unbound.saturating_add(1),
+            }
         }
         if expected_room_id.is_some()
             && sidecar
@@ -951,11 +979,11 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
         );
         return Ok(None);
     }
-    if missing > 0 || mismatched > 0 || room_mismatch > 0 {
+    if missing > 0 || mismatched > 0 || room_mismatch > 0 || unbound > 0 {
         warn_once(
             args.quiet,
             &format!(
-                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload mismatch, {room_mismatch} room/version mismatch); those events sort after events with a known stream order"
+                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload/generation mismatch, {unbound} legacy unbound, {room_mismatch} room/version mismatch); those events sort after events with a known stream order"
             ),
         );
     }

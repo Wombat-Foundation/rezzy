@@ -227,8 +227,26 @@ pub fn build_sidecar(
     room_id: Option<&str>,
     room_version: Option<&str>,
 ) -> Result<Vec<u8>, AppError> {
+    build_sidecar_bound(sources, observations, events, room_id, room_version, None)
+}
+
+/// Serializes a sidecar and binds its manifest to the aggregate bytes.
+///
+/// The binding lets readers reject a sidecar published beside a different
+/// aggregate generation after a crash or interrupted two-file commit.
+pub fn build_sidecar_bound(
+    sources: &[SourceInfo],
+    observations: &[(usize, RawObservation)],
+    events: &[JsonValue],
+    room_id: Option<&str>,
+    room_version: Option<&str>,
+    aggregate_sha256: Option<&str>,
+) -> Result<Vec<u8>, AppError> {
     let mut out = Vec::new();
-    write_record(&mut out, &manifest_record(sources, room_id, room_version))?;
+    write_record(
+        &mut out,
+        &manifest_record(sources, room_id, room_version, aggregate_sha256),
+    )?;
 
     let mut by_event: BTreeMap<&str, Vec<(usize, &RawObservation)>> = BTreeMap::new();
     for (source_index, observation) in observations {
@@ -267,6 +285,7 @@ fn manifest_record(
     sources: &[SourceInfo],
     room_id: Option<&str>,
     room_version: Option<&str>,
+    aggregate_sha256: Option<&str>,
 ) -> JsonValue {
     let mut manifest = JsonObject::new();
     manifest.insert(
@@ -277,6 +296,10 @@ fn manifest_record(
     manifest.insert(String::from("schema_version"), rezzy::json!(SCHEMA_VERSION));
     manifest.insert(String::from("room_id"), optional_string(room_id));
     manifest.insert(String::from("room_version"), optional_string(room_version));
+    manifest.insert(
+        String::from("aggregate_sha256"),
+        optional_string(aggregate_sha256),
+    );
     manifest.insert(
         String::from("inputs"),
         JsonValue::Array(sources.iter().map(source_record).collect()),
@@ -524,6 +547,8 @@ pub struct LoadedSidecar {
     pub room_id: Option<String>,
     /// Manifest `room_version`, if present.
     pub room_version: Option<String>,
+    /// SHA-256 of the aggregate file this sidecar was generated with.
+    pub aggregate_sha256: Option<String>,
     /// Event records by `event_id`.
     pub events: BTreeMap<String, SidecarEvent>,
 }
@@ -560,6 +585,7 @@ pub fn load_sidecar(path: &Path) -> Result<LoadedSidecar, AppError> {
         path: path.to_owned(),
         room_id: None,
         room_version: None,
+        aggregate_sha256: None,
         events: BTreeMap::new(),
     };
     for (index, segment) in bytes.split(|byte| *byte == b'\n').enumerate() {
@@ -579,6 +605,10 @@ pub fn load_sidecar(path: &Path) -> Result<LoadedSidecar, AppError> {
                     .map(str::to_owned);
                 loaded.room_version = value
                     .get("room_version")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_owned);
+                loaded.aggregate_sha256 = value
+                    .get("aggregate_sha256")
                     .and_then(JsonValue::as_str)
                     .map(str::to_owned);
             }

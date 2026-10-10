@@ -637,7 +637,14 @@ impl SyndromeSketch {
         if encoded.len() != expected_encoded_len {
             return Err(AlgebraicError::InvalidSketchLength);
         }
-        let mut bytes = [0_u8; MAX_SKETCH_CAPACITY * 8];
+        if capacity <= MAX_SKETCH_CAPACITY {
+            let mut bytes = [0_u8; MAX_SKETCH_CAPACITY * 8];
+            let length = decode_base64(&URL_SAFE_NO_PAD, encoded, &mut bytes)
+                .map_err(|_| AlgebraicError::InvalidBase64)?;
+            return Self::from_encoded_bytes(capacity, &bytes[..length]);
+        }
+
+        let mut bytes = vec![0_u8; expected_len];
         let length = decode_base64(&URL_SAFE_NO_PAD, encoded, &mut bytes)
             .map_err(|_| AlgebraicError::InvalidBase64)?;
         Self::from_encoded_bytes(capacity, &bytes[..length])
@@ -917,6 +924,15 @@ mod tests {
             SyndromeSketch::decode_overflow(0, ""),
             Err(AlgebraicError::InvalidSketchCapacity)
         );
+    }
+
+    #[test]
+    fn overflow_decode_round_trips_capacity_above_standard_limit() {
+        let sketch = SyndromeSketch::new_overflow(64).unwrap();
+        let encoded = sketch.encode();
+        let decoded = SyndromeSketch::decode_overflow(64, &encoded).unwrap();
+        assert_eq!(decoded.capacity(), 64);
+        assert_eq!(decoded.encode(), encoded);
     }
 
     #[test]
