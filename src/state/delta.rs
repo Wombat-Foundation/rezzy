@@ -21,7 +21,7 @@
 use std::string::{String, ToString};
 use std::vec::Vec;
 
-pub use super::lthash::{compute_state_hash, LtHash};
+use super::lthash::compute_state_hash;
 
 /// Which phase of state resolution produced a delta.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn test_checkpoint_hex_validation() {
         // Checkpoint hashes use fixed-width hexadecimal strings at persistence boundaries.
-        let _def = LtHash::default();
+        let _def = crate::incremental::LtHash::default();
         // Non-ASCII but exactly 64 bytes in length (32 copies of 'ä', which is 2 bytes each)
         let non_ascii_64_bytes = "ääääääääääääääääääääääääääääääää";
         assert_eq!(non_ascii_64_bytes.len(), 64);

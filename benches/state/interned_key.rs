@@ -52,8 +52,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use rezzy::{
-    compute_state_at, compute_state_at_batch, EventId, InternedKey, JsonValue, LeanEvent,
-    StateKey, StateResVersion,
+    compute_state_at, compute_state_at_batch, EventId, InternedKey, JsonValue, LeanEvent, StateKey,
+    StateResVersion,
 };
 
 use crate::common::{join_rules_event, member_event, new_room_with_power_levels};

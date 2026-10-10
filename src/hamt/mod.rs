@@ -811,7 +811,7 @@ where
 /// Returns the same build errors as [`build_hamt`].
 pub fn build_hamt_root_handle<K, V, I>(
     structural_key: &[u8],
-    lattice: &crate::state::LtHash,
+    lattice: &crate::incremental::LtHash,
     entries: I,
 ) -> Result<(RootHandle, NodePtr<K, V>), HamtBuildError>
 where

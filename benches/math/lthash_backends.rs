@@ -4,7 +4,7 @@
 //! MSC4500's original instantiation expands each element with SHAKE256 and
 //! collapses the 2048-byte lattice with BLAKE2b-256 under
 //! `msc4500:lthash16:v1`. rezzy now does both halves with the BLAKE3 XOF under
-//! `msc4500:lthash16:blake3:v1` (see `rezzy::state::lthash`). This bench puts
+//! `msc4500:lthash16:blake3:v1` (see `rezzy::incremental::lthash`). This bench puts
 //! the two stacks back side by side over the *same* element encoding, so the
 //! only variable is the primitive, and measures every place the primitives
 //! appear:
@@ -23,7 +23,7 @@
 //!
 //! Before timing anything the bench proves it is measuring what it claims: the
 //! `shake+blake2` stack must reproduce the published MSC4500 test vectors, the
-//! `blake3+blake3` stack must match `rezzy::state::LtHash` byte for byte, and
+//! `blake3+blake3` stack must match `rezzy::incremental::LtHash` byte for byte, and
 //! every candidate primitive must clear its own published vectors (NIST/FIPS)
 //! before it is timed. A fast number can therefore never come from a
 //! different (or broken) algorithm.
@@ -46,7 +46,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
-use rezzy::state::LtHash;
+use rezzy::incremental::LtHash;
 use sha3::Shake256;
 
 use crate::common::{
@@ -236,7 +236,7 @@ fn feed_element(
 }
 
 /// Truncates a string to the 65535-byte `u16` length-prefix limit, exactly as
-/// `rezzy::state::lthash` does (event IDs are streamed untruncated).
+/// `rezzy::incremental::lthash` does (event IDs are streamed untruncated).
 fn truncate_to_u16_limit(s: &str) -> (&str, u16) {
     let limit = usize::from(u16::MAX);
     let s_len = s.len();
@@ -418,7 +418,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Proves the measured stacks are the algorithms they claim to be:
 /// `shake+blake2` against the published MSC4500 vectors, `blake3+blake3`
-/// against the production `rezzy::state::LtHash`.
+/// against the production `rezzy::incremental::LtHash`.
 fn check_correctness(step: &mut u32) {
     checkpoint(step);
     println!("\n=== Correctness ===");

@@ -1,4 +1,4 @@
-//! Compares `LtHash` (MSC4500 homomorphic state hash, `rezzy::state::LtHash`)
+//! Compares `LtHash` (MSC4500 homomorphic state hash, `rezzy::incremental::LtHash`)
 //! against *two* non-homomorphic baselines for incremental state
 //! progression: after every single state-map mutation (insert / overwrite /
 //! remove), what does it cost to produce an up-to-date state hash?

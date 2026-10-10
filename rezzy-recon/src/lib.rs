@@ -5,6 +5,7 @@
 //! only on `base64` and `sha2`.
 
 pub mod algebraic;
+pub mod bitmap;
 pub mod client;
 pub mod gf64;
 pub mod gf64_simd;

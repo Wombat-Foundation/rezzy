@@ -25,9 +25,9 @@
 //! drop-in accelerator must satisfy.
 
 use crate::basespec::rezzy_types::{EventId, LeanEvent};
+use crate::bitmap::Bitmap;
 use crate::{DenseIndex, FastMap, HashMap};
 use core::hash::BuildHasher;
-use roaring::RoaringBitmap;
 use std::collections::{BTreeSet, VecDeque};
 use std::vec;
 use std::vec::Vec;
@@ -130,7 +130,7 @@ pub trait Reachability {
 /// once, then candidate membership is a bitmap lookup.
 pub struct ForwardReachabilityIndex<Id> {
     index: DenseIndex<Id>,
-    descendant_bitmaps: Vec<RoaringBitmap>,
+    descendant_bitmaps: Vec<Bitmap>,
     cyclic_nodes: BTreeSet<u32>,
 }
 
@@ -150,14 +150,14 @@ where
     pub fn build<C: Clone, S: BuildHasher>(graph: &HashMap<Id, LeanEvent<Id, C>, S>) -> Self {
         let (topo, children, leftover_nodes) = collect_topology(graph);
         let index = DenseIndex::try_build(topo.iter().map(|&id| id.clone()))
-            .expect("graph too large for roaring bitmap index");
+            .expect("graph too large for bitmap index");
 
         let (children_by_index, _) = build_indexed_children(topo.len(), children, &index);
 
-        let mut descendant_bitmaps = vec![RoaringBitmap::new(); topo.len()];
+        let mut descendant_bitmaps = vec![Bitmap::new(); topo.len()];
         for idx in (0..topo.len()).rev() {
-            let mut bitmap = RoaringBitmap::new();
-            bitmap.insert(u32::try_from(idx).expect("graph too large for roaring bitmap index"));
+            let mut bitmap = Bitmap::new();
+            bitmap.insert(u32::try_from(idx).expect("graph too large for bitmap index"));
             for &child_idx in &children_by_index[idx] {
                 bitmap |= &descendant_bitmaps[child_idx as usize];
             }
@@ -187,7 +187,7 @@ where
         C: IntoIterator<Item = &'a Id>,
         Id: 'a,
     {
-        let mut reachable = RoaringBitmap::new();
+        let mut reachable = Bitmap::new();
         for seed in seeds {
             let Some(idx) = self.index.index_of(seed) else {
                 continue;

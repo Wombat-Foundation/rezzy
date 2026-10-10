@@ -60,7 +60,7 @@ fn hashed(entries: &[(&str, &str, &str)]) -> rezzy::state::at::HashedState<Strin
             (*event_id).to_string(),
         );
     }
-    hs.hash = rezzy::state::lthash::LtHash::from_state(&hs.state);
+    hs.hash = rezzy::incremental::LtHash::from_state(&hs.state);
     hs
 }
 
@@ -479,7 +479,7 @@ fn test_resolve_merge_fast_path_hashed_mismatch() {
     assert_eq!(val_topic, None);
 
     // Verify incremental LtHash correctness against fresh LtHash from resolved state
-    let expected_hash = rezzy::state::lthash::LtHash::from_state(&merged.state);
+    let expected_hash = rezzy::incremental::LtHash::from_state(&merged.state);
     assert_eq!(merged.hash, expected_hash);
 }
 

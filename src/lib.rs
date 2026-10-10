@@ -48,15 +48,19 @@
 pub use rezzy_json as json;
 pub use rezzy_json::json;
 
+mod base64_utils;
+
 use std::string::String;
 use std::vec::Vec;
 
 pub mod auth;
 pub mod basespec;
+pub mod bitmap;
 pub mod cuckoo_verify;
 pub mod dense_index;
 pub mod errors;
 pub mod hamt;
+pub mod incremental;
 pub mod merkle;
 pub mod raw_event;
 pub mod resolve;

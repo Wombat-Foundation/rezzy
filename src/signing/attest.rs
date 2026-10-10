@@ -19,7 +19,7 @@
 use std::string::{String, ToString};
 use std::vec::Vec;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_zebra::{Signature, SigningKey, VerificationKey};
 
 use crate::json::json;
@@ -57,7 +57,7 @@ fn envelope_bytes(
     let value = json!({
         "algorithm": algorithm,
         "count": count,
-        "root": URL_SAFE_NO_PAD.encode(root.into_inner()),
+        "root": crate::base64_utils::encode(&URL_SAFE_NO_PAD, &root.into_inner()),
         "signer": signer,
     });
     // `algorithm`/`root`/`signer` are always strings, and `count` fits

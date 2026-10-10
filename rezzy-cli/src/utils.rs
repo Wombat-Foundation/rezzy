@@ -564,8 +564,8 @@ pub fn partition_and_resolve_state<S1: std::hash::BuildHasher, S2: std::hash::Bu
 
     let mut auth_difference = std::collections::HashSet::new();
     if !heads.is_empty() {
-        let mut union = roaring::RoaringBitmap::new();
-        let mut intersection = roaring::RoaringBitmap::new();
+        let mut union = rezzy::bitmap::Bitmap::new();
+        let mut intersection = rezzy::bitmap::Bitmap::new();
         let mut first = true;
 
         for head_id in heads {
@@ -582,7 +582,7 @@ pub fn partition_and_resolve_state<S1: std::hash::BuildHasher, S2: std::hash::Bu
             }
         }
 
-        let diff = <roaring::RoaringBitmap as std::ops::Sub<&roaring::RoaringBitmap>>::sub(
+        let diff = <rezzy::bitmap::Bitmap as std::ops::Sub<&rezzy::bitmap::Bitmap>>::sub(
             union,
             &intersection,
         );
@@ -1044,7 +1044,7 @@ mod tests {
         parents: &[SharedStateMap],
     ) -> HashMap<String, LeanEvent> {
         let auth_graph = rezzy::auth::roaring::AuthGraph::build(events);
-        let mut relevant = roaring::RoaringBitmap::new();
+        let mut relevant = rezzy::bitmap::Bitmap::new();
         for state in parents {
             for id in state.values() {
                 if let Some(idx) = auth_graph.index.index_of(id) {

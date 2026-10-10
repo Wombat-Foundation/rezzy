@@ -82,7 +82,10 @@ impl RootHandle {
     /// Builds a root handle with the current codec and v1 routing from a precomputed
     /// structural hash and a state lattice.
     #[must_use]
-    pub fn from_lthash(structural_hash: StructuralHash, lattice: &crate::state::LtHash) -> Self {
+    pub fn from_lthash(
+        structural_hash: StructuralHash,
+        lattice: &crate::incremental::LtHash,
+    ) -> Self {
         Self::with_versions(
             HAMT_CODEC_VERSION,
             HAMT_ROUTING_VERSION,
@@ -99,7 +102,7 @@ impl RootHandle {
         routing_version: u8,
         routing_params: [u8; 4],
         structural_hash: StructuralHash,
-        lattice: &crate::state::LtHash,
+        lattice: &crate::incremental::LtHash,
     ) -> Self {
         Self {
             codec_version,
@@ -145,7 +148,7 @@ impl Hasher for StructuralHashBuilder {
 ///
 /// This uses the `LtHash` digest, which is `BLAKE3(lattice)`.
 #[must_use]
-pub fn state_group_id_from_lthash(lattice: &crate::state::LtHash) -> StateGroupId {
+pub fn state_group_id_from_lthash(lattice: &crate::incremental::LtHash) -> StateGroupId {
     lattice.digest()
 }
 

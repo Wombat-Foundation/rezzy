@@ -922,7 +922,7 @@ where
 
 /// Computes the most recent common ancestor (merge base) of multiple DAG tips.
 ///
-/// Uses a max-heap ordered by event `depth` with roaring bitmap reachability
+/// Uses a max-heap ordered by event `depth` with bitmap reachability
 /// masks. Each extremity gets a unique bit index; as the heap walks backward
 /// through `prev_events`, bitmasks propagate via bitwise OR. The first event
 /// whose bitmask contains all extremity bits is the merge base.
@@ -935,7 +935,7 @@ where
 /// - **Time**: `O(V + E)` bounded to the subgraph between the extremities and
 ///   their merge base. Events below the merge base are never visited.
 /// - **Space**: `O(V)` for the bitmask map, where each bitmask is a compressed
-///   roaring bitmap.
+///   bitmap.
 ///
 /// ## **TODO:** Future optimization
 ///
@@ -971,7 +971,7 @@ where
 {
     use std::collections::BinaryHeap;
 
-    use roaring::RoaringBitmap;
+    use crate::bitmap::Bitmap;
 
     if extremities.is_empty() {
         return None;
@@ -987,7 +987,7 @@ where
     // Max-heap: (depth, &Id) — highest depth pops first, ensuring a parent
     // is never processed until all of its descendants have propagated bits.
     let mut queue: BinaryHeap<(u64, &Id)> = BinaryHeap::new();
-    let mut masks: FastMap<&Id, RoaringBitmap> = FastMap::default();
+    let mut masks: FastMap<&Id, Bitmap> = FastMap::default();
 
     for (i, &head) in extremities.iter().enumerate() {
         if let Some((k, ev)) = events_map.get_key_value(head) {
@@ -2474,7 +2474,7 @@ pub enum StateUpdate<'b, Id, K = String> {
         /// from the pipeline's owned state. Zero-copy: callers that only compare,
         /// look up, or digest can borrow; only callers that need to retain the
         /// hash (e.g. across a thread channel) should copy it.
-        hash: &'b crate::state::lthash::LtHash,
+        hash: &'b crate::incremental::LtHash,
     },
     /// The state at this event is completely unchanged from its parent's state.
     /// Consumers can reuse the parent's state directly, skipping compression and O(N) traversals.
@@ -2490,7 +2490,7 @@ pub enum StateUpdate<'b, Id, K = String> {
         parent_event_id: &'b Id,
         /// The `LtHash` digest of the parent state, borrowed from the pipeline's
         /// owned state (zero-copy; see [`StateUpdate::New`]).
-        hash: &'b crate::state::lthash::LtHash,
+        hash: &'b crate::incremental::LtHash,
     },
 }
 
@@ -2590,7 +2590,7 @@ where
     /// Borrows the carried `LtHash` lattice (the 2 KiB homomorphic accumulator)
     /// — zero-copy. The 32-byte cryptographic hash of it is [`StateUpdate::digest`].
     #[must_use]
-    pub fn lattice(&self) -> &crate::state::lthash::LtHash {
+    pub fn lattice(&self) -> &crate::incremental::LtHash {
         match self {
             StateUpdate::New { hash, .. } | StateUpdate::Unchanged { hash, .. } => hash,
         }
@@ -2615,7 +2615,7 @@ pub struct HashedState<Id, K = String> {
     /// The underlying state map.
     pub state: SharedState<Id, K>,
     /// The incrementally updated cryptographic `LtHash`.
-    pub hash: crate::state::lthash::LtHash,
+    pub hash: crate::incremental::LtHash,
 }
 
 impl<Id: Clone, K: Ord + Clone> Clone for HashedState<Id, K> {
@@ -2640,7 +2640,7 @@ impl<Id, K: Ord + Clone> Default for HashedState<Id, K> {
     fn default() -> Self {
         Self {
             state: SharedState::new(),
-            hash: crate::state::lthash::LtHash::default(),
+            hash: crate::incremental::LtHash::default(),
         }
     }
 }
@@ -2763,7 +2763,7 @@ where
 }
 
 /// Computes the true forward extremities (DAG leaves) from a batched set of events.
-/// This uses `RoaringBitmap` set differences (`all_events - all_parents`) to
+/// This uses `Bitmap` set differences (`all_events - all_parents`) to
 /// instantly find the leaves of a DAG, no matter how deep.
 ///
 /// # Arguments
@@ -2780,7 +2780,7 @@ where
     I: IntoIterator<Item = (Id, P)>,
     P: IntoIterator<Item = Id>,
 {
-    use roaring::RoaringBitmap;
+    use crate::bitmap::Bitmap;
     let mut id_map = crate::HashMap::default();
     let mut reverse_map = std::vec::Vec::new();
 
@@ -2795,8 +2795,8 @@ where
         })
     };
 
-    let mut all_events = RoaringBitmap::new();
-    let mut has_children = RoaringBitmap::new();
+    let mut all_events = Bitmap::new();
+    let mut has_children = Bitmap::new();
 
     for (id, prevs) in events {
         let idx = get_or_insert(id, &mut id_map, &mut reverse_map);
@@ -3800,7 +3800,7 @@ mod tests {
             "join_event".to_string(),
         );
 
-        let expected_hash = crate::state::lthash::LtHash::from_state(&hs.state);
+        let expected_hash = crate::incremental::LtHash::from_state(&hs.state);
         assert_eq!(hs.hash, expected_hash);
 
         // Update an existing key
@@ -3808,7 +3808,7 @@ mod tests {
             ("m.room.member".into(), "@alice:x".into()),
             "new_join_event".to_string(),
         );
-        let updated_hash = crate::state::lthash::LtHash::from_state(&hs.state);
+        let updated_hash = crate::incremental::LtHash::from_state(&hs.state);
         assert_eq!(hs.hash, updated_hash);
     }
 
@@ -3866,7 +3866,7 @@ mod tests {
             "create_event".to_string(),
         );
 
-        let hash = crate::state::lthash::LtHash::from_state(&parent_state);
+        let hash = crate::incremental::LtHash::from_state(&parent_state);
         let parent_id = "parent_event".to_string();
 
         let update = StateUpdate::Unchanged {
@@ -4083,7 +4083,7 @@ mod tests {
             ("m.room.create".into(), String::new()),
             "create_event".into(),
         );
-        let hash = crate::state::lthash::LtHash::from_state(&state);
+        let hash = crate::incremental::LtHash::from_state(&state);
 
         let update = StateUpdate::New {
             state: state.clone(),
@@ -4104,11 +4104,11 @@ mod tests {
     fn test_resolve_merge_fast_path_hashed_full_equality_fallback() {
         let mut state_a: SharedState<String> = SharedState::new();
         state_a.insert(("m.room.topic".into(), String::new()), "final".into());
-        let hash_a = crate::state::lthash::LtHash::from_state(&state_a);
+        let hash_a = crate::incremental::LtHash::from_state(&state_a);
 
         let mut state_b: SharedState<String> = SharedState::new();
         state_b.insert(("m.room.topic".into(), String::new()), "final".into());
-        let hash_b = crate::state::lthash::LtHash::from_state(&state_b);
+        let hash_b = crate::incremental::LtHash::from_state(&state_b);
 
         assert_eq!(hash_a, hash_b, "identical content must hash identically");
         assert!(
@@ -4173,7 +4173,7 @@ mod tests {
                 } else {
                     entries.iter().cloned().collect()
                 };
-                let hash = crate::state::lthash::LtHash::from_state(&state);
+                let hash = crate::incremental::LtHash::from_state(&state);
                 prev_states.push(HashedState {
                     state: state.clone(),
                     hash,
@@ -4210,7 +4210,7 @@ mod tests {
             );
             assert_eq!(
                 fast.hash,
-                crate::state::lthash::LtHash::from_state(&fast.state),
+                crate::incremental::LtHash::from_state(&fast.state),
                 "carried LtHash must match a from-scratch hash (forks={forks})"
             );
         }
@@ -4247,10 +4247,9 @@ mod tests {
         state
     }
 
-    static ZERO_HASH: crate::state::lthash::LtHash =
-        crate::state::lthash::LtHash::from_lanes([0; 1024]);
-    static ONE_HASH: crate::state::lthash::LtHash =
-        crate::state::lthash::LtHash::from_lanes([1; 1024]);
+    static ZERO_HASH: crate::incremental::LtHash =
+        crate::incremental::LtHash::from_lanes([0; 1024]);
+    static ONE_HASH: crate::incremental::LtHash = crate::incremental::LtHash::from_lanes([1; 1024]);
 
     fn new_update() -> StateUpdate<'static, String, String> {
         StateUpdate::New {
@@ -4336,7 +4335,7 @@ mod tests {
         assert_ne!(d1, d2);
 
         // A New and an Unchanged are never equal, even with the same hash.
-        let different_hash = crate::state::lthash::LtHash::from_lanes([2; 1024]);
+        let different_hash = crate::incremental::LtHash::from_lanes([2; 1024]);
         let new: StateUpdate<'_, String, String> = StateUpdate::New {
             state: SharedState::new(),
             hash: &different_hash,
@@ -4358,7 +4357,7 @@ mod tests {
             (EventType::from("m.room.topic"), String::new()),
             "$topic".to_string(),
         );
-        let hash = crate::state::lthash::LtHash::from_state(&state);
+        let hash = crate::incremental::LtHash::from_state(&state);
         let parent = String::from("$parent");
 
         let new: StateUpdate<'_, String, String> = StateUpdate::New {
@@ -4383,7 +4382,7 @@ mod tests {
     fn init_hashed_state() -> HashedState<String, String> {
         HashedState {
             state: init_state(),
-            hash: crate::state::lthash::LtHash::default(),
+            hash: crate::incremental::LtHash::default(),
         }
     }
 
@@ -4392,7 +4391,7 @@ mod tests {
     fn test_hashed_state_default() {
         let hs = HashedState::<String, String>::default();
         assert!(hs.state.is_empty(), "default state should be empty");
-        assert_eq!(hs.hash, crate::state::lthash::LtHash::default());
+        assert_eq!(hs.hash, crate::incremental::LtHash::default());
     }
 
     /// Coverage: `Debug for HashedState` must print the struct name and both fields.

@@ -8,10 +8,10 @@ use std::{
 };
 
 use crate::json::Value;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use sha3::{Digest, Sha3_256};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sha2::{Digest, Sha256};
 
-/// SHA3-256 digest size used by MSC4511.
+/// SHA-256 digest size used by the local MSC4511 variant.
 pub const HASH_SIZE: usize = 32;
 
 const MAX_CANONICAL_INT: i64 = (1_i64 << 53) - 1;
@@ -22,7 +22,7 @@ const NODE_DST: &[u8] = b"msc4511:node:v1";
 const ROOT_DST: &[u8] = b"msc4511:root:v1";
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
-/// A SHA3-256 digest.
+/// A SHA-256 digest.
 pub type Hash = [u8; HASH_SIZE];
 
 /// A Merkle root that nobody has signed.
@@ -210,7 +210,7 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, MerkleError> {
     Ok(out)
 }
 
-/// Computes SHA3-256("msc4511:leaf:v1" || `field_name` || "\x00" ||
+/// Computes SHA-256("msc4511:leaf:v1" || `field_name` || "\x00" ||
 /// `canonical_value`).
 ///
 /// # Errors
@@ -349,7 +349,7 @@ pub fn header_root(header: &Header) -> Result<EventHeaderRoot, MerkleError> {
     .map(EventHeaderRoot)
 }
 
-/// Computes SHA3-256("msc4511:root:v1" || `prev_events_hash` ||
+/// Computes SHA-256("msc4511:root:v1" || `prev_events_hash` ||
 /// `auth_events_hash` || `event_header_root` || `content_hash` ||
 /// `other_signed_fields_hash`).
 #[must_use]
@@ -373,7 +373,10 @@ pub fn event_root(
 /// Derives "$" || unpadded base64url(`event_root`).
 #[must_use]
 pub fn event_id(event_root: Hash) -> String {
-    format!("${}", URL_SAFE_NO_PAD.encode(event_root))
+    format!(
+        "${}",
+        crate::base64_utils::encode(&URL_SAFE_NO_PAD, &event_root)
+    )
 }
 
 /// Which side a sibling hash sits on relative to the running hash in a
@@ -643,7 +646,7 @@ fn append_string(out: &mut Vec<u8>, string: &str) {
 }
 
 pub(crate) fn hash_parts(parts: &[&[u8]]) -> Hash {
-    let mut hasher = Sha3_256::new();
+    let mut hasher = Sha256::new();
     for part in parts {
         hasher.update(part);
     }
@@ -666,12 +669,12 @@ pub mod causal {
     const CAUSAL_NODE_DST: &[u8] = b"msc4511:causal-node:v1";
     const CAUSAL_EMPTY_LEAF_DST: &[u8] = b"msc4511:causal-empty-leaf:v1";
 
-    /// Computes SHA3-256("msc4511:causal-leaf:v1" || `key`).
+    /// Computes SHA-256("msc4511:causal-leaf:v1" || `key`).
     fn causal_leaf(key: Hash) -> Hash {
         hash_parts(&[CAUSAL_LEAF_DST, &key])
     }
 
-    /// Computes SHA3-256("msc4511:causal-node:v1" || `u16be(depth)` ||
+    /// Computes SHA-256("msc4511:causal-node:v1" || `u16be(depth)` ||
     /// `left_hash` || `u64be(left_count)` || `right_hash` ||
     /// `u64be(right_count)`).
     fn causal_node(

@@ -7,7 +7,7 @@
 use crate::error::{AppError, ErrorCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use rezzy::state::lthash::LtLattice;
+use rezzy::incremental::LtLattice;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -329,7 +329,7 @@ fn build_plan(matches: &ArgMatches) -> Result<Plan, AppError> {
 
     let dst = match matches.get_one::<String>("dst") {
         Some(spec) => parse_dst(spec)?,
-        None => rezzy::state::lthash::LtHash::DST.to_vec(),
+        None => rezzy::incremental::LtHash::DST.to_vec(),
     };
 
     Ok(Plan {
@@ -631,7 +631,7 @@ mod tests {
     use super::{decode_hex, hex, parse_dst, parse_event_spec, parse_state, read_batch};
     use crate::error::ErrorCode;
     use crate::hash::{build_plan, command, run_from_matches, OutputMode};
-    use rezzy::state::lthash::LtHash;
+    use rezzy::incremental::LtHash;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

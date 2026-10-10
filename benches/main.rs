@@ -105,6 +105,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "db",
+        name: "bitmap_vs_roaring",
+        description: "In-tree Bitmap vs roaring (build, set ops, iterate, DAG accumulation)",
+        run_fn: db::bitmap_vs_roaring::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
         name: "hamt_audit_bitmap",
         description: "HAMT node reachability audit bitmap operations",
         run_fn: db::hamt_audit_bitmap::run,

@@ -24,7 +24,7 @@
 //! `O(r·k·P)`, and summing that over `m = T/P` audits by elapsed time `T`
 //! gives `Θ(n²)` in the eventual size `n = r·T` — not `O(n)` per call as a
 //! "cheaper index" framing might suggest. This is true regardless of which
-//! structure backs a periodic audit (exact `HashSet`, `RoaringBitmap`, a
+//! structure backs a periodic audit (exact `HashSet`, a bitmap, a
 //! probabilistic filter); the problem is the fixed-cadence-while-growing
 //! architecture, not the index type. A `RefcountTable` sidesteps this
 //! entirely by never re-deriving anything: each transition's cost is bounded

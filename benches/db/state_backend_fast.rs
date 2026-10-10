@@ -88,8 +88,9 @@ fn ns(total: Duration, ops: u32) -> f64 {
     total.as_nanos() as f64 / f64::from(ops)
 }
 
-/// ns/op for [bulk build, lookup, insert, fork+diverge, remove, diff].
-fn measure<B: Backend>(entries: &[(K, V)]) -> [f64; 6] {
+/// ns/op for [bulk build, cold lookup, warm lookup, insert, fork+diverge,
+/// remove, diff].
+fn measure<B: Backend>(entries: &[(K, V)]) -> [f64; 7] {
     // bulk build
     let reps = (200_000 / entries.len()).clamp(2, 200) as u32;
     let start = Instant::now();
@@ -115,11 +116,24 @@ fn measure<B: Backend>(entries: &[(K, V)]) -> [f64; 6] {
             }
         })
         .collect();
+
     let start = Instant::now();
     for k in &lookups {
         black_box(map.get_(k));
     }
-    let look = ns(start.elapsed(), 5000);
+    let cold_look = ns(start.elapsed(), 5000);
+
+    const LOOKUP_REPS: u32 = 20;
+    let start = Instant::now();
+    for _ in 0..LOOKUP_REPS {
+        for k in &lookups {
+            black_box(map.get_(k));
+        }
+    }
+    let lookup_ops = 5000u32
+        .checked_mul(LOOKUP_REPS)
+        .expect("lookup operation count overflow");
+    let warm_look = ns(start.elapsed(), lookup_ops);
 
     // insert, fresh clone each op
     let mut rng = Xorshift128::new(0x00C0_FFEE);
@@ -196,7 +210,8 @@ fn measure<B: Backend>(entries: &[(K, V)]) -> [f64; 6] {
 
     [
         build,
-        look,
+        cold_look,
+        warm_look,
         ns(ins, 3000),
         ns(fork, REPS * 8 * 20),
         rem,
@@ -206,15 +221,21 @@ fn measure<B: Backend>(entries: &[(K, V)]) -> [f64; 6] {
 
 /// Runs the fair imbl vs `PersistentOrdMap` comparison on Arc-backed types.
 pub fn run() {
-    const OPS: [&str; 6] = ["bulk build", "lookup", "insert", "fork+diverge", "remove", "diff"];
+    const OPS: [&str; 7] = [
+        "bulk build",
+        "lookup-cold",
+        "lookup-warm",
+        "insert",
+        "fork+diverge",
+        "remove",
+        "diff",
+    ];
     for &n in &[16usize, 128, 1024, 8192, 16384, 65536, 131072] {
         let entries: Vec<(K, V)> = make_entries(n, 0x5EED_0000 + n as u64)
             .into_iter()
             .map(|((t, k), v)| ((t, InternedKey::new(k)), Arc::from(v)))
             .collect();
-        println!(
-            "imbl vs PersistentOrdMap, (EventType, InternedKey) -> Arc<str> (n={n}), ns/op:"
-        );
+        println!("imbl vs PersistentOrdMap, (EventType, InternedKey) -> Arc<str> (n={n}), ns/op:");
         let a = measure::<imbl::OrdMap<K, V>>(&entries);
         let b = measure::<PersistentOrdMap<K, V>>(&entries);
         for (i, op) in OPS.iter().enumerate() {

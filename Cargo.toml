@@ -70,7 +70,7 @@ members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 [workspace.package]
 version = "0.6.0-rc.1"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.87"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
@@ -80,13 +80,11 @@ rezzy = { path = ".", version = "0.6.0-rc.1" }
 rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.1" }
 rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1" }
 
-base64 = { version = "0.23", default-features = false, features = ["alloc"] }
+base64 = { version = "0.23", default-features = false }
 blake3 = { version = "1.5", default-features = false }
-hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
-roaring = { version = "0.11", default-features = false }
+hashbrown = { version = "0.16", default-features = false, features = ["default-hasher", "inline-more"] }
 ryu = { version = "1.0", default-features = false }
 sha2 = { version = "0.11", default-features = false }
-sha3 = { version = "0.12", default-features = false }
 
 # CLI-only
 clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
@@ -98,7 +96,7 @@ ureq = { version = "3", default-features = false }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 ed25519-zebra = { version = "5", default-features = false }
-getrandom = { version = "0.4", default-features = false }
+getrandom = { version = "0.2", default-features = false }
 rpassword = "7.5"
 
 # Dev dependencies
@@ -173,13 +171,12 @@ unstable-refcount-gc = []
 
 [dependencies]
 rezzy-json.workspace = true
+rezzy-recon.workspace = true
 
 base64.workspace = true
 blake3.workspace = true
 hashbrown.workspace = true
-roaring.workspace = true
 sha2.workspace = true
-sha3.workspace = true
 
 # Optional
 clap = { workspace = true, optional = true }
@@ -188,8 +185,6 @@ ed25519-zebra = { workspace = true, optional = true }
 [dev-dependencies]
 base64.workspace = true
 hashbrown.workspace = true
-rezzy-recon.workspace = true
-roaring.workspace = true
 sha2.workspace = true
 
 [lints.rust]

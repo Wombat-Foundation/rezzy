@@ -1,6 +1,6 @@
 //! Sparse-Merkle commitments and selective proofs for resolved room state.
 //!
-//! This is deliberately complementary to [`super::LtHash`]: it proves a
+//! This is deliberately complementary to [`crate::incremental::LtHash`]: it proves a
 //! particular `(event_type, state_key) -> event_id` binding or its absence,
 //! whereas `LtHash` is the efficient homomorphic accumulator for a whole map.
 
@@ -9,8 +9,8 @@ use std::{collections::BTreeMap, string::ToString, vec::Vec};
 use crate::merkle::hash_parts;
 use crate::state::at::SharedState;
 
-/// A SHA3-256 digest used for state-map keys, leaves, and internal nodes.
-pub type Hash = [u8; 32];
+/// A SHA-256 digest used for state-map keys, leaves, and internal nodes.
+pub type MerkleHash = [u8; 32];
 
 /// The fixed bit depth of the resolved-state sparse Merkle map.
 pub const STATE_DEPTH: usize = 256;
@@ -20,7 +20,7 @@ const LEAF_DST: &[u8] = b"msc4511:state-leaf:v1";
 const NODE_DST: &[u8] = b"msc4511:state-node:v1";
 const EMPTY_DST: &[u8] = b"msc4511:state-empty:v1";
 
-fn bit(key: &Hash, depth: usize) -> u8 {
+fn bit(key: &MerkleHash, depth: usize) -> u8 {
     (key[depth / 8] >> 7_usize.saturating_sub(depth % 8)) & 1
 }
 
@@ -43,14 +43,14 @@ fn encode_pair(event_type: &str, state_key: &str) -> Vec<u8> {
 
 /// Derives the sparse-tree position for a resolved-state key.
 #[must_use]
-pub fn state_key_hash(event_type: &str, state_key: &str) -> Hash {
+pub fn state_key_hash(event_type: &str, state_key: &str) -> MerkleHash {
     let encoded = encode_pair(event_type, state_key);
     hash_parts(&[KEY_DST, &encoded])
 }
 
 /// Derives the committed leaf for a resolved-state key and its winning event.
 #[must_use]
-pub fn state_leaf_hash(event_type: &str, state_key: &str, event_id: &str) -> Hash {
+pub fn state_leaf_hash(event_type: &str, state_key: &str, event_id: &str) -> MerkleHash {
     let encoded = encode_pair(event_type, state_key);
     hash_parts(&[
         LEAF_DST,
@@ -62,7 +62,7 @@ pub fn state_leaf_hash(event_type: &str, state_key: &str, event_id: &str) -> Has
     ])
 }
 
-fn node(depth: usize, left: Hash, right: Hash) -> Hash {
+fn node(depth: usize, left: MerkleHash, right: MerkleHash) -> MerkleHash {
     hash_parts(&[
         NODE_DST,
         &u16::try_from(depth).unwrap_or(u16::MAX).to_be_bytes(),
@@ -71,7 +71,7 @@ fn node(depth: usize, left: Hash, right: Hash) -> Hash {
     ])
 }
 
-fn empty_table() -> [Hash; STATE_DEPTH + 1] {
+fn empty_table() -> [MerkleHash; STATE_DEPTH + 1] {
     let mut empty = [[0; 32]; STATE_DEPTH + 1];
     empty[STATE_DEPTH] = hash_parts(&[EMPTY_DST]);
     for depth in (0..STATE_DEPTH).rev() {
@@ -84,12 +84,12 @@ fn empty_table() -> [Hash; STATE_DEPTH + 1] {
 /// One sibling in a state-map proof, ordered leaf-to-root.
 #[derive(Clone, Copy)]
 pub struct StateProofStep {
-    pub hash: Hash,
+    pub hash: MerkleHash,
 }
 
 /// A sparse-Merkle commitment to a resolved state map.
 pub struct StateMap {
-    leaves: BTreeMap<Hash, Hash>,
+    leaves: BTreeMap<MerkleHash, MerkleHash>,
 }
 
 impl StateMap {
@@ -113,16 +113,17 @@ impl StateMap {
 
     /// Returns the canonical root, including the canonical empty root.
     #[must_use]
-    pub fn root(&self) -> Hash {
+    pub fn root(&self) -> MerkleHash {
         let (empty, entries) = self.proof_inputs();
         subtree(&entries, 0, &empty)
     }
 
     /// Snapshots the leaf list and canonical empty table shared by every
     /// root and proof computation.
-    fn proof_inputs(&self) -> ([Hash; STATE_DEPTH + 1], Vec<(Hash, Hash)>) {
+    fn proof_inputs(&self) -> ([MerkleHash; STATE_DEPTH + 1], Vec<(MerkleHash, MerkleHash)>) {
         let empty = empty_table();
-        let entries: Vec<(Hash, Hash)> = self.leaves.iter().map(|(k, v)| (*k, *v)).collect();
+        let entries: Vec<(MerkleHash, MerkleHash)> =
+            self.leaves.iter().map(|(k, v)| (*k, *v)).collect();
         (empty, entries)
     }
 
@@ -145,7 +146,7 @@ impl StateMap {
         event_type: &str,
         state_key: &str,
         event_id: &str,
-    ) -> Option<(Vec<StateProofStep>, Hash)> {
+    ) -> Option<(Vec<StateProofStep>, MerkleHash)> {
         let key = state_key_hash(event_type, state_key);
         if self.leaves.get(&key) != Some(&state_leaf_hash(event_type, state_key, event_id)) {
             return None;
@@ -161,7 +162,7 @@ impl StateMap {
         &self,
         event_type: &str,
         state_key: &str,
-    ) -> Option<(Vec<StateProofStep>, usize, Hash)> {
+    ) -> Option<(Vec<StateProofStep>, usize, MerkleHash)> {
         let key = state_key_hash(event_type, state_key);
         if self.leaves.contains_key(&key) {
             return None;
@@ -173,10 +174,10 @@ impl StateMap {
 }
 
 /// A `(left, right)` partition of state-map entries at one trie depth.
-type EntryPartition = (Vec<(Hash, Hash)>, Vec<(Hash, Hash)>);
+type EntryPartition = (Vec<(MerkleHash, MerkleHash)>, Vec<(MerkleHash, MerkleHash)>);
 
 /// Splits `entries` into `(left, right)` by the bit of each key at `depth`.
-fn partition(entries: &[(Hash, Hash)], depth: usize) -> EntryPartition {
+fn partition(entries: &[(MerkleHash, MerkleHash)], depth: usize) -> EntryPartition {
     let mut left = Vec::new();
     let mut right = Vec::new();
     for entry in entries {
@@ -189,7 +190,11 @@ fn partition(entries: &[(Hash, Hash)], depth: usize) -> EntryPartition {
     (left, right)
 }
 
-fn subtree(entries: &[(Hash, Hash)], depth: usize, empty: &[Hash; STATE_DEPTH + 1]) -> Hash {
+fn subtree(
+    entries: &[(MerkleHash, MerkleHash)],
+    depth: usize,
+    empty: &[MerkleHash; STATE_DEPTH + 1],
+) -> MerkleHash {
     if entries.is_empty() {
         return empty[depth];
     }
@@ -205,10 +210,10 @@ fn subtree(entries: &[(Hash, Hash)], depth: usize, empty: &[Hash; STATE_DEPTH + 
 }
 
 fn descend(
-    entries: &[(Hash, Hash)],
-    key: &Hash,
+    entries: &[(MerkleHash, MerkleHash)],
+    key: &MerkleHash,
     depth: usize,
-    empty: &[Hash; STATE_DEPTH + 1],
+    empty: &[MerkleHash; STATE_DEPTH + 1],
 ) -> (usize, Vec<StateProofStep>) {
     if entries.is_empty() || depth == STATE_DEPTH {
         return (depth, Vec::new());
@@ -235,7 +240,7 @@ pub fn verify_inclusion(
     state_key: &str,
     event_id: &str,
     path: &[StateProofStep],
-    root: Hash,
+    root: MerkleHash,
 ) -> bool {
     verify(
         state_key_hash(event_type, state_key),
@@ -253,7 +258,7 @@ pub fn verify_non_inclusion(
     state_key: &str,
     terminal_depth: usize,
     path: &[StateProofStep],
-    root: Hash,
+    root: MerkleHash,
 ) -> bool {
     if terminal_depth > STATE_DEPTH {
         return false;
@@ -282,11 +287,11 @@ pub fn verify_non_inclusion(
 }
 
 fn verify(
-    key: Hash,
-    mut value: Hash,
+    key: MerkleHash,
+    mut value: MerkleHash,
     terminal_depth: usize,
     path: &[StateProofStep],
-    root: Hash,
+    root: MerkleHash,
 ) -> bool {
     if path.len() != terminal_depth {
         return false;

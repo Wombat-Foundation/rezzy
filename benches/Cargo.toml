@@ -17,7 +17,7 @@ ed25519-dalek = { version = "3", default-features = false, features = ["alloc", 
 imbl = { version = "7.0", default-features = false }
 rezzy = { path = "..", features = ["signing", "signing-consensus"] }
 rezzy-recon = { path = "../rezzy-recon", version = "0.6.0-rc.1" }
-roaring = { version = "0.11", default-features = false }
+roaring = { version = "0.11", default-features = false, features = ["std"] }
 ruma-common = "0.20"
 ruma-events = "0.35"
 ruma-signatures = "0.22"

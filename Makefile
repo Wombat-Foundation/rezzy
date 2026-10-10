@@ -30,7 +30,7 @@ format: ##H Format codebase (Rust + Lean + scripts)
 .PHONY: check
 check:	##H Cargo check and code dupe
 	$(CARGO) check --all-targets --all-features
-	cd benches/ && $(CARGO) check --all-targets --all-features
+	cd benches/ && direnv exec . sh -c '$$CARGO check --all-targets --all-features'
 	-jscpd $$(git ls-files '*.rs')
 	# $(CARGO) fix --all-targets --allow-dirty
 
@@ -121,7 +121,7 @@ endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	$(CARGO) bench --manifest-path benches/Cargo.toml --profile release --benches
+	cd benches/ && direnv exec . sh -c '$$CARGO bench --profile release --benches'
 
 
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false

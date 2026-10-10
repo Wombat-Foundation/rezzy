@@ -3,7 +3,7 @@
 use core::{fmt, hash::Hash};
 use std::{sync::Arc, vec::Vec};
 
-use crate::state::LtHash;
+use crate::incremental::LtHash;
 
 use super::{map_index, NodePtr, NodeRef, NodeResolver, StructuralHash, HAMT_MAX_DEPTH};
 

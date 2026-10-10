@@ -161,7 +161,10 @@ fn report_speedup(label: &str, legacy: Duration, hamt: Duration) {
 ///   bytes written, not just match the batch-size speedup.
 fn bench_batched_persist(n: usize, steps: usize, batch: usize) {
     println!("batched persist every {batch} hops (n={n}, steps={steps}):");
-    assert!(steps.is_multiple_of(batch), "steps must divide evenly by batch");
+    assert!(
+        steps.is_multiple_of(batch),
+        "steps must divide evenly by batch"
+    );
 
     let (mut root, mut flat_state, mutations) = build_persist_fixture(n, steps);
 

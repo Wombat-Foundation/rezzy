@@ -2,7 +2,7 @@ use super::*;
 use crate::hamt::codec::PersistedInternalNode;
 use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
-use crate::state::LtHash;
+use crate::incremental::LtHash;
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use std::collections::BTreeSet;
@@ -3343,7 +3343,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     assert!((&bitmap_audit.reachable & &bitmap_audit.unreachable).is_empty());
     let mut recombined = bitmap_audit.reachable.clone();
     recombined |= &bitmap_audit.unreachable;
-    let all_indices: roaring::RoaringBitmap =
+    let all_indices: crate::bitmap::Bitmap =
         (0..u32::try_from(universe.len()).expect("small test universe")).collect();
     assert_eq!(recombined, all_indices);
 

@@ -308,7 +308,6 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
 mod consensus_tests {
     use super::*;
     use crate::json;
-    use base64::Engine as _;
     use ed25519_zebra::SigningKey;
     use std::format;
     use std::vec::Vec;
@@ -322,7 +321,10 @@ mod consensus_tests {
     ) -> Value {
         let canonical = canonical_redacted_json(&value, room_version);
         let sig = sk.sign(canonical.as_bytes());
-        let sig_b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sig.to_bytes());
+        let sig_b64 = crate::base64_utils::encode(
+            &base64::engine::general_purpose::STANDARD_NO_PAD,
+            &sig.to_bytes(),
+        );
         let obj = value.as_object_mut().expect("event is an object");
         let mut inner = crate::json::Object::new();
         inner.insert(key_id.to_string(), Value::String(sig_b64));
@@ -524,7 +526,6 @@ mod consensus_tests {
 
     #[test]
     fn consensus_rejects_event_with_invalid_known_signature_alongside_valid() {
-        use base64::Engine as _;
         let sk1 = SigningKey::from([1_u8; 32]);
         let vk1 = sk1.verification_key();
         let sk2 = SigningKey::from([2_u8; 32]);
@@ -546,7 +547,10 @@ mod consensus_tests {
         );
 
         // Add a second known key on example.com with a corrupted signature
-        let corrupt_sig = base64::engine::general_purpose::STANDARD_NO_PAD.encode([99_u8; 64]);
+        let corrupt_sig = crate::base64_utils::encode(
+            &base64::engine::general_purpose::STANDARD_NO_PAD,
+            &[99_u8; 64],
+        );
         event["signatures"]["example.com"]["ed25519:2"] = json!(corrupt_sig);
 
         let mut verifier = Ed25519ConsensusVerifier::new();
