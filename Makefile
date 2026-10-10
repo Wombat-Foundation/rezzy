@@ -116,6 +116,7 @@ ifdef p
 	$(CARGO) test --timings --workspace --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
 	$(CARGO) test --timings --workspace --lib --tests $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
+	$(CARGO) test --workspace --doc $(CARGO_FEATURE_ARGS)
 endif
 
 .PHONY: rust/bench
