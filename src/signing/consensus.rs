@@ -106,8 +106,6 @@ pub fn verify_sequential<'a>(
     room_version: &'a str,
     keys: &Ed25519ConsensusVerifier,
 ) -> Result<(), SignError<'a>> {
-    use base64::Engine as _;
-
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
         return Err(SignError::UnsupportedRoomVersion { room_version });
     }
@@ -138,14 +136,25 @@ pub fn verify_sequential<'a>(
                 let Some(sig_str) = sig_val.as_str() else {
                     return Err(SignError::SignatureNotAString { server, key_id });
                 };
-                let raw = base64::engine::general_purpose::STANDARD_NO_PAD
-                    .decode(sig_str)
-                    .map_err(|source| SignError::BadSignatureBase64 {
-                        server,
-                        key_id,
-                        source,
-                    })?;
-                let sig_bytes: [u8; 64] = raw.try_into().map_err(|_| SignError::SignatureLength)?;
+                let mut raw = [0_u8; 64];
+                let raw_len = crate::base64_utils::decode_into(
+                    &base64::engine::general_purpose::STANDARD_NO_PAD,
+                    sig_str,
+                    &mut raw,
+                )
+                .map_err(|source| match source {
+                    base64::DecodeSliceError::DecodeError(source) => {
+                        SignError::BadSignatureBase64 {
+                            server,
+                            key_id,
+                            source,
+                        }
+                    }
+                    base64::DecodeSliceError::OutputSliceTooSmall => SignError::SignatureLength,
+                })?;
+                let sig_bytes: [u8; 64] = raw[..raw_len]
+                    .try_into()
+                    .map_err(|_| SignError::SignatureLength)?;
                 let signature = Signature::from(sig_bytes);
                 // Sequential ZIP 215 verification, one signature at a time.
                 key.verify(&signature, &message)

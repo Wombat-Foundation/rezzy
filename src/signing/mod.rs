@@ -148,8 +148,6 @@ pub fn verify_event_signatures_from_server<'a>(
     expected_server: &'a str,
     verifier: &dyn SignatureVerifier,
 ) -> Result<(), SignError<'a>> {
-    use base64::Engine as _;
-
     let message = try_canonical_redacted_json(value, room_version)
         .map_err(SignError::CanonicalRedacted)?
         .into_bytes();
@@ -172,14 +170,21 @@ pub fn verify_event_signatures_from_server<'a>(
             let Some(sig_str) = sig.as_str() else {
                 return Err(SignError::SignatureNotAString { server, key_id });
             };
-            let sig_bytes = base64::engine::general_purpose::STANDARD_NO_PAD
-                .decode(sig_str)
-                .map_err(|source| SignError::BadSignatureBase64 {
+            let mut sig_bytes = [0_u8; 64];
+            let sig_len = crate::base64_utils::decode_into(
+                &base64::engine::general_purpose::STANDARD_NO_PAD,
+                sig_str,
+                &mut sig_bytes,
+            )
+            .map_err(|source| match source {
+                base64::DecodeSliceError::DecodeError(source) => SignError::BadSignatureBase64 {
                     server,
                     key_id,
                     source,
-                })?;
-            verifier.verify(server, key_id, &message, &sig_bytes)?;
+                },
+                base64::DecodeSliceError::OutputSliceTooSmall => SignError::SignatureLength,
+            })?;
+            verifier.verify(server, key_id, &message, &sig_bytes[..sig_len])?;
         }
     }
 

@@ -1045,9 +1045,10 @@ pub fn reference_hash<'a>(
     room_version: &'a str,
 ) -> Result<std::string::String, HashError<'a>> {
     let digest = reference_hash_bytes(value, room_version)?;
-    let mut out = std::string::String::with_capacity(HASH_B64_MAX_LEN);
-    hash_base64_engine(room_version).encode_string(digest, &mut out);
-    Ok(out)
+    Ok(crate::base64_utils::encode(
+        &hash_base64_engine(room_version),
+        &digest,
+    ))
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
@@ -1067,9 +1068,10 @@ pub fn compute_content_hash<'a>(
     room_version: &'a str,
 ) -> Result<std::string::String, HashError<'a>> {
     let digest = content_hash_bytes(value, room_version)?;
-    let mut out = std::string::String::with_capacity(HASH_B64_MAX_LEN);
-    base64::engine::general_purpose::STANDARD_NO_PAD.encode_string(digest, &mut out);
-    Ok(out)
+    Ok(crate::base64_utils::encode(
+        &base64::engine::general_purpose::STANDARD_NO_PAD,
+        &digest,
+    ))
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
@@ -3655,7 +3657,10 @@ impl LeanEvent<String, Value, String> {
             let digest = reference_hash_bytes(value, ver)?;
             let mut id = String::with_capacity(1 + HASH_B64_MAX_LEN);
             id.push('$');
-            hash_base64_engine(ver).encode_string(digest, &mut id);
+            id.push_str(&crate::base64_utils::encode(
+                &hash_base64_engine(ver),
+                &digest,
+            ));
             id
         } else {
             return Err(String::from(
