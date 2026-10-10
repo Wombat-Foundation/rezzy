@@ -426,7 +426,7 @@ impl Bitmap {
 
     /// Returns `true` if the set holds no values.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
@@ -728,7 +728,7 @@ fn read_u32(input: &mut &[u8]) -> Result<u32, BitmapDecodeError> {
 }
 
 /// Splits `n` bytes off the front of `input`.
-fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], BitmapDecodeError> {
+const fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], BitmapDecodeError> {
     if input.len() < n {
         return Err(BitmapDecodeError::Truncated);
     }
