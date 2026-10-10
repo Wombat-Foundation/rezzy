@@ -618,7 +618,8 @@ pub(crate) fn hash_parts(parts: &[&[u8]]) -> Hash {
 /// MSC4511's causal sparse Merkle sum trie: a reference 256-level structure
 /// committing the set of event IDs in an event's strict causal past.
 ///
-/// This provides a reference implementation modelled on `gomatrixcrypto`'s `merkle.CausalSet` but hashed with SHA-256.
+/// This provides a reference implementation modelled on
+/// `gomatrixcrypto`'s `merkle.CausalSet`, but hashed with SHA-256.
 pub mod causal {
     use super::{hash_parts, Hash};
     use alloc::{collections::BTreeMap, collections::BTreeSet, vec::Vec};
