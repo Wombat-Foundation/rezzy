@@ -71,7 +71,7 @@ naturally splits into three clean layers:
 │  • Bulk-fetch auth difference in 1-3 queries│
 │  • Materialize HashMap<EventId, LeanEvent>  │
 ├─────────────────────────────────────────────┤
-│  Rezzy CPU Layer (sync, #![no_std])         │
+│  Rezzy CPU Layer (sync, std)                │
 │  • Accepts compact, self-contained HashMap  │
 │  • Topological sort + iterative auth checks │
 │  • L1 cache-friendly imbl::OrdMap traversal │
@@ -84,7 +84,7 @@ naturally splits into three clean layers:
 ```
 
 The homeserver owns all I/O and uses its database's batching capabilities. Rezzy
-owns all CPU-bound computation and uses its `#![no_std]` + `imbl` stack for
+owns all CPU-bound computation and uses its `imbl` stack for
 maximum cache locality and zero-allocation structural sharing.
 
 ## Internal Implementation

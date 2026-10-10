@@ -16,8 +16,8 @@
 //! overflow-free `usize` indexing).
 
 use crate::HashMap;
-use alloc::vec::Vec;
 use core::fmt;
+use std::vec::Vec;
 
 #[cfg(test)]
 std::thread_local! {
@@ -262,7 +262,7 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     #[test]
     fn first_seen_order_and_dedup() {
@@ -385,7 +385,7 @@ mod tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod targeted_coverage_tests {
     use super::*;
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     #[test]
     fn displays_allocation_failure() {

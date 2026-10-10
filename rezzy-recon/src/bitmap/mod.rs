@@ -14,12 +14,12 @@ pub use self::wide::{Bitmap128, Bitmap64, Iter128, Iter64};
 
 mod wide;
 
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::fmt;
 use core::iter::FromIterator;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Sub, SubAssign};
+use std::boxed::Box;
+use std::sync::Arc;
+use std::vec::Vec;
 
 /// Magic prefix for [`Bitmap::encode`].
 pub const BITMAP_MAGIC: [u8; 4] = *b"RBMP";
@@ -700,7 +700,7 @@ impl Bitmap {
             Arc::new(Chunk {
                 key,
                 len: 1,
-                store: Store::Array(alloc::vec![lo]),
+                store: Store::Array(std::vec![lo]),
             }),
         );
         true
@@ -1148,7 +1148,7 @@ mod tests {
         let a: Bitmap = [3, 1, 2].into_iter().collect();
         let b: Bitmap = [1, 2, 3].into_iter().collect();
         assert_eq!(a, b);
-        assert_eq!(alloc::format!("{a:?}"), "{1, 2, 3}");
+        assert_eq!(std::format!("{a:?}"), "{1, 2, 3}");
         assert_eq!(Bitmap::default(), Bitmap::new());
     }
 

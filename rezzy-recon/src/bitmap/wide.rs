@@ -6,10 +6,10 @@
 //! never stored, so `==` is structural.
 
 use super::Bitmap;
-use alloc::collections::{btree_map, BTreeMap};
 use core::fmt;
 use core::iter::FromIterator;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Sub, SubAssign};
+use std::collections::{btree_map, BTreeMap};
 
 macro_rules! wide_bitmap {
     ($(#[$doc:meta])* $name:ident, $iter:ident, $value:ty, $key:ty, $len:ty) => {
@@ -361,10 +361,7 @@ mod tests {
         assert!(!s.contains(2));
         assert_eq!(s.len(), 5);
         assert!(s.iter().eq([0, 1, 4_294_967_295, 4_294_967_296, u64::MAX]));
-        assert_eq!(
-            alloc::format!("{:?}", Bitmap64::from_iter([2, 1])),
-            "{1, 2}"
-        );
+        assert_eq!(std::format!("{:?}", Bitmap64::from_iter([2, 1])), "{1, 2}");
         assert!((s.clone() - &s).is_empty());
         let mut e = s.clone();
         e &= &Bitmap64::new();

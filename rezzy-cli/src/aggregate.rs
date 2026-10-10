@@ -665,19 +665,122 @@ fn reject_explicit_output_overlap(options: &Options, files: &[PathBuf]) -> Resul
     Ok(())
 }
 
-fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
-    let (files, label_base) = match &options.source {
+/// Resolves the input file list and the label prefix every file is read under.
+fn resolve_inputs(options: &Options) -> Result<(Vec<PathBuf>, &Path), AppError> {
+    match &options.source {
         Source::Files(files) => {
             reject_explicit_output_overlap(options, files)?;
-            (files.clone(), Path::new(""))
+            Ok((files.clone(), Path::new("")))
         }
         Source::Dir { room } => {
             reject_input_output_overlap(options)?;
             let files = input_files(&options.input_dir, room)?;
             reject_explicit_output_overlap(options, &files)?;
-            (files, options.input_dir.as_path())
+            Ok((files, options.input_dir.as_path()))
         }
+    }
+}
+
+/// Handles `--check`: reports whether the published aggregate and sidecar
+/// already match the bytes this run would have written, without writing.
+fn check_current(
+    options: &Options,
+    output: &[u8],
+    sidecar: Option<&[u8]>,
+    sidecar_path: &Path,
+    event_count: usize,
+) -> Result<rezzy::JsonValue, AppError> {
+    let existing_output = fs::read(&options.output).map_err(|e| {
+        AppError::new(
+            ErrorCode::AggregateStale,
+            format!("aggregate is unavailable: {e}"),
+        )
+    })?;
+    if existing_output.as_slice() != output {
+        return Err(stale_error(&options.output));
+    }
+    if let Some(sidecar) = sidecar {
+        let existing_sidecar = fs::read(sidecar_path).map_err(|error| {
+            AppError::new(
+                ErrorCode::AggregateStale,
+                format!("provenance sidecar is unavailable: {error}"),
+            )
+        })?;
+        if existing_sidecar.as_slice() != sidecar {
+            return Err(stale_error(sidecar_path));
+        }
+    }
+    Ok(rezzy::json!({"status": "current", "unique_events": event_count}))
+}
+
+/// Stages the aggregate and optional sidecar under unique names, then commits
+/// them, removing staged files if either commit fails.
+fn publish(
+    options: &Options,
+    output: &[u8],
+    sidecar: Option<&[u8]>,
+    sidecar_path: &Path,
+) -> Result<(), AppError> {
+    if let Some(parent) = options.output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Stage both files under unique names first, so a failed write never touches
+    // the published pair, then commit. A failure between the two renames leaves
+    // a stale sidecar, which `--check` reports and a rerun repairs.
+    let output_temp = stage_file(&options.output, output)?;
+    let sidecar_temp = match sidecar {
+        Some(sidecar) => match stage_file(sidecar_path, sidecar) {
+            Ok(temp) => Some(temp),
+            Err(error) => {
+                let _ = fs::remove_file(&output_temp);
+                return Err(error);
+            }
+        },
+        None => None,
     };
+    commit_staged(&output_temp, &options.output).inspect_err(|_| {
+        if let Some(temp) = &sidecar_temp {
+            let _ = fs::remove_file(temp);
+        }
+    })?;
+    if let Some(temp) = &sidecar_temp {
+        commit_staged(temp, sidecar_path)?;
+    } else if let Err(error) = fs::remove_file(sidecar_path) {
+        // With provenance disabled, drop a sidecar left by an earlier run so
+        // timeline auto-discovery cannot apply stale stream metadata.
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+/// Builds the `status: written` result object for a completed run.
+fn written_result(
+    options: &Options,
+    file_count: usize,
+    unique_events: usize,
+    duplicate_copies: usize,
+    metadata_output: Option<&Path>,
+) -> rezzy::JsonValue {
+    let mut result = rezzy::json!({
+        "status": "written",
+        "output": options.output.to_string_lossy().to_string(),
+        "unique_events": unique_events,
+        "input_files": file_count,
+        "duplicate_event_copies": duplicate_copies,
+    });
+    if let Some(path) = metadata_output {
+        let _ = result.insert(
+            String::from("metadata_output"),
+            rezzy::json!(path.to_string_lossy().to_string()),
+        );
+    }
+    result
+}
+
+fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
+    let (files, label_base) = resolve_inputs(options)?;
     let inputs: Vec<RawInput> = files
         .iter()
         .map(|path| {
@@ -708,73 +811,22 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     };
     let sidecar_path = provenance::sidecar_path(&options.output);
     if options.check {
-        let existing_output = fs::read(&options.output).map_err(|e| {
-            AppError::new(
-                ErrorCode::AggregateStale,
-                format!("aggregate is unavailable: {e}"),
-            )
-        })?;
-        if existing_output != output {
-            return Err(stale_error(&options.output));
-        }
-        if let Some(sidecar) = &sidecar {
-            let existing_sidecar = fs::read(&sidecar_path).map_err(|error| {
-                AppError::new(
-                    ErrorCode::AggregateStale,
-                    format!("provenance sidecar is unavailable: {error}"),
-                )
-            })?;
-            if existing_sidecar != *sidecar {
-                return Err(stale_error(&sidecar_path));
-            }
-        }
-        return Ok(rezzy::json!({"status": "current", "unique_events": events.len()}));
-    }
-    if let Some(parent) = options.output.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // Stage both files under unique names first, so a failed write never touches
-    // the published pair, then commit. A failure between the two renames leaves
-    // a stale sidecar, which `--check` reports and a rerun repairs.
-    let output_temp = stage_file(&options.output, &output)?;
-    let sidecar_temp = match &sidecar {
-        Some(sidecar) => match stage_file(&sidecar_path, sidecar) {
-            Ok(temp) => Some(temp),
-            Err(error) => {
-                let _ = fs::remove_file(&output_temp);
-                return Err(error);
-            }
-        },
-        None => None,
-    };
-    commit_staged(&output_temp, &options.output).inspect_err(|_| {
-        if let Some(temp) = &sidecar_temp {
-            let _ = fs::remove_file(temp);
-        }
-    })?;
-    if let Some(temp) = &sidecar_temp {
-        commit_staged(temp, &sidecar_path)?;
-    } else if let Err(error) = fs::remove_file(&sidecar_path) {
-        // With provenance disabled, drop a sidecar left by an earlier run so
-        // timeline auto-discovery cannot apply stale stream metadata.
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error.into());
-        }
-    }
-    let mut result = rezzy::json!({
-        "status": "written",
-        "output": options.output.to_string_lossy().to_string(),
-        "unique_events": events.len(),
-        "input_files": files.len(),
-        "duplicate_event_copies": merge.duplicate_copies,
-    });
-    if let Some(_sidecar) = &sidecar {
-        let _ = result.insert(
-            String::from("metadata_output"),
-            rezzy::json!(sidecar_path.to_string_lossy().to_string()),
+        return check_current(
+            options,
+            &output,
+            sidecar.as_deref(),
+            &sidecar_path,
+            events.len(),
         );
     }
-    Ok(result)
+    publish(options, &output, sidecar.as_deref(), &sidecar_path)?;
+    Ok(written_result(
+        options,
+        files.len(),
+        events.len(),
+        merge.duplicate_copies,
+        sidecar.as_ref().map(|_| sidecar_path.as_path()),
+    ))
 }
 
 fn stale_error(path: &Path) -> AppError {

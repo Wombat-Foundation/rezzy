@@ -20,22 +20,24 @@
 //! use rezzy::json;
 //!
 //! let mut keys = Ed25519ConsensusVerifier::new();
-//! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])?;
+//! keys.insert_public_key("example.com", "ed25519:0", &[0_u8; 32])
+//!     .map_err(|e| e.to_string())?;
 //!
 //! let event = json!({
 //!     "type": "m.room.message",
 //!     "content": { "body": "hi" },
 //!     "signatures": { "example.com": {} },
 //! });
-//! verify_event_signatures(&event, "10", &keys)
+//! verify_event_signatures(&event, "10", &keys).map_err(|e| e.to_string())
 //! # }
 //! ```
 
 use crate::json::Value;
-use alloc::string::String;
-use alloc::string::ToString;
+use std::string::String;
+use std::string::ToString;
 
 use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
+use crate::errors::SignError;
 
 #[cfg(all(test, feature = "signing-consensus"))]
 use crate::basespec::rezzy_types::canonical_redacted_json;
@@ -70,13 +72,13 @@ pub trait SignatureVerifier {
     /// # Errors
     /// Returns `Err` when the key is unknown, the signature is malformed, or
     /// the signature does not verify.
-    fn verify(
+    fn verify<'a>(
         &self,
-        server_name: &str,
-        key_id: &str,
+        server_name: &'a str,
+        key_id: &'a str,
         message: &[u8],
         signature: &[u8],
-    ) -> Result<(), String>;
+    ) -> Result<(), SignError<'a>>;
 }
 
 /// Extracts the expected homeserver domain that should sign `value` in
@@ -117,21 +119,17 @@ pub(crate) fn expected_event_signer<'a>(value: &'a Value, room_version: &str) ->
 /// Returns `Err` when the event carries no `signatures` object, when a
 /// signature present for a known key fails to verify, or when its base64
 /// encoding is malformed.
-pub fn verify_event_signatures(
-    value: &Value,
-    room_version: &str,
+pub fn verify_event_signatures<'a>(
+    value: &'a Value,
+    room_version: &'a str,
     verifier: &dyn SignatureVerifier,
-) -> Result<(), String> {
+) -> Result<(), SignError<'a>> {
     if crate::basespec::rezzy_types::StateResVersion::from_room_version(room_version).is_none() {
-        return Err(alloc::format!(
-            "unsupported room version {room_version}: cannot verify signatures over an undefined format"
-        ));
+        return Err(SignError::UnsupportedRoomVersion { room_version });
     }
 
     let Some(origin) = expected_event_signer(value, room_version) else {
-        return Err(alloc::string::String::from(
-            "could not derive expected event signer from event_id or sender",
-        ));
+        return Err(SignError::NoExpectedSigner);
     };
     verify_event_signatures_from_server(value, room_version, origin, verifier)
 }
@@ -144,19 +142,17 @@ pub fn verify_event_signatures(
 ///
 /// # Errors
 /// Returns `Err` if the expected server has no supported valid signature.
-pub fn verify_event_signatures_from_server(
-    value: &Value,
-    room_version: &str,
-    expected_server: &str,
+pub fn verify_event_signatures_from_server<'a>(
+    value: &'a Value,
+    room_version: &'a str,
+    expected_server: &'a str,
     verifier: &dyn SignatureVerifier,
-) -> Result<(), String> {
+) -> Result<(), SignError<'a>> {
     let message = try_canonical_redacted_json(value, room_version)
-        .map_err(|e| alloc::format!("failed to compute canonical redacted JSON: {e}"))?
+        .map_err(SignError::CanonicalRedacted)?
         .into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
-        return Err(alloc::string::String::from(
-            "event has no signatures object",
-        ));
+        return Err(SignError::NoSignaturesObject);
     };
     let mut verified_any = false;
     for (server, keys) in signatures {
@@ -172,9 +168,7 @@ pub fn verify_event_signatures_from_server(
             }
             verified_any = true;
             let Some(sig_str) = sig.as_str() else {
-                return Err(alloc::format!(
-                    "signature for {server}/{key_id} is not a string"
-                ));
+                return Err(SignError::SignatureNotAString { server, key_id });
             };
             let mut sig_bytes = [0_u8; 64];
             let sig_len = crate::base64_utils::decode_into(
@@ -182,15 +176,22 @@ pub fn verify_event_signatures_from_server(
                 sig_str,
                 &mut sig_bytes,
             )
-            .map_err(|e| alloc::format!("bad base64 for {server}/{key_id}: {e}"))?;
+            .map_err(|source| match source {
+                base64::DecodeSliceError::DecodeError(source) => SignError::BadSignatureBase64 {
+                    server,
+                    key_id,
+                    source,
+                },
+                base64::DecodeSliceError::OutputSliceTooSmall => SignError::SignatureLength,
+            })?;
             verifier.verify(server, key_id, &message, &sig_bytes[..sig_len])?;
         }
     }
 
     if !verified_any {
-        return Err(alloc::format!(
-            "no supported signature from required server {expected_server}"
-        ));
+        return Err(SignError::NoSupportedSignature {
+            server: expected_server,
+        });
     }
     Ok(())
 }
@@ -228,22 +229,37 @@ impl<Id, K: SignatureVerifier> NativeVerifier<Id, K> {
 impl<Id: core::hash::Hash + Eq + AsRef<str>, K> NativeVerifier<Id, K> {
     /// Looks up the raw PDU for `event_id`, or the shared "unknown event"
     /// error every `EventVerifier` method starts with.
-    fn event(&self, event_id: &Id) -> Result<&Value, String> {
+    fn event<'a>(&'a self, event_id: &'a Id) -> Result<&'a Value, crate::errors::VerifyError<'a>> {
         self.events
             .get(event_id)
-            .ok_or_else(|| alloc::format!("unknown event {}", event_id.as_ref()))
+            .ok_or(crate::errors::VerifyError::UnknownEvent {
+                event_id: event_id.as_ref(),
+            })
     }
 }
 
 impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier<Id>
     for NativeVerifier<Id, K>
 {
-    fn verify_event_id_hash(&self, event_id: &Id) -> Result<(), String> {
+    fn verify_event_id_hash<'a>(
+        &'a self,
+        event_id: &'a Id,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
         if matches!(self.room_version.as_str(), "1" | "2") {
             Ok(())
         } else {
-            let expected = crate::basespec::rezzy_types::reference_hash(value, &self.room_version)?;
+            use crate::basespec::rezzy_types::{
+                encode_hash_slice, reference_hash_bytes, HASH_B64_MAX_LEN,
+            };
+            use crate::errors::VerifyError;
+
+            let digest =
+                reference_hash_bytes(value, &self.room_version).map_err(VerifyError::Hash)?;
+            let mut buf = [0u8; HASH_B64_MAX_LEN];
+            let n = encode_hash_slice(&digest, &self.room_version, &mut buf)
+                .map_err(VerifyError::Hash)?;
+            let expected = core::str::from_utf8(&buf[..n]).unwrap_or("");
             let actual = event_id
                 .as_ref()
                 .strip_prefix('$')
@@ -251,33 +267,44 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             if actual == expected {
                 return Ok(());
             }
-            Err(alloc::format!(
-                "event id hash mismatch for {}: expected {expected}",
-                event_id.as_ref()
-            ))
+            Err(VerifyError::EventIdHashMismatch {
+                event_id: event_id.as_ref(),
+                expected: expected.into(),
+            })
         }
     }
 
-    fn verify_signatures(&self, event_id: &Id) -> Result<(), String> {
+    fn verify_signatures<'a>(
+        &'a self,
+        event_id: &'a Id,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
         verify_event_signatures(value, &self.room_version, &self.verifier)
+            .map_err(crate::errors::VerifyError::Sign)
     }
 
-    fn verify_join_authorised_via_users_server(
-        &self,
-        event_id: &Id,
-        authorising_user: &str,
-    ) -> Result<(), String> {
+    fn verify_join_authorised_via_users_server<'a>(
+        &'a self,
+        event_id: &'a Id,
+        authorising_user: &'a str,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
+        use crate::errors::VerifyError;
+
         let server = crate::basespec::rezzy_types::extract_domain(authorising_user)
             .filter(|server| !server.is_empty())
-            .ok_or_else(|| alloc::format!("invalid authorising user ID {authorising_user}"))?;
+            .ok_or(VerifyError::InvalidAuthorisingUser { authorising_user })?;
         let value = self.event(event_id)?;
         verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
+            .map_err(VerifyError::Sign)
     }
 
-    fn verify_content_hash(&self, event_id: &Id) -> Result<(), String> {
+    fn verify_content_hash<'a>(
+        &'a self,
+        event_id: &'a Id,
+    ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
         crate::basespec::rezzy_types::verify_content_hash(value, &self.room_version)
+            .map_err(crate::errors::VerifyError::Hash)
     }
 }
 
@@ -286,9 +313,9 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
 mod consensus_tests {
     use super::*;
     use crate::json;
-    use alloc::format;
-    use alloc::vec::Vec;
     use ed25519_zebra::SigningKey;
+    use std::format;
+    use std::vec::Vec;
 
     fn signed_event(
         mut value: Value,

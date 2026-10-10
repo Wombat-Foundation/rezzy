@@ -1,14 +1,11 @@
 use crate::utils;
 use std::collections::HashMap;
-extern crate alloc;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::too_many_lines, clippy::type_complexity, clippy::similar_names)]
 mod tests {
 
-    use super::alloc::string::ToString;
-    use super::alloc::vec;
     use super::utils;
     use core::cmp::Ordering;
     use rezzy::*;
@@ -1905,27 +1902,27 @@ mod tests {
         use rezzy::json;
 
         // 1. Format every single variant of AuthError to ensure 100% Display coverage
-        let errs = vec![
+        let errs: Vec<AuthError<'static, &str>> = vec![
             AuthError::NotMember {
-                sender: "alice".into(),
-                event_id: "1".into(),
+                sender: "alice",
+                event_id: &"1",
             },
             AuthError::InsufficientPowerLevel {
                 required: 100,
                 actual: 50,
-                event_type: "m.room.name".into(),
+                event_type: "m.room.name",
             },
             AuthError::BannedUser {
-                sender: "bob".into(),
-                event_id: "2".into(),
+                sender: "bob",
+                event_id: &"2",
             },
             AuthError::InvalidStateKey {
-                expected: "x".into(),
-                actual: "y".into(),
+                expected: "x",
+                actual: "y",
             },
-            AuthError::<String>::CreateWithPrevEvents,
-            AuthError::MissingAuthEvent("3".into()),
-            AuthError::InvalidSyntax("invalid JSON".into()),
+            AuthError::CreateWithPrevEvents,
+            AuthError::MissingAuthEvent(&"3"),
+            AuthError::InvalidSyntax("invalid JSON"),
         ];
         for err in errs {
             let formatted = format!("{err}");
@@ -1997,8 +1994,8 @@ mod tests {
                 None
             ),
             Err(AuthError::NotMember {
-                sender: "@bob:example.com".into(),
-                event_id: "$name".into()
+                sender: "@bob:example.com",
+                event_id: &"$name".to_string()
             })
         );
 
@@ -2052,8 +2049,8 @@ mod tests {
                 None
             ),
             Err(AuthError::BannedUser {
-                sender: "@bob:example.com".into(),
-                event_id: "$join".into()
+                sender: "@bob:example.com",
+                event_id: &"$join".to_string()
             })
         );
 
@@ -2091,8 +2088,8 @@ mod tests {
                 None
             ),
             Err(AuthError::InvalidStateKey {
-                expected: "@alice:example.com".into(),
-                actual: "@bob:example.com".into()
+                expected: "@alice:example.com",
+                actual: "@bob:example.com"
             })
         );
 
@@ -2131,7 +2128,7 @@ mod tests {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                event_type: "m.room.name".into()
+                event_type: "m.room.name"
             })
         );
 
@@ -2152,8 +2149,8 @@ mod tests {
                 None
             ),
             Err(AuthError::BannedUser {
-                sender: "@bob:example.com".into(),
-                event_id: "$invite_banned".into()
+                sender: "@bob:example.com",
+                event_id: &"$invite_banned".to_string()
             })
         );
 
@@ -2165,9 +2162,11 @@ mod tests {
             state_key: None, // lacks state_key
             ..Default::default()
         };
+        let events = [create_no_key];
+        let empty_state = RoomState::new();
         let (accepted_ids, rejected_ids) = check_auth_chain(
-            &[create_no_key],
-            &RoomState::new(),
+            &events,
+            &empty_state,
             rezzy::basespec::rezzy_types::StateResVersion::V2_1,
         );
         assert_eq!(accepted_ids, vec!["$create_no_key"]);
@@ -3081,8 +3080,8 @@ macro_rules! impl_event_like_stub {
         impl rezzy::basespec::rezzy_types::EventLike for $ty {
             type Content = $content;
 
-            fn event_type(&self) -> std::borrow::Cow<'_, str> {
-                std::borrow::Cow::Borrowed("m.room.message")
+            fn event_type(&self) -> &str {
+                "m.room.message"
             }
             fn sender(&self) -> &'static str {
                 $sender
@@ -6206,8 +6205,8 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_event_id(&self) -> &String {
         &self.id
     }
-    fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Borrowed(&self.event_type)
+    fn raw_event_type(&self) -> &str {
+        &self.event_type
     }
     fn raw_sender(&self) -> &str {
         &self.sender
@@ -6299,7 +6298,7 @@ fn test_parsed_event_full_coverage() {
     assert_eq!(parsed.prev_state_events().len(), 0);
 
     // EventLike required methods (lines 534-556)
-    assert_eq!(parsed.event_type().as_ref(), "m.room.power_levels");
+    assert_eq!(parsed.event_type(), "m.room.power_levels");
     assert_eq!(parsed.sender(), "@admin:x");
     assert_eq!(parsed.state_key(), Some(""));
     assert_eq!(parsed.power_level(), 0); // raw_power_level default
@@ -6508,7 +6507,7 @@ fn test_lean_event_borrowed_view_accessors() {
     assert_eq!(view.depth(), event.depth);
     assert_eq!(view.prev_events(), event.prev_events.as_slice());
     assert_eq!(view.auth_events(), event.auth_events.as_slice());
-    assert_eq!(view.event_type().as_ref(), event.event_type);
+    assert_eq!(view.event_type(), event.event_type);
     assert_eq!(view.sender(), event.sender);
     assert_eq!(view.state_key(), event.state_key.as_deref());
     assert_eq!(view.power_level(), event.power_level);

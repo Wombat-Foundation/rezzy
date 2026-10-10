@@ -1,5 +1,5 @@
-use alloc::{string::String, vec};
 use base64::Engine;
+use std::{string::String, vec};
 
 /// Encodes base64 without relying on the `base64` crate's `alloc` feature.
 pub(crate) fn encode<E: Engine + ?Sized>(engine: &E, input: &[u8]) -> String {

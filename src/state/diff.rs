@@ -18,8 +18,8 @@
 use crate::basespec::event_types::EventType;
 use crate::basespec::rezzy_types::EventId;
 use crate::state::at::SharedState;
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 
 /// A single entry in a state diff.
 ///

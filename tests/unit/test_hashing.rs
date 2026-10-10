@@ -67,7 +67,7 @@ fn test_reference_hash_rejects_unsupported_room_version() {
     });
     let err = reference_hash(&pdu, "13").unwrap_err();
     assert!(
-        err.contains("unsupported room version 13"),
+        err.to_string().contains("unsupported room version 13"),
         "expected an unsupported-version error, got: {err}"
     );
     assert!(reference_hash(&pdu, "999").is_err());

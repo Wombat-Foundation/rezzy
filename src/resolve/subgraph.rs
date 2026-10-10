@@ -11,9 +11,9 @@
 use super::RangePrefilterReachability;
 use crate::basespec::rezzy_types::LeanEvent;
 use crate::HashMap;
-use alloc::collections::{BTreeSet, VecDeque};
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::collections::{BTreeSet, VecDeque};
+use std::string::String;
+use std::vec::Vec;
 
 /// Result of conflicted subgraph computation.
 pub struct SubgraphResult<Id = String> {

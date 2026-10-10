@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use core::iter::Sum;
+use std::vec::Vec;
 
 use super::*;
 
@@ -358,7 +358,7 @@ fn test_lthash_boundary_exceeded_state_key_truncates() {
 fn test_lthash_boundary_multibyte_truncation_rounds_back_to_char_boundary() {
     // Force the truncation point to land inside a 4-byte UTF-8 character so
     // the loop has to back up more than once before it reaches a boundary.
-    let over_max = alloc::format!("{}🚀", "a".repeat(65533));
+    let over_max = std::format!("{}🚀", "a".repeat(65533));
     let seed_over = LtHash::seed(&over_max, "", &"$1");
     let seed_exact = LtHash::seed(&"a".repeat(65533), "", &"$1");
     assert_eq!(

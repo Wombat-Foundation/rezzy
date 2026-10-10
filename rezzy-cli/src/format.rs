@@ -25,7 +25,7 @@ use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Everything an output formatter needs from one state-resolution run.
 pub struct FormattingContext<'a> {
@@ -849,22 +849,27 @@ pub fn needs_stream_order(args: &Args) -> bool {
                 .any(OrderKey::needs_stream_order))
 }
 
-/// Load and validate the stream-order index for `--timeline-order synapse`.
+/// Counts of sidecar records that could not be folded into the stream index.
+#[derive(Default)]
+struct StreamOrderTally {
+    missing: usize,
+    mismatched: usize,
+    unbound: usize,
+    room_mismatch: usize,
+}
+
+impl StreamOrderTally {
+    const fn is_complete(&self) -> bool {
+        self.missing == 0 && self.mismatched == 0 && self.room_mismatch == 0 && self.unbound == 0
+    }
+}
+
+/// Resolves which sidecar files to read and which aggregate each binds to.
 ///
-/// An explicit `--metadata` path is fatal on error. Auto-discovered sibling
-/// sidecars are best-effort: missing, mismatched, or conflicting entries are
-/// counted and reported in one summary warning, and the caller falls back.
-///
-/// # Errors
-/// Returns an error only when an explicit `--metadata` sidecar cannot be read.
-pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
-    args: &Args,
-    events_map: &HashMap<String, LeanEvent, S1>,
-    raw_map: &HashMap<String, rezzy::JsonValue, S2>,
-    room_version: Option<&str>,
-) -> Result<Option<StreamOrderIndex>, AppError> {
-    let explicit = args.metadata.clone();
-    let paths: Vec<(PathBuf, Option<PathBuf>)> = explicit.as_ref().map_or_else(
+/// An explicit `--metadata` path yields exactly that file; otherwise every
+/// input `.jsonl` that already has a sibling sidecar is considered.
+fn resolve_sidecar_paths(args: &Args) -> Vec<(PathBuf, Option<PathBuf>)> {
+    args.metadata.as_ref().map_or_else(
         || {
             args.input
                 .iter()
@@ -880,7 +885,134 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
             let aggregate = (args.input.len() == 1).then(|| args.input[0].clone());
             vec![(path.clone(), aggregate)]
         },
-    );
+    )
+}
+
+/// Loads a sidecar, or warns and yields `None` when auto-discovery hits a
+/// sidecar that cannot be parsed. An explicit `--metadata` path stays fatal.
+fn load_sidecar_or_warn(
+    path: &Path,
+    explicit: bool,
+    quiet: bool,
+) -> Result<Option<provenance::LoadedSidecar>, AppError> {
+    match provenance::load_sidecar(path) {
+        Ok(sidecar) => Ok(Some(sidecar)),
+        Err(error) if explicit => Err(error),
+        Err(error) => {
+            warn_once(
+                quiet,
+                &format!("ignoring provenance sidecar {}: {error}", path.display()),
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Checks a sidecar's room version, aggregate binding, and room ID against the
+/// inputs before its records are merged. Returns `false` when the sidecar must
+/// be skipped, bumping the matching counter (and warning) on the way out.
+fn sidecar_preconditions_met(
+    sidecar: &provenance::LoadedSidecar,
+    aggregate_path: Option<&Path>,
+    expected_room_id: Option<&str>,
+    room_version: Option<&str>,
+    tally: &mut StreamOrderTally,
+    quiet: bool,
+) -> bool {
+    if room_version.is_some()
+        && sidecar.room_version.is_some()
+        && room_version != sidecar.room_version.as_deref()
+    {
+        tally.room_mismatch = tally.room_mismatch.saturating_add(1);
+        return false;
+    }
+    if let Some(aggregate_path) = aggregate_path {
+        match sidecar.aggregate_sha256.as_deref() {
+            Some(expected) => match fs::read(aggregate_path) {
+                Ok(bytes) if provenance::sha256_hex(&bytes) == expected => {}
+                Ok(_) => {
+                    tally.mismatched = tally.mismatched.saturating_add(1);
+                    return false;
+                }
+                Err(error) => {
+                    warn_once(
+                        quiet,
+                        &format!(
+                            "cannot validate aggregate binding for {}: {error}",
+                            aggregate_path.display()
+                        ),
+                    );
+                    tally.mismatched = tally.mismatched.saturating_add(1);
+                    return false;
+                }
+            },
+            None => tally.unbound = tally.unbound.saturating_add(1),
+        }
+    }
+    if expected_room_id.is_some()
+        && sidecar
+            .room_id
+            .as_deref()
+            .is_some_and(|id| Some(id) != expected_room_id)
+    {
+        tally.room_mismatch = tally.room_mismatch.saturating_add(1);
+        return false;
+    }
+    true
+}
+
+/// Folds one sidecar's per-event records into `index`.
+fn merge_sidecar_records<S1, S2>(
+    sidecar: &provenance::LoadedSidecar,
+    events_map: &HashMap<String, LeanEvent, S1>,
+    raw_map: &HashMap<String, rezzy::JsonValue, S2>,
+    index: &mut StreamOrderIndex,
+    tally: &mut StreamOrderTally,
+) where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
+    for event_id in events_map.keys() {
+        let Some(record) = sidecar.events.get(event_id) else {
+            tally.missing = tally.missing.saturating_add(1);
+            continue;
+        };
+        if let Some(raw) = raw_map.get(event_id) {
+            if let Ok(serialized) = rezzy::json::write_string_value(raw) {
+                if provenance::sha256_id(serialized.as_bytes()) != record.payload_sha256 {
+                    tally.mismatched = tally.mismatched.saturating_add(1);
+                    continue;
+                }
+            }
+        }
+        match record.stream_ordering {
+            Some(value) => {
+                index.by_event.insert(event_id.clone(), value);
+            }
+            None => tally.missing = tally.missing.saturating_add(1),
+        }
+    }
+}
+
+/// Load and validate the stream-order index for `--timeline-order synapse`.
+///
+/// An explicit `--metadata` path is fatal on error. Auto-discovered sibling
+/// sidecars are best-effort: missing, mismatched, or conflicting entries are
+/// counted and reported in one summary warning, and the caller falls back.
+///
+/// # Errors
+/// Returns an error only when an explicit `--metadata` sidecar cannot be read.
+pub fn load_stream_order<S1, S2>(
+    args: &Args,
+    events_map: &HashMap<String, LeanEvent, S1>,
+    raw_map: &HashMap<String, rezzy::JsonValue, S2>,
+    room_version: Option<&str>,
+) -> Result<Option<StreamOrderIndex>, AppError>
+where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
+    let paths = resolve_sidecar_paths(args);
     if paths.is_empty() {
         warn_once(
             args.quiet,
@@ -892,85 +1024,24 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     let expected_room_id = raw_map
         .values()
         .find_map(|value| value.get("room_id").and_then(rezzy::JsonValue::as_str));
+    let explicit = args.metadata.is_some();
     let mut index = StreamOrderIndex::default();
-    let mut missing = 0_usize;
-    let mut mismatched = 0_usize;
-    let mut unbound = 0_usize;
-    let mut room_mismatch = 0_usize;
+    let mut tally = StreamOrderTally::default();
     for (path, aggregate_path) in &paths {
-        let sidecar = if explicit.is_some() {
-            provenance::load_sidecar(path)?
-        } else {
-            match provenance::load_sidecar(path) {
-                Ok(sidecar) => sidecar,
-                Err(error) => {
-                    warn_once(
-                        args.quiet,
-                        &format!("ignoring provenance sidecar {}: {error}", path.display()),
-                    );
-                    continue;
-                }
-            }
+        let Some(sidecar) = load_sidecar_or_warn(path, explicit, args.quiet)? else {
+            continue;
         };
-        if room_version.is_some()
-            && sidecar.room_version.is_some()
-            && room_version != sidecar.room_version.as_deref()
-        {
-            room_mismatch = room_mismatch.saturating_add(1);
+        if !sidecar_preconditions_met(
+            &sidecar,
+            aggregate_path.as_deref(),
+            expected_room_id,
+            room_version,
+            &mut tally,
+            args.quiet,
+        ) {
             continue;
         }
-        if let Some(aggregate_path) = aggregate_path.as_deref() {
-            match sidecar.aggregate_sha256.as_deref() {
-                Some(expected) => match fs::read(aggregate_path) {
-                    Ok(bytes) if provenance::sha256_hex(&bytes) == expected => {}
-                    Ok(_) => {
-                        mismatched = mismatched.saturating_add(1);
-                        continue;
-                    }
-                    Err(error) => {
-                        warn_once(
-                            args.quiet,
-                            &format!(
-                                "cannot validate aggregate binding for {}: {error}",
-                                aggregate_path.display()
-                            ),
-                        );
-                        mismatched = mismatched.saturating_add(1);
-                        continue;
-                    }
-                },
-                None => unbound = unbound.saturating_add(1),
-            }
-        }
-        if expected_room_id.is_some()
-            && sidecar
-                .room_id
-                .as_deref()
-                .is_some_and(|id| Some(id) != expected_room_id)
-        {
-            room_mismatch = room_mismatch.saturating_add(1);
-            continue;
-        }
-        for event_id in events_map.keys() {
-            let Some(record) = sidecar.events.get(event_id) else {
-                missing = missing.saturating_add(1);
-                continue;
-            };
-            if let Some(raw) = raw_map.get(event_id) {
-                if let Ok(serialized) = rezzy::json::write_string_value(raw) {
-                    if provenance::sha256_id(serialized.as_bytes()) != record.payload_sha256 {
-                        mismatched = mismatched.saturating_add(1);
-                        continue;
-                    }
-                }
-            }
-            match record.stream_ordering {
-                Some(value) => {
-                    index.by_event.insert(event_id.clone(), value);
-                }
-                None => missing = missing.saturating_add(1),
-            }
-        }
+        merge_sidecar_records(&sidecar, events_map, raw_map, &mut index, &mut tally);
     }
     if index.is_empty() {
         warn_once(
@@ -979,11 +1050,12 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
         );
         return Ok(None);
     }
-    if missing > 0 || mismatched > 0 || room_mismatch > 0 || unbound > 0 {
+    if !tally.is_complete() {
         warn_once(
             args.quiet,
             &format!(
-                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload/generation mismatch, {unbound} legacy unbound, {room_mismatch} room/version mismatch); those events sort after events with a known stream order"
+                "stream_ordering incomplete ({} missing/conflicting, {} payload/generation mismatch, {} legacy unbound, {} room/version mismatch); those events sort after events with a known stream order",
+                tally.missing, tally.mismatched, tally.unbound, tally.room_mismatch
             ),
         );
     }

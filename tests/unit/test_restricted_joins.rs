@@ -85,13 +85,18 @@ impl rezzy::EventVerifier<String> for RejectAuthorisingSignature {
         &self,
         _event_id: &String,
         _authorising_user: &str,
-    ) -> Result<(), String> {
-        Err("missing authorising-server signature".into())
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason(
+            "missing authorising-server signature",
+        ))
     }
 }
 
-/// Runs Bob's join event (with the given content) against `state`.
-fn check_bob_join(state: &RoomState, content: rezzy::JsonValue) -> Result<(), AuthError> {
+/// Asserts Bob's join event (with the given content) against `state` is
+/// rejected with `NotMember`. The join event is built here because
+/// `check_auth`'s error borrows it -- the assertion must run while it is
+/// still in scope.
+fn assert_bob_join_not_member(state: &RoomState, content: rezzy::JsonValue, msg: &str) {
     let join_event = make_event(
         "$bob_join",
         "m.room.member",
@@ -99,23 +104,21 @@ fn check_bob_join(state: &RoomState, content: rezzy::JsonValue) -> Result<(), Au
         "@bob:example.com",
         content,
     );
-    check_auth(&join_event, state, StateResVersion::V2, None)
-}
-
-/// Asserts Bob's join was rejected with `NotMember`.
-fn assert_bob_join_not_member(result: &Result<(), AuthError>, msg: &str) {
+    let result = check_auth(&join_event, state, StateResVersion::V2, None);
     assert_eq!(
         result,
-        &Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_join".into(),
+        Err(AuthError::NotMember {
+            sender: "@bob:example.com",
+            event_id: &"$bob_join".to_string(),
         }),
         "{msg}"
     );
 }
 
-/// Runs Dave's knock event against a room with the given join rule.
-fn check_dave_knock(join_rule: &str) -> Result<(), AuthError> {
+/// Asserts Dave's knock against a room with the given join rule was allowed.
+/// Both fixtures are built here because `check_auth`'s error borrows them --
+/// the assertion must run while they are still in scope.
+fn assert_dave_knock_allowed(join_rule: &str, msg: &str) {
     let state = room_with_join_rule(join_rule);
     let knock_event = make_event(
         "$dave_knock",
@@ -124,7 +127,31 @@ fn check_dave_knock(join_rule: &str) -> Result<(), AuthError> {
         "@dave:example.com",
         json!({"membership": "knock"}),
     );
-    check_auth(&knock_event, &state, StateResVersion::V2, None)
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
+    assert!(result.is_ok(), "{msg}, got: {result:?}");
+}
+
+/// Asserts Dave's knock against a room with the given join rule is rejected
+/// with `NotMember`. Both fixtures are built here because `check_auth`'s
+/// error borrows them -- the assertion must run while they are still in scope.
+fn assert_dave_knock_rejected(join_rule: &str, msg: &str) {
+    let state = room_with_join_rule(join_rule);
+    let knock_event = make_event(
+        "$dave_knock",
+        "m.room.member",
+        Some("@dave:example.com"),
+        "@dave:example.com",
+        json!({"membership": "knock"}),
+    );
+    let result = check_auth(&knock_event, &state, StateResVersion::V2, None);
+    assert_eq!(
+        result,
+        Err(AuthError::NotMember {
+            sender: "@dave:example.com",
+            event_id: &"$dave_knock".to_string(),
+        }),
+        "{msg}"
+    );
 }
 
 // ─── Restricted join rules (room version 8+) ────────────────────────────
@@ -206,7 +233,7 @@ fn test_restricted_join_requires_authorising_server_signature_when_verified() {
         Some(&RejectAuthorisingSignature),
     );
     assert!(
-        matches!(result, Err(AuthError::InvalidSyntax(ref reason)) if reason.contains("authorising-server signature")),
+        matches!(result, Err(AuthError::Verification(rezzy::errors::VerifyError::Reason(reason))) if reason.contains("authorising-server signature")),
         "a restricted join must require the authorising user's server signature: {result:?}"
     );
 }
@@ -215,17 +242,10 @@ fn test_restricted_join_requires_authorising_server_signature_when_verified() {
 fn test_restricted_rules_are_rejected_before_v8() {
     let mut state = room_with_join_rule("restricted");
     set_room_version(&mut state, "7");
-    let result = check_bob_join(
+    assert_bob_join_not_member(
         &state,
         json!({"membership": "join", "join_authorised_via_users_server": "@admin:example.com"}),
-    );
-
-    assert_eq!(
-        result,
-        Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_join".into(),
-        })
+        "restricted rules must be rejected before room version 8",
     );
 }
 
@@ -244,8 +264,8 @@ fn test_knock_restricted_is_rejected_before_v10() {
     assert_eq!(
         check_auth(&knock_event, &state, StateResVersion::V2, None),
         Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_knock".into(),
+            sender: "@bob:example.com",
+            event_id: &"$bob_knock".to_string(),
         })
     );
 }
@@ -255,9 +275,9 @@ fn test_restricted_join_without_invite_or_authorized_rejected() {
     // A user with no invite and no join_authorised_via_users_server should be rejected.
     let state = room_with_join_rule("restricted");
 
-    let result = check_bob_join(&state, json!({"membership": "join"}));
     assert_bob_join_not_member(
-        &result,
+        &state,
+        json!({"membership": "join"}),
         "user without invite or authorized_via must be rejected from restricted room",
     );
 }
@@ -319,63 +339,37 @@ fn test_knock_restricted_join_with_authorized_via_allowed() {
 #[test]
 fn test_knock_restricted_knock_allowed() {
     // In knock_restricted, knocking should be allowed (same as knock).
-    let result = check_dave_knock("knock_restricted");
-    assert!(
-        result.is_ok(),
-        "knocking should be allowed in knock_restricted room, got: {result:?}"
+    assert_dave_knock_allowed(
+        "knock_restricted",
+        "knocking should be allowed in knock_restricted room",
     );
 }
 
 #[test]
 fn test_restricted_knock_rejected() {
     // In `restricted` (not knock_restricted), knocking should NOT be allowed.
-    let result = check_dave_knock("restricted");
-    assert_eq!(
-        result,
-        Err(AuthError::NotMember {
-            sender: "@dave:example.com".into(),
-            event_id: "$dave_knock".into()
-        }),
-        "knocking must NOT be allowed in plain restricted room (only knock_restricted)"
+    assert_dave_knock_rejected(
+        "restricted",
+        "knocking must NOT be allowed in plain restricted room (only knock_restricted)",
     );
 }
 
 #[test]
 fn test_invite_only_knock_rejected() {
     // Knocking should NOT be allowed in an invite-only room.
-    let result = check_dave_knock("invite");
-    assert_eq!(
-        result,
-        Err(AuthError::NotMember {
-            sender: "@dave:example.com".into(),
-            event_id: "$dave_knock".into()
-        }),
-        "knocking must NOT be allowed in invite-only room"
-    );
+    assert_dave_knock_rejected("invite", "knocking must NOT be allowed in invite-only room");
 }
 
 #[test]
 fn test_public_knock_rejected() {
     // Knocking should NOT be allowed in a public room (just join directly).
-    let result = check_dave_knock("public");
-    assert_eq!(
-        result,
-        Err(AuthError::NotMember {
-            sender: "@dave:example.com".into(),
-            event_id: "$dave_knock".into()
-        }),
-        "knocking must NOT be allowed in public room"
-    );
+    assert_dave_knock_rejected("public", "knocking must NOT be allowed in public room");
 }
 
 #[test]
 fn test_knock_room_knock_allowed() {
     // Knocking SHOULD be allowed when join_rule is "knock".
-    let result = check_dave_knock("knock");
-    assert!(
-        result.is_ok(),
-        "knocking should be allowed in knock room, got: {result:?}"
-    );
+    assert_dave_knock_allowed("knock", "knocking should be allowed in knock room");
 }
 
 #[test]
@@ -406,8 +400,8 @@ fn test_banned_user_cannot_knock() {
     assert_eq!(
         result,
         Err(AuthError::BannedUser {
-            sender: "@evil:example.com".into(),
-            event_id: "$evil_knock".into()
+            sender: "@evil:example.com",
+            event_id: &"$evil_knock".to_string()
         }),
         "banned user must NOT be able to knock"
     );
@@ -444,8 +438,8 @@ fn test_restricted_banned_user_cannot_join_even_with_authorized_via() {
     assert_eq!(
         result,
         Err(AuthError::BannedUser {
-            sender: "@evil:example.com".into(),
-            event_id: "$evil_join".into()
+            sender: "@evil:example.com",
+            event_id: &"$evil_join".to_string()
         }),
         "banned user must NOT be able to join even with authorized_via"
     );
@@ -459,15 +453,12 @@ fn test_restricted_join_rejected_when_authorising_user_not_joined() {
     let state = room_with_join_rule("restricted");
 
     // @bob tries to join with authorisation from @ghost who is NOT in the room.
-    let result = check_bob_join(
+    assert_bob_join_not_member(
         &state,
         json!({
             "membership": "join",
             "join_authorised_via_users_server": "@ghost:example.com"
         }),
-    );
-    assert_bob_join_not_member(
-        &result,
         "restricted join must be rejected when authorising user is not joined",
     );
 }
@@ -505,15 +496,12 @@ fn test_restricted_join_rejected_when_authorising_user_lacks_invite_pl() {
         ),
     );
 
-    let result = check_bob_join(
+    assert_bob_join_not_member(
         &state,
         json!({
             "membership": "join",
             "join_authorised_via_users_server": "@lowpl:example.com"
         }),
-    );
-    assert_bob_join_not_member(
-        &result,
         "restricted join must be rejected when authorising user lacks invite PL",
     );
 }
@@ -629,8 +617,8 @@ fn test_joined_user_cannot_knock() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@alice:example.com".into(),
-            event_id: "$alice_knock".into()
+            sender: "@alice:example.com",
+            event_id: &"$alice_knock".to_string()
         }),
         "Joined user must NOT be able to knock"
     );
@@ -668,8 +656,8 @@ fn test_invited_user_cannot_knock() {
     assert_eq!(
         result,
         Err(AuthError::NotMember {
-            sender: "@bob:example.com".into(),
-            event_id: "$bob_knock".into()
+            sender: "@bob:example.com",
+            event_id: &"$bob_knock".to_string()
         }),
         "Invited user must NOT be able to knock"
     );

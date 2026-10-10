@@ -1,10 +1,8 @@
-#![no_std]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! # Rezzy — Matrix State Resolution Engine
 //!
 //! Spec-compliant implementation of Matrix state resolution versions
 //! **V1**, **V2**, **V2.1** ([MSC4297]), **V2.1.1**, and **V2.2** ([MSC4242]).
-//! Runs in `#![no_std]` environments with `alloc`.
 //!
 //! ## Feature Flags
 //!
@@ -33,9 +31,6 @@
 //! [MSC4297]: https://github.com/matrix-org/matrix-spec-proposals/pull/4297
 //! [MSC4242]: https://github.com/matrix-org/matrix-spec-proposals/pull/4242
 
-#[cfg(feature = "std")]
-extern crate std;
-
 // Copyright 2026 Shane Jaroch
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,21 +45,20 @@ extern crate std;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-extern crate alloc;
-
 pub use rezzy_json as json;
 pub use rezzy_json::json;
 
 mod base64_utils;
 
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 
 pub mod auth;
 pub mod basespec;
 pub mod bitmap;
 pub mod cuckoo_verify;
 pub mod dense_index;
+pub mod errors;
 pub mod hamt;
 pub mod incremental;
 pub mod merkle;
@@ -176,7 +170,7 @@ where
 }
 
 /// Re-exported hashmap and hashset — uses `std::collections` when `std` is
-/// enabled, falls back to `hashbrown` for `no_std` targets.
+/// enabled, falls back to `hashbrown` when the `std` feature is disabled.
 ///
 /// All resolution functions are generic over `BuildHasher`, so this is
 /// purely a convenience for callers who don't need a specific hasher.
@@ -216,7 +210,7 @@ pub type FastSet<K> = hashbrown::HashSet<K, hashbrown::DefaultHashBuilder>;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::vec;
+    use std::vec;
 
     #[test]
     fn resolved_state_entries_orders_by_type_then_state_key() {

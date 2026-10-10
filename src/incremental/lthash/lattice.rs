@@ -1,8 +1,8 @@
 //! The `LtLattice` accumulator, its arithmetic traits and serialization.
 
-use alloc::vec::Vec;
 use core::iter::{Extend, FromIterator, Sum};
 use core::ops::{Add, AddAssign, Sub, SubAssign};
+use std::vec::Vec;
 
 use super::encoding::{
     add_lattice, lattice_digest, seed_bytes_lattice, seed_field_lattice, seed_lattice, sub_lattice,

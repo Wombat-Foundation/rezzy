@@ -3,7 +3,6 @@ use crate::hamt::codec::PersistedInternalNode;
 use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
 use crate::incremental::LtHash;
-use alloc::{boxed::Box, vec};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use std::collections::BTreeSet;
@@ -12,6 +11,7 @@ use std::error::Error as _;
 #[cfg(feature = "std")]
 use std::format;
 use std::sync::Arc;
+use std::{boxed::Box, vec};
 
 macro_rules! impl_u64_hamt_codec {
     ($ty:ty) => {
@@ -879,13 +879,13 @@ fn test_persist_mutations_and_chain_with_key_hash() {
     let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
         .expect("build with custom hash should work");
 
-    let batch: Vec<(u64, Option<u64>)> = alloc::vec![(100, Some(1)), (5, None), (101, Some(2)),];
+    let batch: Vec<(u64, Option<u64>)> = vec![(100, Some(1)), (5, None), (101, Some(2))];
 
     let (batched_root, displaced_vec, created) =
         crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
             .persist_mutations(&root, key, batch.clone())
             .expect("persist_mutations should work");
-    assert_eq!(displaced_vec, alloc::vec![None, Some(50_u64), None]);
+    assert_eq!(displaced_vec, vec![None, Some(50_u64), None]);
     assert_ne!(created.len(), 0);
     assert_eq!(
         batched_root.get_with_key_hash(&100_u64, linear_key_hash),
@@ -961,14 +961,14 @@ fn test_persist_mutations_with_key_hash_noop_batch_short_circuits() {
     let root = linear_hash_root();
 
     // Net effect is identity: insert a new key, then remove it again.
-    let batch: Vec<(u64, Option<u64>)> = alloc::vec![(1000, Some(1)), (1000, None)];
+    let batch: Vec<(u64, Option<u64>)> = vec![(1000, Some(1)), (1000, None)];
 
     let (final_root, displaced_vec, created) =
         crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
             .persist_mutations(&root, key, batch)
             .expect("net-identity batch should still succeed");
 
-    assert_eq!(displaced_vec, alloc::vec![None, Some(1_u64)]);
+    assert_eq!(displaced_vec, vec![None, Some(1_u64)]);
     assert_eq!(final_root.structural_hash, root.structural_hash);
     assert!(
         created.is_empty(),
@@ -1604,7 +1604,7 @@ fn test_hamt_insert_value_replacement() {
 
 #[test]
 fn test_hamt_error_display_formatting() {
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     let build_err = HamtBuildError::HashCollision {
         depth: 26,
@@ -2701,7 +2701,7 @@ fn test_diff_nodes_and_lazy_resolver() {
 #[test]
 fn test_hamt_codec_types() {
     use crate::hamt::codec::HamtCodec;
-    use alloc::string::String;
+    use std::string::String;
     let mut out = Vec::new();
 
     // bool
@@ -3578,7 +3578,7 @@ fn test_universe_too_large_from_index_too_large_preserves_distinct_count() {
 
 #[test]
 fn test_universe_too_large_display() {
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     let err = crate::hamt::audit::UniverseTooLarge {
         distinct_count: 4_294_967_296,
@@ -3592,7 +3592,7 @@ fn test_universe_too_large_display() {
 
 #[test]
 fn test_universe_too_large_display_allocation_failed() {
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     let err = crate::hamt::audit::UniverseTooLarge {
         distinct_count: 123,
@@ -3606,7 +3606,7 @@ fn test_universe_too_large_display_allocation_failed() {
 
 #[test]
 fn test_bitmap_audit_error_display_and_conversions() {
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     let universe_err = crate::hamt::audit::UniverseTooLarge {
         distinct_count: 42,
@@ -3643,8 +3643,8 @@ fn test_bitmap_audit_error_display_and_conversions() {
 #[test]
 #[cfg(feature = "std")]
 fn test_bitmap_audit_error_source_and_downcast() {
-    use alloc::string::ToString;
     use std::error::Error as _;
+    use std::string::ToString;
 
     // Universe variant: `source()` returns the wrapped UniverseTooLarge.
     let universe_err = crate::hamt::audit::UniverseTooLarge {
@@ -3893,18 +3893,18 @@ fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result
 /// values so no signed/narrowing conversion is ever required against the
 /// `usize`-based bit-scan indices in `diff_nodes` or the `usize`-based
 /// `Rng::below`.
-type DeltaEntries = alloc::vec::Vec<(u32, u32)>;
+type DeltaEntries = std::vec::Vec<(u32, u32)>;
 
 /// Enumerates every leaf of `root` into a `BTreeMap`, resolving lazy
 /// children with `resolver`. Independent of `diff_nodes`'s traversal shape.
 fn oracle_leaves<F>(
     root: &Arc<HamtNode<u32, u32>>,
     resolver: &mut F,
-) -> alloc::collections::BTreeMap<u32, u32>
+) -> std::collections::BTreeMap<u32, u32>
 where
     F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<u32, u32>>, core::convert::Infallible>,
 {
-    let mut out = alloc::collections::BTreeMap::new();
+    let mut out = std::collections::BTreeMap::new();
     root.visit_entries(resolver, &mut |k: &u32, v: &u32| {
         out.insert(*k, *v);
         Ok::<(), core::convert::Infallible>(())
@@ -3916,8 +3916,8 @@ where
 /// Computes `added`/`removed` as sorted `(key, value)` vectors from the
 /// oracle leaf maps, independent of `isolate_delta`'s emission order.
 fn oracle_delta(
-    a: &alloc::collections::BTreeMap<u32, u32>,
-    b: &alloc::collections::BTreeMap<u32, u32>,
+    a: &std::collections::BTreeMap<u32, u32>,
+    b: &std::collections::BTreeMap<u32, u32>,
 ) -> (DeltaEntries, DeltaEntries) {
     let mut removed: DeltaEntries = a
         .iter()
@@ -4051,11 +4051,11 @@ fn test_isolate_delta_order_invariant_randomized() {
 
         // Later entries for the same key win (build_hamt inserts in order),
         // so dedupe the same way for the oracle input.
-        let mut map_a: alloc::collections::BTreeMap<u32, u32> = alloc::collections::BTreeMap::new();
+        let mut map_a: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
         for (k, v) in entries_a.iter().copied() {
             map_a.insert(k, v);
         }
-        let mut map_b: alloc::collections::BTreeMap<u32, u32> = alloc::collections::BTreeMap::new();
+        let mut map_b: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
         for (k, v) in entries_b.iter().copied() {
             map_b.insert(k, v);
         }
@@ -4208,7 +4208,7 @@ fn test_refcount_table_shared_hash_not_zeroed_by_one_of_two_referrers() {
 #[test]
 fn test_refcount_table_apply_superseded_underflow_is_atomic() {
     use crate::hamt::gc::{RefcountTable, RefcountUnderflow};
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     let key = b"dummy_server_key";
     let root = build_root(key, 64);
@@ -4391,7 +4391,7 @@ fn test_refcount_debug_guard_catches_branching_hazard() {
     // Simulate: `apply_superseded` reported `hashes[0]` as zeroed, but it is
     // in fact still reachable from a different, still-live root (the
     // "forked resolution branch" case the module docs warn about).
-    let zeroed = alloc::vec![hashes[0]];
+    let zeroed = vec![hashes[0]];
     let mut other_live_roots_reachable = crate::HashSet::default();
     other_live_roots_reachable.insert(hashes[0]);
 

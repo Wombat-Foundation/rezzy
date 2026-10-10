@@ -16,8 +16,8 @@
 //! the `StateKeyDyn` `(ev_type, state_key)` lexicographic ordering contract
 //! unconditionally — independent of interning order.
 
-use alloc::rc::Rc;
 use core::fmt;
+use std::rc::Rc;
 
 use crate::auth::StateProvider;
 use crate::basespec::rezzy_types::LeanEvent;
@@ -29,7 +29,7 @@ use crate::basespec::rezzy_types::LeanEvent;
 /// bump, not a fresh allocation).
 #[derive(Debug)]
 pub struct Interner {
-    id_to_str: alloc::vec::Vec<Rc<str>>,
+    id_to_str: std::vec::Vec<Rc<str>>,
     str_to_id: crate::HashMap<Rc<str>, u32>,
 }
 
@@ -49,7 +49,7 @@ impl Interner {
         let mut str_to_id = crate::HashMap::new();
         str_to_id.insert(Rc::clone(&empty), 0);
         Self {
-            id_to_str: alloc::vec![empty],
+            id_to_str: vec![empty],
             str_to_id,
         }
     }
@@ -212,9 +212,9 @@ impl fmt::Display for InternId<'_> {
 /// A room-state map keyed by `(InternId<'a>, InternId<'a>)` — both halves
 /// `Copy` — whose `StateProvider` impl converts a `&str` query into the key via
 /// the interner with no allocation. No `Borrow<dyn StateKeyDyn>`, no `'static`.
-pub struct InternedRoomState<'a, Id = alloc::string::String, C = crate::json::Value> {
+pub struct InternedRoomState<'a, Id = std::string::String, C = crate::json::Value> {
     interner: &'a Interner,
-    map: alloc::collections::BTreeMap<(InternId<'a>, InternId<'a>), LeanEvent<Id, C, InternId<'a>>>,
+    map: std::collections::BTreeMap<(InternId<'a>, InternId<'a>), LeanEvent<Id, C, InternId<'a>>>,
 }
 
 impl<'a, Id, C> InternedRoomState<'a, Id, C> {
@@ -233,7 +233,7 @@ impl<'a, Id, C> InternedRoomState<'a, Id, C> {
     #[must_use]
     pub fn new(
         interner: &'a Interner,
-        map: alloc::collections::BTreeMap<
+        map: std::collections::BTreeMap<
             (InternId<'a>, InternId<'a>),
             LeanEvent<Id, C, InternId<'a>>,
         >,
@@ -278,15 +278,45 @@ where
     }
 }
 
+impl<'p, 'a, Id, C> crate::auth::StateProviderRef<'p, Id, C, LeanEvent<Id, C, InternId<'a>>>
+    for &'p InternedRoomState<'a, Id, C>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    fn get_event_ref(
+        &self,
+        event_type: &str,
+        state_key: &str,
+    ) -> Option<&'p LeanEvent<Id, C, InternId<'a>>> {
+        StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
+impl<'a, Id, C> StateProvider<Id, C, LeanEvent<Id, C, InternId<'a>>>
+    for &InternedRoomState<'a, Id, C>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    C: crate::basespec::rezzy_types::EventContent,
+{
+    fn get_event(
+        &self,
+        event_type: &str,
+        state_key: &str,
+    ) -> Option<&LeanEvent<Id, C, InternId<'a>>> {
+        StateProvider::get_event(*self, event_type, state_key)
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::auth::StateProvider;
-    use alloc::string::ToString;
-    use alloc::vec;
-    use alloc::vec::Vec;
     use core::hash::BuildHasher;
+    use std::string::ToString;
+    use std::vec;
+    use std::vec::Vec;
 
     /// A minimal member `LeanEvent` keyed by an interned state key, shared by
     /// the `StateProvider` tests below.
@@ -294,14 +324,14 @@ mod tests {
         id: &str,
         state_key: InternId<'a>,
         sender: &str,
-    ) -> LeanEvent<alloc::string::String, crate::json::Value, InternId<'a>> {
+    ) -> LeanEvent<std::string::String, crate::json::Value, InternId<'a>> {
         LeanEvent {
-            event_id: alloc::string::String::from(id),
-            event_type: alloc::string::String::from("m.room.member"),
+            event_id: std::string::String::from(id),
+            event_type: std::string::String::from("m.room.member"),
             state_key: Some(state_key),
             power_level: 0,
             origin_server_ts: 0,
-            sender: alloc::string::String::from(sender),
+            sender: std::string::String::from(sender),
             content: crate::json::Value::Null,
             prev_events: Vec::new(),
             auth_events: Vec::new(),
@@ -373,9 +403,9 @@ mod tests {
         // Keyed with InternIds from arena_a, but constructed with arena_b.
         let et = InternId::from_index(&arena_a, arena_a.id_of("m.room.member").unwrap());
         let sk = InternId::from_index(&arena_a, arena_a.id_of("@a:x").unwrap());
-        let map = alloc::collections::BTreeMap::from([(
+        let map = std::collections::BTreeMap::from([(
             (et, sk),
-            LeanEvent::<alloc::string::String, crate::json::Value, InternId<'_>> {
+            LeanEvent::<std::string::String, crate::json::Value, InternId<'_>> {
                 event_id: "$a".to_string(),
                 event_type: "m.room.member".to_string(),
                 state_key: Some(sk),
@@ -419,7 +449,7 @@ mod tests {
 
         let map = InternedRoomState {
             interner: interner_ref,
-            map: alloc::collections::BTreeMap::from([
+            map: std::collections::BTreeMap::from([
                 ((et, a), member_event("$a", a, "@a:x")),
                 ((et, b), member_event("$b", b, "@b:x")),
             ]),

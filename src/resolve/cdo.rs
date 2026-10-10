@@ -73,11 +73,11 @@ use crate::basespec::event_types::{
 };
 use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use crate::HashMap;
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::hash::BuildHasher;
+use std::collections::BTreeSet;
+use std::vec::Vec;
 
 /// Returns `true` if `possible_ancestor_id` is an ancestor of `child_id`.
 ///
@@ -247,7 +247,7 @@ where
 {
     let mut relevant_ids = crate::FastSet::default();
     let mut visited = crate::FastSet::default();
-    let mut queue = alloc::collections::VecDeque::new();
+    let mut queue = std::collections::VecDeque::new();
     let event = |id: &Id| conflicted_events.get(id).or_else(|| auth_context.get(id));
 
     for (id, ev) in conflicted_events {
@@ -355,8 +355,8 @@ where
         sorted_events.push((i, ev));
     }
 
-    let mut parents = alloc::vec![Vec::new(); sorted_events.len()];
-    let mut children = alloc::vec![Vec::new(); sorted_events.len()];
+    let mut parents = vec![Vec::new(); sorted_events.len()];
+    let mut children = vec![Vec::new(); sorted_events.len()];
 
     for (child_idx, ev) in &sorted_events {
         for parent_id in ev.prev_events.iter().chain(ev.auth_events.iter()) {
@@ -558,8 +558,8 @@ where
     let mut dropped_ids = BTreeSet::new();
 
     // Allocate a strict O(N * WORDS_PER_CHUNK) matrix once, reused forever across passes
-    let mut and_masks = alloc::vec![0u64; n.saturating_mul(WORDS_PER_CHUNK)];
-    let mut desc_masks = alloc::vec![0u64; n.saturating_mul(WORDS_PER_CHUNK)];
+    let mut and_masks = vec![0u64; n.saturating_mul(WORDS_PER_CHUNK)];
+    let mut desc_masks = vec![0u64; n.saturating_mul(WORDS_PER_CHUNK)];
 
     let chunk_size = WORDS_PER_CHUNK.saturating_mul(64);
 

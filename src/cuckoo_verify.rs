@@ -14,12 +14,10 @@
 
 //! Cuckoo Cycle proof-of-work verification and key minting primitives.
 
-extern crate alloc;
-
-use alloc::string::String;
 use core::fmt::Write;
 use core::mem::size_of;
 use sha2::{Digest, Sha256};
+use std::string::String;
 
 pub const ALGORITHM: &str = "tk.nutra.msc45xx.pow.cuckoo-cycle-42-29-sha256-key-minting";
 pub const EDGE_BITS: u32 = 29;

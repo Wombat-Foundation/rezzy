@@ -53,20 +53,23 @@
 
 use crate::basespec::rezzy_types::{EventContent, EventId, EventProvider, LeanEvent};
 use crate::HashMap;
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use core::borrow::Borrow;
 use core::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A fixed-capacity LRU cache for pre-constructed [`LeanEvent`]s.
 ///
 /// Events are stored as `Arc<LeanEvent<Id, C>>` for cheap cloning. When the
 /// cache exceeds capacity, the least-recently-used entry is evicted.
 ///
-/// The cache is **not** internally synchronized — callers must wrap it in a
-/// `Mutex` or `RwLock` for concurrent access. This keeps the core `no_std`
-/// compatible while allowing `std` users to choose their synchronization
-/// strategy.
+/// The cache is **not** internally synchronized and is not [`Sync`]: its LRU
+/// bookkeeping uses [`RefCell`] and [`Cell`]. For cross-thread access wrap it
+/// in a [`std::sync::Mutex`], not a [`std::sync::RwLock`] -- `RwLock<T>` is
+/// only [`Sync`] when `T` is both [`Send`] and [`Sync`], so an `RwLock` around
+/// this cache could not be shared across threads either, whereas `Mutex<T>`
+/// needs only `T: Send`. This keeps the core free of any synchronization
+/// policy while allowing callers to choose their synchronization strategy.
 ///
 /// # Implementation
 ///
@@ -357,13 +360,13 @@ impl CacheStats {
 }
 
 /// Convenience type alias for the most common cache configuration.
-pub type StringLeanEventCache = LeanEventCache<alloc::string::String>;
+pub type StringLeanEventCache = LeanEventCache<std::string::String>;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use alloc::string::String;
+    use std::string::String;
 
     fn make_event(id: &str, depth: u64) -> LeanEvent<String> {
         LeanEvent {
@@ -466,7 +469,7 @@ mod tests {
         // Pre-insert "$a" to seed the cache
         cache.insert(make_event("$a", 1));
 
-        let events = alloc::vec![
+        let events = vec![
             make_event("$a", 999), // Already cached, should return cached depth 1
             make_event("$b", 2),
             make_event("$c", 3),
@@ -617,7 +620,7 @@ mod tests {
     fn test_cache_side_index_consistency() {
         let mut cache = LeanEventCache::new(5);
         for i in 0..10 {
-            cache.insert(make_event(&alloc::format!("${i}"), i));
+            cache.insert(make_event(&format!("${i}"), i));
         }
         // After 10 inserts into capacity-5, should have exactly 5 entries
         assert_eq!(cache.len(), 5);

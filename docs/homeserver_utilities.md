@@ -2,7 +2,7 @@
 
 Pure, synchronous utilities rezzy can expose to simplify homeserver
 implementations. All follow rezzy's philosophy: no I/O, no async,
-`no_std`-compatible, generic over `EventId`.
+generic over `EventId`.
 
 ---
 

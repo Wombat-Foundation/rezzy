@@ -127,7 +127,7 @@ fn assert_join_not_member(state: &RoomState, message: &str) {
     assert!(
         matches!(
             result,
-            Err(AuthError::NotMember { ref sender, .. }) if sender == "@newcomer:x.com"
+            Err(AuthError::NotMember { sender, .. }) if sender == "@newcomer:x.com"
         ),
         "{message}, got {result:?}"
     );
@@ -280,15 +280,29 @@ fn assert_pl_users_rejected(users: &rezzy::JsonValue) {
     }
 }
 
-/// Auth-checks a `$pl0` event whose `ban` is a boolean (Rule 10.1 non-integer
-/// scalar).
-fn check_ban_true_pl(state: &RoomState, version: StateResVersion) -> Result<(), AuthError> {
-    let events = utils::parse_jsonl_events(
-        r#"
+/// Rule 10.1 fixture: a `$pl0` power-levels event whose `ban` is a boolean
+/// (non-integer scalar) instead of an integer.
+const BAN_TRUE_PL_JSONL: &str = r#"
 {"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
-"#,
-    );
-    check_auth(&events[0], state, version, None)
+"#;
+
+/// Auth-checks the boolean-`ban` fixture and asserts the rejection. The events
+/// are built here because `check_auth`'s error borrows them -- the assertion
+/// must run while they are still in scope.
+fn assert_ban_true_pl_rejected(state: &RoomState, version: StateResVersion, msg: &str) {
+    let events = utils::parse_jsonl_events(BAN_TRUE_PL_JSONL);
+    let res = check_auth(&events[0], state, version, None);
+    assert!(res.is_err(), "{msg}: {res:?}");
+}
+
+/// Auth-checks the boolean-`ban` fixture and asserts it is accepted (room
+/// versions ≤ 9 predate the V10 integer-typing requirement). The events are
+/// built here because `check_auth`'s error borrows them -- the assertion must
+/// run while they are still in scope.
+fn assert_ban_true_pl_allowed(state: &RoomState, version: StateResVersion, msg: &str) {
+    let events = utils::parse_jsonl_events(BAN_TRUE_PL_JSONL);
+    let res = check_auth(&events[0], state, version, None);
+    assert!(res.is_ok(), "{msg}: {res:?}");
 }
 
 /// Shared Rule 2.2 fixture: create + admin join in state and a provider.
@@ -321,20 +335,11 @@ fn assert_incomplete_bob_member(res: &Result<(), AuthError>) {
     assert!(
         matches!(
             res,
-            Err(AuthError::IncompleteAuthEvents { ref event_type, ref state_key })
-                if event_type == "m.room.member" && state_key == "@bob:example.com"
+            Err(AuthError::IncompleteAuthEvents { event_type, state_key })
+                if *event_type == "m.room.member" && *state_key == "@bob:example.com"
         ),
         "expected IncompleteAuthEvents for @bob:example.com, got {res:?}"
     );
-}
-
-/// Auth-checks a chain under `V2_1` against an empty initial state.
-fn check_chain(events: &[LeanEvent]) -> (Vec<String>, Vec<(String, AuthError)>) {
-    check_auth_chain(
-        events,
-        &RoomState::new(),
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-    )
 }
 
 /// Asserts exactly one rejection: `$msg` citing `expected_auth_event_id` as a
@@ -350,8 +355,8 @@ fn assert_foreign_room_rejected(
         matches!(
             &rejected[0].1,
             AuthError::ForeignRoomEvent { event_id, auth_event_id, actual, .. }
-                if event_id == "$msg"
-                    && auth_event_id == expected_auth_event_id
+                if *event_id == "$msg"
+                    && *auth_event_id == expected_auth_event_id
                     && actual.is_none() == expect_actual_none
         ),
         "expected ForeignRoomEvent citing {expected_auth_event_id}, got {:?}",
@@ -448,7 +453,7 @@ fn test_flagged_auth_state_is_not_used() {
     assert!(
         matches!(
             check_auth(&event, &state, StateResVersion::V2_1, None),
-            Err(AuthError::InvalidSyntax(reason)) if reason.contains("auth state event")
+            Err(ref e) if e.to_string().contains("auth state event")
         ),
         "flagged auth state must not authorize later events"
     );
@@ -541,9 +546,9 @@ fn test_self_invite_rejected() {
     assert!(
         matches!(
             check_auth(&self_invite, &state, rezzy::StateResVersion::V2_1, None),
-            Err(AuthError::InvalidStateKey { .. })
+            Err(AuthError::SelfTarget { .. })
         ),
-        "Self-invites must be rejected with InvalidStateKey error"
+        "Self-invites must be rejected with SelfTarget error"
     );
 }
 
@@ -609,7 +614,7 @@ fn test_auth_error_display_variants() {
     let err: AuthError<String> = AuthError::InsufficientPowerLevel {
         required: 50,
         actual: 10,
-        event_type: "m.room.topic".into(),
+        event_type: "m.room.topic",
     };
     let msg = format!("{err}");
     assert!(msg.contains("10"));
@@ -617,28 +622,28 @@ fn test_auth_error_display_variants() {
     assert!(msg.contains("m.room.topic"));
 
     let err2: AuthError<String> = AuthError::InvalidStateKey {
-        expected: "@alice:x.com".into(),
-        actual: "@bob:x.com".into(),
+        expected: "@alice:x.com",
+        actual: "@bob:x.com",
     };
     let msg2 = format!("{err2}");
     assert!(msg2.contains("@alice"));
     assert!(msg2.contains("@bob"));
 
-    let err3: AuthError<String> = AuthError::NotMember {
-        sender: "@charlie:x.com".into(),
-        event_id: "$event123".into(),
+    let err3 = AuthError::NotMember {
+        sender: "@charlie:x.com",
+        event_id: &"$event123",
     };
     let msg3 = format!("{err3}");
     assert!(msg3.contains("@charlie"));
 
-    let err4: AuthError<String> = AuthError::BannedUser {
-        sender: "@dave:x.com".into(),
-        event_id: "$event456".into(),
+    let err4 = AuthError::BannedUser {
+        sender: "@dave:x.com",
+        event_id: &"$event456",
     };
     let msg4 = format!("{err4}");
     assert!(msg4.contains("@dave"));
 
-    let err5: AuthError<String> = AuthError::MissingAuthEvent("$event123".into());
+    let err5 = AuthError::MissingAuthEvent(&"$event123");
     let msg5 = format!("{err5}");
     assert!(msg5.contains("$event123"));
 
@@ -646,7 +651,7 @@ fn test_auth_error_display_variants() {
     let msg6 = format!("{err6}");
     assert!(msg6.contains("m.room.create"));
 
-    let err7: AuthError<String> = AuthError::InvalidSyntax("bad json".into());
+    let err7: AuthError<String> = AuthError::InvalidSyntax("bad json");
     let msg7 = format!("{err7}");
     assert!(msg7.contains("bad json"));
 
@@ -655,18 +660,18 @@ fn test_auth_error_display_variants() {
     assert!(msg8.contains("m.room.create"));
 
     let err9: AuthError<String> = AuthError::IncompleteAuthEvents {
-        event_type: "m.room.power_levels".into(),
-        state_key: String::new(),
+        event_type: "m.room.power_levels",
+        state_key: "",
     };
     let msg9 = format!("{err9}");
     assert!(msg9.contains("m.room.power_levels"));
     assert!(msg9.contains("auth_events omits required"));
 
-    let err10: AuthError<String> = AuthError::ForeignRoomEvent {
-        event_id: "$msg".into(),
-        auth_event_id: "$foreign".into(),
-        expected: "!room_a:x.com".into(),
-        actual: Some("!room_b:x.com".into()),
+    let err10 = AuthError::ForeignRoomEvent {
+        event_id: &"$msg",
+        auth_event_id: &"$foreign",
+        expected: "!room_a:x.com",
+        actual: Some("!room_b:x.com"),
     };
     let msg10 = format!("{err10}");
     assert!(msg10.contains("$msg"));
@@ -675,10 +680,10 @@ fn test_auth_error_display_variants() {
     assert!(msg10.contains("!room_b:x.com"));
 
     // `actual: None` (the cited auth event carries no room_id at all).
-    let err11: AuthError<String> = AuthError::ForeignRoomEvent {
-        event_id: "$msg".into(),
-        auth_event_id: "$untagged".into(),
-        expected: "!room_a:x.com".into(),
+    let err11 = AuthError::ForeignRoomEvent {
+        event_id: &"$msg",
+        auth_event_id: &"$untagged",
+        expected: "!room_a:x.com",
         actual: None,
     };
     let msg11 = format!("{err11}");
@@ -687,9 +692,9 @@ fn test_auth_error_display_variants() {
     assert!(msg11.contains("!room_a:x.com"));
     assert!(msg11.contains("no room_id"));
 
-    let err12: AuthError<String> = AuthError::RejectedAuthEvent {
-        event_id: "$citing".into(),
-        auth_event_id: "$rejected_auth".into(),
+    let err12 = AuthError::RejectedAuthEvent {
+        event_id: &"$citing",
+        auth_event_id: &"$rejected_auth",
     };
     let msg12 = format!("{err12}");
     assert!(msg12.contains("$citing"));
@@ -832,7 +837,15 @@ fn test_iterative_auth_chain() {
     // Rule 2.2: auth_events must cite the sender's own current membership
     // once it exists in state (added by $join).
     msg.auth_events = vec!["$join".into()];
-    let (accepted, rejected) = check_chain(&[create, join, msg]);
+    let events = [create, join, msg];
+    // Both fixtures are test locals so the borrowed `AuthError`s in
+    // `rejected` stay valid for the assertions below.
+    let empty_state = RoomState::new();
+    let (accepted, rejected) = check_auth_chain(
+        &events,
+        &empty_state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
     assert!(rejected.is_empty(), "unexpected rejections: {rejected:?}");
 }
@@ -874,9 +887,11 @@ fn test_iterative_auth_chain_rejects_foreign_room_auth_event() {
     msg.room_id = Some(room_a);
     msg.auth_events = vec!["$create".into(), "$foreign_create".into()];
 
+    let events = [create, foreign_create, msg];
+    let empty_state = RoomState::new();
     let (accepted, rejected) = check_auth_chain(
-        &[create, foreign_create, msg],
-        &RoomState::new(),
+        &events,
+        &empty_state,
         rezzy::basespec::rezzy_types::StateResVersion::V2,
     );
 
@@ -921,7 +936,15 @@ fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_popula
     msg.room_id = Some(room_a);
     msg.auth_events = vec!["$join".into()];
 
-    let (accepted, rejected) = check_chain(&[create, join, msg]);
+    let events = [create, join, msg];
+    // Both fixtures are test locals so the borrowed `AuthError`s in
+    // `rejected` stay valid for the assertions below.
+    let empty_state = RoomState::new();
+    let (accepted, rejected) = check_auth_chain(
+        &events,
+        &empty_state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
 
     assert_eq!(
         accepted,
@@ -973,9 +996,11 @@ fn test_iterative_auth_chain_room_id_none_on_citing_side_is_never_checked() {
     // never activates for this event regardless of what it cites.
     msg.auth_events = vec!["$foreign_pl".into()];
 
+    let events = [create, foreign_pl, msg];
+    let empty_state = RoomState::new();
     let (accepted, rejected) = check_auth_chain(
-        &[create, foreign_pl, msg],
-        &RoomState::new(),
+        &events,
+        &empty_state,
         rezzy::basespec::rezzy_types::StateResVersion::V2_1,
     );
 
@@ -995,8 +1020,9 @@ fn test_auth_chain_rejects_unauthorized() {
     "#,
     );
 
+    let empty_state = RoomState::new();
     let (accepted, rejected) =
-        check_auth_chain(&events, &RoomState::new(), rezzy::StateResVersion::V2_1);
+        check_auth_chain(&events, &empty_state, rezzy::StateResVersion::V2_1);
 
     assert_eq!(
         accepted,
@@ -1031,8 +1057,8 @@ fn test_auth_chain_propagates_rejection_via_auth_events() {
     "#,
     );
 
-    let (accepted, rejected) =
-        check_auth_chain(&events, &RoomState::new(), rezzy::StateResVersion::V2);
+    let empty_state = RoomState::new();
+    let (accepted, rejected) = check_auth_chain(&events, &empty_state, rezzy::StateResVersion::V2);
 
     assert_eq!(
         accepted,
@@ -1056,9 +1082,9 @@ fn test_auth_chain_propagates_rejection_via_auth_events() {
 
 #[test]
 fn test_auth_error_display() {
-    let err: AuthError = AuthError::NotMember {
-        sender: "@bob:example.com".into(),
-        event_id: "$unused".into(),
+    let err = AuthError::NotMember {
+        sender: "@bob:example.com",
+        event_id: &"$unused",
     };
     let msg = format!("{err}");
     assert!(msg.contains("bob"));
@@ -1082,7 +1108,7 @@ fn test_notifications_change_above_sender_pl_rejected() {
     );
     let res = check_auth(&events[0], &state, rezzy::StateResVersion::V2, None);
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("cannot set notifications[room]")),
+        matches!(res, Err(ref e) if e.to_string().contains("cannot set notifications[room]")),
         "expected rule-10.8 notifications rejection, got: {res:?}"
     );
 }
@@ -1299,7 +1325,7 @@ fn test_equal_power_invite_override_allowed() {
         matches!(
             result,
             Err(AuthError::BannedUser {
-                ref sender,
+                sender,
                 ..
             }) if sender == "@target:example.com"
         ),
@@ -1723,7 +1749,7 @@ fn test_ban_insufficient_power_level() {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                ref event_type
+                event_type
             }) if event_type == "ban"
         ),
         "Expected InsufficientPowerLevel for ban, got {result:?}"
@@ -1744,7 +1770,7 @@ fn test_kick_insufficient_power_level() {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                ref event_type
+                event_type
             }) if event_type == "kick"
         ),
         "Expected InsufficientPowerLevel for kick, got {result:?}"
@@ -2189,8 +2215,8 @@ fn test_third_party_invite_rejected_when_sender_mismatch() {
 
     let result = check_auth(&bob_invite, &state, StateResVersion::V2, None);
     assert!(
-        matches!(result, Err(AuthError::InvalidStateKey { .. })),
-        "3PI invite must fail as InvalidStateKey if sender mismatches, got: {result:?}"
+        matches!(result, Err(AuthError::TpiIssuerSenderMismatch { .. })),
+        "3PI invite must fail as TpiIssuerSenderMismatch if sender mismatches, got: {result:?}"
     );
 }
 
@@ -2218,7 +2244,10 @@ fn test_third_party_invite_rejected_when_mxid_mismatch() {
 
     let result = check_auth(&alice_invite, &state, StateResVersion::V2, None);
     assert!(
-        matches!(result, Err(AuthError::InvalidStateKey { .. })),
+        matches!(
+            result,
+            Err(AuthError::ThirdPartyInviteSenderMismatch { .. })
+        ),
         "3PI invite must fail if mxid does not match target user, got: {result:?}"
     );
 }
@@ -2447,24 +2476,30 @@ impl rezzy::EventVerifier<String> for PassThroughVerifier {}
 /// A verifier that rejects on `verify_event_id_hash`.
 struct RejectEventIdHash;
 impl rezzy::EventVerifier<String> for RejectEventIdHash {
-    fn verify_event_id_hash(&self, _event_id: &String) -> Result<(), String> {
-        Err("bad event id hash".into())
+    fn verify_event_id_hash(
+        &self,
+        _event_id: &String,
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad event id hash"))
     }
 }
 
 /// A verifier that rejects on `verify_signatures`.
 struct RejectSignatures;
 impl rezzy::EventVerifier<String> for RejectSignatures {
-    fn verify_signatures(&self, _event_id: &String) -> Result<(), String> {
-        Err("bad signature".into())
+    fn verify_signatures(&self, _event_id: &String) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad signature"))
     }
 }
 
 /// A verifier that rejects on `verify_content_hash`.
 struct RejectContentHash;
 impl rezzy::EventVerifier<String> for RejectContentHash {
-    fn verify_content_hash(&self, _event_id: &String) -> Result<(), String> {
-        Err("bad content hash".into())
+    fn verify_content_hash(
+        &self,
+        _event_id: &String,
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad content hash"))
     }
 }
 
@@ -2475,8 +2510,8 @@ impl rezzy::EventVerifier<String> for RejectThirdPartyInvite {
         &self,
         _event_id: &String,
         _tpi_token: &str,
-    ) -> Result<(), String> {
-        Err("bad 3pi signature".into())
+    ) -> Result<(), rezzy::errors::VerifyError<'_>> {
+        Err(rezzy::errors::VerifyError::Reason("bad 3pi signature"))
     }
 }
 
@@ -2518,7 +2553,7 @@ fn test_event_verifier_reject_event_id_hash() {
         Some(&RejectEventIdHash),
     );
     assert!(
-        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad event id hash")),
+        matches!(&result, Err(e) if e.to_string().contains("bad event id hash")),
         "Should reject with bad event id hash: {result:?}"
     );
 }
@@ -2533,7 +2568,7 @@ fn test_event_verifier_reject_signatures() {
         Some(&RejectSignatures),
     );
     assert!(
-        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad signature")),
+        matches!(&result, Err(e) if e.to_string().contains("bad signature")),
         "Should reject with bad signature: {result:?}"
     );
 }
@@ -2548,7 +2583,7 @@ fn test_event_verifier_reject_content_hash() {
         Some(&RejectContentHash),
     );
     assert!(
-        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad content hash")),
+        matches!(&result, Err(e) if e.to_string().contains("bad content hash")),
         "Should reject with bad content hash: {result:?}"
     );
 }
@@ -2588,7 +2623,7 @@ fn test_event_verifier_reject_third_party_invite() {
         Some(&RejectThirdPartyInvite),
     );
     assert!(
-        matches!(&result, Err(AuthError::InvalidSyntax(s)) if s.contains("bad 3pi signature")),
+        matches!(&result, Err(e) if e.to_string().contains("bad 3pi signature")),
         "Should reject with bad 3pi signature: {result:?}"
     );
 }
@@ -2770,7 +2805,7 @@ fn test_pl_validation_users_invalid_key_rejected() {
     );
     let err = res.unwrap_err();
     assert!(
-        matches!(err, self::auth::AuthError::InvalidSyntax(ref s) if s.contains("not_a_user_id")),
+        matches!(&err, e if e.to_string().contains("not_a_user_id")),
         "Error should mention the bad key: {err:?}"
     );
 }
@@ -2964,10 +2999,10 @@ fn test_pl_validation_scalar_old_value_too_high_rejected() {
 fn test_pl_v12_scalar_not_integer_rejected() {
     let state = admin_joined_state("12");
     // First PL event with ban as a boolean instead of integer
-    let res = check_ban_true_pl(&state, rezzy::StateResVersion::V2_1);
-    assert!(
-        res.is_err(),
-        "Non-integer scalar PL should be rejected in V12: {res:?}"
+    assert_ban_true_pl_rejected(
+        &state,
+        rezzy::StateResVersion::V2_1,
+        "Non-integer scalar PL should be rejected in V12",
     );
 }
 
@@ -2976,10 +3011,10 @@ fn test_pl_v12_scalar_not_integer_rejected() {
 #[test]
 fn test_pl_v2_scalar_not_integer_allowed() {
     let state = admin_joined_state("9");
-    let res = check_ban_true_pl(&state, rezzy::StateResVersion::V2);
-    assert!(
-        res.is_ok(),
-        "Non-integer scalar PL should be allowed in room V9: {res:?}"
+    assert_ban_true_pl_allowed(
+        &state,
+        rezzy::StateResVersion::V2,
+        "Non-integer scalar PL should be allowed in room V9",
     );
 }
 
@@ -3018,7 +3053,7 @@ fn test_auth_missing_create_event_in_v2_room_state_with_context() {
     let result =
         check_auth_with_context(&event, &state, StateResVersion::V2, None, Some(&provider));
     assert!(
-        matches!(result, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("missing m.room.create in room state"))
+        matches!(result, Err(AuthError::InvalidSyntax(msg)) if msg.contains("missing m.room.create in room state"))
     );
 }
 
@@ -3404,7 +3439,7 @@ fn test_rule_1_2_create_invalid_sender_mxid() {
     let state = RoomState::new();
     let create_ev = make_create("$c", "invalid_no_domain", json!({"room_version": "10"}));
     let res = check_auth(&create_ev, &state, StateResVersion::V2, None);
-    assert!(matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("valid MXID")));
+    assert!(matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("valid MXID")));
 }
 
 #[test]
@@ -3413,7 +3448,7 @@ fn test_rule_1_3_create_numeric_room_version_rejected() {
     let create_ev = make_create("$c", "@alice:example.com", json!({"room_version": 12}));
     let res = check_auth(&create_ev, &state, StateResVersion::V2_1, None);
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("room_version")),
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("room_version")),
         "Numeric room_version must be rejected, got {res:?}"
     );
 }
@@ -3433,16 +3468,14 @@ fn test_rule_3_m_federate_false_cross_domain_rejected() {
     );
     let res = check_auth(&cross_domain_msg, &state, StateResVersion::V2, None);
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.federate=false")),
+        matches!(res, Err(ref e) if e.to_string().contains("m.federate=false")),
         "Cross-domain event must be rejected when m.federate is false, got {res:?}"
     );
 
     let same_domain_join = make_member("$join", "@bob:example.com", "@bob:example.com", "join");
     // Same domain should pass m.federate check (fails next on PL/state if unjoined, but passes m.federate)
     let res2 = check_auth(&same_domain_join, &state, StateResVersion::V2, None);
-    assert!(
-        !matches!(res2, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.federate=false"))
-    );
+    assert!(!matches!(res2, Err(ref e) if e.to_string().contains("m.federate=false")));
 }
 
 #[test]
@@ -3464,7 +3497,7 @@ fn test_rule_4_aliases_domain_mismatch_v1_rejected() {
     );
     let res = check_auth(&bad_alias, &state, StateResVersion::V1, None);
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.room.aliases state_key domain must match")),
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.aliases state_key domain must match")),
         "Alias event with domain mismatch in V1 must be rejected, got {res:?}"
     );
 
@@ -3499,7 +3532,7 @@ fn test_rule_4_aliases_enforced_v2_through_v5_not_v6_plus() {
         );
         let res = check_auth(&bad_alias, &state, StateResVersion::V2, None);
         assert!(
-            matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.room.aliases state_key domain must match")),
+            matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.aliases state_key domain must match")),
             "room_version {room_version}: alias domain mismatch must be rejected, got {res:?}"
         );
     }
@@ -3540,7 +3573,7 @@ fn test_rule_4_aliases_missing_state_key_rejected() {
     );
     let res = check_auth(&no_state_key_alias, &state, StateResVersion::V1, None);
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.room.aliases event must have a state_key")),
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.aliases event must have a state_key")),
         "m.room.aliases without a state_key must be rejected, got {res:?}"
     );
 }
@@ -3572,7 +3605,7 @@ fn test_rule_11_redaction_insufficient_pl_different_domain_rejected() {
     );
     let res = check_auth(&redaction, &state, StateResVersion::V1, None);
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.room.redaction requires sender PL")),
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.redaction requires sender PL")),
         "Redaction with insufficient PL and a different domain must be rejected, got {res:?}"
     );
 }
@@ -3592,6 +3625,49 @@ fn test_rule_11_redaction_insufficient_pl_same_domain_allowed() {
     assert!(
         res.is_ok(),
         "Redaction of an event on the same domain must be allowed, got {res:?}"
+    );
+}
+
+/// Room versions 1 and 2 accept oversized event IDs with a warning rather than
+/// rejecting them (only v11+ hard-enforces the 255-byte limit), so Rule 11's
+/// same-domain check must still work when the redaction's own event ID blows
+/// past the stack buffer `domain_matches_display` renders into.
+#[test]
+fn test_rule_11_redaction_oversized_event_id_same_domain_allowed() {
+    let state = rule_11_base_state("1");
+    // ~315 bytes: over the 256-byte render buffer, but a legal v1 event ID.
+    let oversized_id = format!("$r{}:domain1.com", "a".repeat(300));
+    let redaction = make_event(
+        &oversized_id,
+        "m.room.redaction",
+        None,
+        "@bob:domain1.com",
+        json!({"redacts": "$target:domain1.com"}),
+    );
+    let res = check_auth(&redaction, &state, StateResVersion::V1, None);
+    assert!(
+        res.is_ok(),
+        "an oversized event ID must not defeat the Rule 11 same-domain check, got {res:?}"
+    );
+}
+
+/// The oversized-ID fallback must not widen Rule 11: a same-length ID on a
+/// *different* domain is still rejected.
+#[test]
+fn test_rule_11_redaction_oversized_event_id_different_domain_rejected() {
+    let state = rule_11_base_state("1");
+    let oversized_id = format!("$r{}:domain2.com", "a".repeat(300));
+    let redaction = make_event(
+        &oversized_id,
+        "m.room.redaction",
+        None,
+        "@bob:domain1.com",
+        json!({"redacts": "$target:domain1.com"}),
+    );
+    let res = check_auth(&redaction, &state, StateResVersion::V1, None);
+    assert!(
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.redaction requires sender PL")),
+        "an oversized event ID on another domain must still be rejected, got {res:?}"
     );
 }
 
@@ -3633,7 +3709,7 @@ fn test_rule_11_redaction_not_enforced_v3_plus() {
     );
     let res = check_auth(&redaction, &state, StateResVersion::V2, None);
     assert!(
-        !matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.room.redaction requires sender PL")),
+        !matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.redaction requires sender PL")),
         "Rule 11 must not apply in v3+, got {res:?}"
     );
 }
@@ -3663,7 +3739,7 @@ fn test_rule_2_1_duplicate_auth_event_pair_rejected() {
 
     let res = check_auth_with_context(&msg, &state, StateResVersion::V2, None, Some(&provider));
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("duplicate (type, state_key)")),
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("duplicate (type, state_key)")),
         "Duplicate auth events of same type and state_key must be rejected, got {res:?}"
     );
 }
@@ -3816,7 +3892,7 @@ fn test_rule_2_2_invalid_auth_event_type_and_v12_create() {
 
     let res = check_auth_with_context(&msg, &state, StateResVersion::V2, None, Some(&provider));
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("unexpected event type in auth_events")),
+        matches!(res, Err(ref e) if e.to_string().contains("unexpected event type in auth_events")),
         "Unexpected event type in auth_events must be rejected, got {res:?}"
     );
 
@@ -3837,7 +3913,7 @@ fn test_rule_2_2_invalid_auth_event_type_and_v12_create() {
         Some(&provider),
     );
     assert!(
-        matches!(res_v12, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("forbidden in room v12+")),
+        matches!(res_v12, Err(AuthError::InvalidSyntax(msg)) if msg.contains("forbidden in room v12+")),
         "Referencing m.room.create in v12+ auth_events must be rejected, got {res_v12:?}"
     );
 }
@@ -3899,7 +3975,7 @@ fn test_rule_2_4_missing_create_in_v1_v11_auth_events() {
         Some(&provider),
     );
     assert!(
-        matches!(res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("must contain m.room.create")),
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("must contain m.room.create")),
         "Pre-v12 events missing m.room.create in auth_events must be rejected when auth_context is supplied, got {res:?}"
     );
 }
@@ -3928,7 +4004,7 @@ fn test_auth_events_unresolved_by_provider_returns_missing_auth_event() {
     let res = check_auth_with_context(&msg, &state, StateResVersion::V2, None, Some(&provider));
     assert_eq!(
         res,
-        Err(AuthError::MissingAuthEvent("$ghost".to_string())),
+        Err(AuthError::MissingAuthEvent(&"$ghost".to_string())),
         "Unresolvable auth_id must return MissingAuthEvent, got {res:?}"
     );
 }
@@ -4060,6 +4136,29 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
         }
     }
 
+    impl StateProvider<String, rezzy::JsonValue, EventWithSeparateStateEdges> for &EmptyState {
+        fn get_event(
+            &self,
+            _event_type: &str,
+            _state_key: &str,
+        ) -> Option<&EventWithSeparateStateEdges> {
+            None
+        }
+    }
+
+    impl<'p>
+        rezzy::auth::StateProviderRef<'p, String, rezzy::JsonValue, EventWithSeparateStateEdges>
+        for &'p EmptyState
+    {
+        fn get_event_ref(
+            &self,
+            _event_type: &str,
+            _state_key: &str,
+        ) -> Option<&'p EventWithSeparateStateEdges> {
+            None
+        }
+    }
+
     let ev = EventWithSeparateStateEdges {
         event_id: "$ev:example.com".into(),
         auth_events: Vec::new(),
@@ -4070,7 +4169,7 @@ fn test_msc4242_prev_state_events_limit_in_check_auth() {
     let res = rezzy::auth::check_auth(&ev, &state, StateResVersion::V2_2, None);
     assert!(matches!(
         res,
-        Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("prev_state_events exceeds maximum allowed length of 20")
+        Err(ref e) if e.to_string().contains("prev_state_events exceeds maximum allowed length of 20")
     ));
 }
 

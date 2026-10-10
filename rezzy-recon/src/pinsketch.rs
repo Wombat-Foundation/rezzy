@@ -5,7 +5,7 @@
 
 //! `PinSketch` decoding over the MSC4521 GF(2^64) profile.
 
-use alloc::{vec, vec::Vec};
+use std::{vec, vec::Vec};
 
 use crate::gf64_simd::Gf64Evaluator;
 

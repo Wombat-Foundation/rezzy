@@ -16,8 +16,8 @@
 //! concurrent keys, revocation) is a different, larger piece of work than
 //! what's here.
 
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use std::string::{String, ToString};
+use std::vec::Vec;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_zebra::{Signature, SigningKey, VerificationKey};
@@ -130,10 +130,10 @@ pub fn verify_attestation(
         attestation.count,
         &attestation.signer,
     )
-    .map_err(|e| alloc::format!("attestation envelope cannot be canonicalized: {e}"))?;
+    .map_err(|e| format!("attestation envelope cannot be canonicalized: {e}"))?;
     let signature = Signature::from(attestation.signature);
     key.verify(&signature, &message)
-        .map_err(|e| alloc::format!("attestation signature verification failed: {e:?}"))
+        .map_err(|e| format!("attestation signature verification failed: {e:?}"))
 }
 
 #[cfg(test)]

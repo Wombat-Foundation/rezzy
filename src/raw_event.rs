@@ -15,11 +15,9 @@
 //! Raw event spans and selective field extraction primitives for high-throughput
 //! JSON ingestion and Matrix DAG processing without full DOM allocation.
 
-extern crate alloc;
-
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use rezzy_json::{FieldMask, Token, Tokenizer, TokenizerError, Value as JsonValue, ValueType};
+use std::string::{String, ToString};
+use std::vec::Vec;
 
 /// Byte slice range representing a raw event in an input buffer.
 #[derive(Clone, Copy)]
@@ -672,8 +670,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::ToOwned;
-    use alloc::vec;
+    use std::borrow::ToOwned;
+    use std::vec;
 
     /// Asserts the adjacency, version and thread relation shared by the
     /// thread-reply extraction fixtures.
