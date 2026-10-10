@@ -356,6 +356,37 @@ pub fn run() {
                 black_box(ra.iter().map(u64::from).sum::<u64>());
             },
         );
+        let enc_o = oa.encode();
+        let mut enc_r = Vec::new();
+        ra.serialize_into(&mut enc_r).expect("serialize");
+        println!(
+            "  encoded size {label}: bitmap={} B roaring={} B",
+            enc_o.len(),
+            enc_r.len()
+        );
+        assert_eq!(Bitmap::decode(&enc_o).expect("decode"), oa);
+        row(
+            &format!("encode {label}"),
+            iters,
+            || {
+                black_box(oa.encode());
+            },
+            || {
+                let mut out = Vec::with_capacity(enc_r.len());
+                ra.serialize_into(&mut out).expect("serialize");
+                black_box(out);
+            },
+        );
+        row(
+            &format!("decode {label}"),
+            iters,
+            || {
+                black_box(Bitmap::decode(&enc_o).expect("decode"));
+            },
+            || {
+                black_box(RoaringBitmap::deserialize_from(&enc_r[..]).expect("deserialize"));
+            },
+        );
         row(
             &format!("contains x{} {label}", b.len()),
             iters,

@@ -564,13 +564,13 @@ impl Bitmap {
                     if len == 0 || len as usize > ARRAY_MAX {
                         return Err(BitmapDecodeError::NonCanonical);
                     }
-                    let mut values = Vec::with_capacity(len as usize);
-                    for _ in 0..len {
-                        let value = read_u16(&mut input)?;
-                        if values.last().is_some_and(|last| value <= *last) {
-                            return Err(BitmapDecodeError::NonCanonical);
-                        }
-                        values.push(value);
+                    let raw = take(&mut input, len as usize * 2)?;
+                    let values: Vec<u16> = raw
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .collect();
+                    if !values.windows(2).all(|pair| pair[0] < pair[1]) {
+                        return Err(BitmapDecodeError::NonCanonical);
                     }
                     Chunk::from_array(key, values).ok_or(BitmapDecodeError::NonCanonical)?
                 }
@@ -578,9 +578,13 @@ impl Bitmap {
                     if len as usize <= ARRAY_MAX {
                         return Err(BitmapDecodeError::NonCanonical);
                     }
+                    let raw = take(&mut input, WORDS * 8)?;
                     let mut words = empty_words();
-                    for word in words.iter_mut() {
-                        *word = read_u64(&mut input)?;
+                    for (word, bytes) in words.iter_mut().zip(raw.chunks_exact(8)) {
+                        *word = u64::from_le_bytes([
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
+                        ]);
                     }
                     if popcount(&words) != len {
                         return Err(BitmapDecodeError::NonCanonical);
@@ -723,8 +727,14 @@ fn read_u32(input: &mut &[u8]) -> Result<u32, BitmapDecodeError> {
     Ok(u32::from_le_bytes(read_array(input)?))
 }
 
-fn read_u64(input: &mut &[u8]) -> Result<u64, BitmapDecodeError> {
-    Ok(u64::from_le_bytes(read_array(input)?))
+/// Splits `n` bytes off the front of `input`.
+fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], BitmapDecodeError> {
+    if input.len() < n {
+        return Err(BitmapDecodeError::Truncated);
+    }
+    let (head, rest) = input.split_at(n);
+    *input = rest;
+    Ok(head)
 }
 
 /// Position within the chunk list: which chunk, and the next array index or bit.
@@ -1160,5 +1170,105 @@ mod tests {
             Bitmap::decode(&trailing),
             Err(BitmapDecodeError::TrailingBytes)
         );
+    }
+
+    #[test]
+    fn remove_matches_btreeset_and_demotes() {
+        let mut rng = Rng(0x1234_5678_9abc_def1);
+        for &density in &[3u64, 16, 40, 200, 256] {
+            let mut set = random_set(&mut rng, 5_000, 120_000, density);
+            let mut bitmap = build(&set);
+            let victims: Vec<u32> = set
+                .iter()
+                .copied()
+                .filter(|_| rng.next() % 3 != 0)
+                .chain([0, 7, u32::MAX])
+                .collect();
+            for v in victims {
+                assert_eq!(bitmap.remove(v), set.remove(&v));
+            }
+            check(&bitmap, &set);
+        }
+        // Removing across the threshold returns a dense chunk to an array.
+        let mut b: Bitmap = (0..=ARRAY_MAX as u32).collect();
+        assert!(matches!(b.chunks[0].store, Store::Dense(_)));
+        assert!(b.remove(0));
+        assert!(matches!(b.chunks[0].store, Store::Array(_)));
+        assert_eq!(b.len(), ARRAY_MAX as u64);
+    }
+
+    #[test]
+    fn subset_and_disjoint_match_btreeset() {
+        let mut rng = Rng(0xdead_beef_cafe_f00d);
+        for &da in &[0u64, 3, 16, 64, 256] {
+            for &db in &[0u64, 3, 16, 64, 256] {
+                let sa = random_set(&mut rng, 10_000, 90_000, da);
+                let sb = random_set(&mut rng, 40_000, 90_000, db);
+                let (a, b) = (build(&sa), build(&sb));
+                assert_eq!(a.is_subset(&b), sa.is_subset(&sb));
+                assert_eq!(a.is_disjoint(&b), sa.is_disjoint(&sb));
+                let both: Bitmap = &a | &b;
+                assert!(a.is_subset(&both) && b.is_subset(&both));
+                assert!(a.is_subset(&a) && a.is_disjoint(&(both.clone() - &both)));
+            }
+        }
+    }
+
+    #[test]
+    fn encode_round_trips_across_densities() {
+        let mut rng = Rng(0x0bad_5eed_0bad_5eed);
+        for &density in &[0u64, 1, 16, 17, 128, 256] {
+            let set = random_set(&mut rng, 70_000, 150_000, density);
+            let bitmap = build(&set);
+            let decoded = Bitmap::decode(&bitmap.encode()).unwrap();
+            check(&decoded, &set);
+            assert_eq!(decoded.encode(), bitmap.encode());
+        }
+    }
+
+    #[test]
+    fn decode_rejects_malformed_input() {
+        let good = build(&[1u32, 2, 3, 70_000].into_iter().collect()).encode();
+        assert_eq!(Bitmap::decode(&[]), Err(BitmapDecodeError::Truncated));
+        let mut bad_magic = good.clone();
+        bad_magic[0] ^= 1;
+        assert_eq!(
+            Bitmap::decode(&bad_magic),
+            Err(BitmapDecodeError::InvalidMagic)
+        );
+        // Every proper prefix is rejected rather than panicking.
+        for end in 0..good.len() {
+            assert!(Bitmap::decode(&good[..end]).is_err(), "prefix {end}");
+        }
+        // Chunk kind 2 does not exist: kind byte follows magic(4) ver(1) count(4) key(2).
+        let mut bad_kind = good.clone();
+        bad_kind[11] = 2;
+        assert_eq!(
+            Bitmap::decode(&bad_kind),
+            Err(BitmapDecodeError::InvalidChunkKind(2))
+        );
+        // Unsorted array values are non-canonical.
+        let mut unsorted = good.clone();
+        let first = 16;
+        unsorted.swap(first, first + 2);
+        assert_eq!(
+            Bitmap::decode(&unsorted),
+            Err(BitmapDecodeError::NonCanonical)
+        );
+        // A dense chunk claiming a small cardinality is non-canonical.
+        let mut dense = Vec::new();
+        dense.extend_from_slice(&BITMAP_MAGIC);
+        dense.push(BITMAP_FORMAT_VERSION);
+        dense.extend_from_slice(&1u32.to_le_bytes());
+        dense.extend_from_slice(&0u16.to_le_bytes());
+        dense.push(1);
+        dense.extend_from_slice(&5u32.to_le_bytes());
+        dense.extend(core::iter::repeat_n(0u8, WORDS * 8));
+        assert_eq!(Bitmap::decode(&dense), Err(BitmapDecodeError::NonCanonical));
+        // Duplicate or descending chunk keys are non-canonical.
+        let two = build(&[1u32, 70_000].into_iter().collect()).encode();
+        let mut dup = two;
+        dup[9..11].copy_from_slice(&1u16.to_le_bytes());
+        assert!(Bitmap::decode(&dup).is_err());
     }
 }
