@@ -9,11 +9,6 @@
 //! empty containers are dropped), so `==` is structural.
 //!
 //! Only `alloc` is required.
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    reason = "indices are bounded by the 16-bit split and 1024-word bitsets"
-)]
 
 pub use self::wide::{Bitmap128, Bitmap64, Iter128, Iter64};
 

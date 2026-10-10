@@ -4,12 +4,6 @@
 //! [`Bitmap`], so all chunk-level behaviour (array/bitset containers,
 //! copy-on-write sharing, canonical form) is inherited. Empty inner bitmaps are
 //! never stored, so `==` is structural.
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    trivial_numeric_casts,
-    reason = "the 32-bit split keeps every shift and truncation in range"
-)]
 
 use super::Bitmap;
 use alloc::collections::{btree_map, BTreeMap};
