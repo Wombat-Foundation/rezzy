@@ -11,6 +11,7 @@ extern crate std;
 extern crate alloc;
 
 pub mod algebraic;
+pub mod bitmap;
 pub mod client;
 pub mod gf64;
 pub mod gf64_simd;

@@ -171,6 +171,7 @@ unstable-refcount-gc = []
 
 [dependencies]
 rezzy-json.workspace = true
+rezzy-recon.workspace = true
 
 base64.workspace = true
 blake3.workspace = true
@@ -184,7 +185,6 @@ ed25519-zebra = { workspace = true, optional = true }
 [dev-dependencies]
 base64.workspace = true
 hashbrown.workspace = true
-rezzy-recon.workspace = true
 sha2.workspace = true
 
 [lints.rust]
