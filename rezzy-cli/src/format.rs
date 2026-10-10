@@ -24,6 +24,7 @@ use rezzy::auth::{apply_authorized_redactions_with_state_at, RedactionReport, Ro
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 
 /// Everything an output formatter needs from one state-resolution run.
@@ -863,7 +864,7 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     room_version: Option<&str>,
 ) -> Result<Option<StreamOrderIndex>, AppError> {
     let explicit = args.metadata.clone();
-    let paths: Vec<PathBuf> = explicit.as_ref().map_or_else(
+    let paths: Vec<(PathBuf, Option<PathBuf>)> = explicit.as_ref().map_or_else(
         || {
             args.input
                 .iter()
@@ -871,11 +872,11 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
                     path.extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
                 })
-                .map(|path| provenance::sidecar_path(path))
-                .filter(|path| path.is_file())
+                .map(|path| (provenance::sidecar_path(path), Some(path.clone())))
+                .filter(|(path, _)| path.is_file())
                 .collect()
         },
-        |path| vec![path.clone()],
+        |path| vec![(path.clone(), None)],
     );
     if paths.is_empty() {
         warn_once(
@@ -892,7 +893,7 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     let mut missing = 0_usize;
     let mut mismatched = 0_usize;
     let mut room_mismatch = 0_usize;
-    for path in &paths {
+    for (path, aggregate_path) in &paths {
         let sidecar = if explicit.is_some() {
             provenance::load_sidecar(path)?
         } else {
@@ -913,6 +914,17 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
         {
             room_mismatch = room_mismatch.saturating_add(1);
             continue;
+        }
+        if let Some(aggregate_path) = aggregate_path.as_deref() {
+            let matches = sidecar.aggregate_sha256.as_deref().is_some_and(|expected| {
+                fs::read(aggregate_path)
+                    .ok()
+                    .is_some_and(|bytes| provenance::sha256_hex(&bytes) == expected)
+            });
+            if !matches {
+                mismatched = mismatched.saturating_add(1);
+                continue;
+            }
         }
         if expected_room_id.is_some()
             && sidecar

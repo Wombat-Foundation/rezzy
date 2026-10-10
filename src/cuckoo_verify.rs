@@ -413,7 +413,7 @@ impl SipHashState {
 }
 
 fn sipnode(keys: SipHashKeys, edge: u64, uorv: u64) -> u64 {
-    keys.siphash24(edge.wrapping_mul(2).wrapping_add(uorv)) & ((1_u64 << (EDGE_BITS - 1)) - 1)
+    keys.siphash24(edge.wrapping_mul(2).wrapping_add(uorv)) & EDGE_MASK
 }
 
 fn next_u64_le(chunks: &mut core::slice::ChunksExact<'_, u8>) -> u64 {

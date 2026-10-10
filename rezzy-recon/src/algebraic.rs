@@ -637,7 +637,7 @@ impl SyndromeSketch {
         if encoded.len() != expected_encoded_len {
             return Err(AlgebraicError::InvalidSketchLength);
         }
-        let mut bytes = [0_u8; MAX_SKETCH_CAPACITY * 8];
+        let mut bytes = [0_u8; MAX_OVERFLOW_SKETCH_CAPACITY * 8];
         let length = decode_base64(&URL_SAFE_NO_PAD, encoded, &mut bytes)
             .map_err(|_| AlgebraicError::InvalidBase64)?;
         Self::from_encoded_bytes(capacity, &bytes[..length])

@@ -20,7 +20,7 @@ rest are single-key chains. Costs paid per operation today:
 
 The wire format is therefore _not_ the problem (an earlier estimate of "8 KB
 proofs" ignored `CompressedCausalStep`); compute on insert, build and verify is.
-Hash choice (SHA3-256 → BLAKE3) is a constant factor on top and is sequenced
+Hash choice (SHA-256 → BLAKE3) is a constant factor on top and is sequenced
 after this change (§9).
 
 ## 2. Design: leaf compression (recommended) vs. full Patricia
@@ -103,7 +103,7 @@ another (required by the prefix instantiation below).
 
 Instantiations:
 
-- **SHA3-256:** `H_tag(msg) = SHA3-256(tag || msg)`.
+- **SHA-256:** `H_tag(msg) = SHA-256(tag || msg)`.
 - **BLAKE3:** `H_tag(msg) = BLAKE3_derive_key(context = tag).update(msg)`.
 
 The two are different functions; a deployment names exactly one, and the version
@@ -174,7 +174,7 @@ rows must be updated.
 
 ## 9. Sequencing and hash
 
-1. Land §2–§7 with the current SHA3-256 `hash_parts`; re-measure.
+1. Land §2–§7 with the current SHA-256 `hash_parts`; re-measure.
 2. Instantiate `H_tag` with BLAKE3 (new `v3` tags, §4) (already a workspace dep,
    used by MSC4500; ~3-5× _est._ on small inputs, more with batched SIMD per
    level during bulk build). Domain separation comes from
