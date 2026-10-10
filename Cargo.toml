@@ -82,7 +82,7 @@ rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1" }
 
 base64 = { version = "0.23", default-features = false }
 blake3 = { version = "1.5", default-features = false }
-hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
+hashbrown = { version = "0.16", default-features = false, features = ["default-hasher", "inline-more"] }
 ryu = { version = "1.0", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 
@@ -96,7 +96,7 @@ ureq = { version = "3", default-features = false }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 ed25519-zebra = { version = "5", default-features = false }
-getrandom = { version = "0.4", default-features = false }
+getrandom = { version = "0.2", default-features = false }
 rpassword = "7.5"
 
 # Dev dependencies

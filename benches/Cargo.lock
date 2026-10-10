@@ -666,9 +666,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-dependencies = [
- "foldhash",
-]
 
 [[package]]
 name = "hex"
@@ -1191,7 +1188,7 @@ dependencies = [
  "base64",
  "blake3",
  "ed25519-zebra",
- "hashbrown 0.17.1",
+ "hashbrown 0.16.1",
  "rezzy-json",
  "rezzy-recon",
  "sha2 0.11.0",

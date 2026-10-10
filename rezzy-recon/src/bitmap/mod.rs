@@ -991,7 +991,7 @@ mod tests {
         b.insert(1);
         assert!(matches!(b.chunks[0].store, Store::Dense(_)));
         // Subtracting back down to the threshold returns to an array.
-        let drop: Bitmap = [1u32].into_iter().collect();
+        let drop: Bitmap = core::iter::once(1u32).collect();
         let b = b - &drop;
         assert!(matches!(b.chunks[0].store, Store::Array(_)));
         assert_eq!(b.len(), ARRAY_MAX as u64);
@@ -1123,7 +1123,7 @@ mod tests {
         check(&(&ba | &bb), &a.union(&b).copied().collect());
         check(&(&ba & &bb), &BTreeSet::new());
         check(&(ba.clone() - &bb), &a);
-        let mut c = ba.clone();
+        let mut c = ba;
         c.extend(b.iter().copied());
         check(&c, &a.union(&b).copied().collect());
     }
@@ -1133,7 +1133,7 @@ mod tests {
         let mut bitmap: Bitmap = [0, 1, 65_536, u32::MAX].into_iter().collect();
         assert!(bitmap.is_subset(&bitmap));
         assert!(bitmap.is_disjoint(&Bitmap::new()));
-        assert!(!bitmap.is_disjoint(&[1u32].into_iter().collect()));
+        assert!(!bitmap.is_disjoint(&core::iter::once(1u32).collect()));
         assert!(!bitmap.is_subset(&[0, 1].into_iter().collect()));
         assert!(bitmap.remove(1));
         assert!(!bitmap.remove(1));
@@ -1248,7 +1248,7 @@ mod tests {
             Err(BitmapDecodeError::InvalidChunkKind(2))
         );
         // Unsorted array values are non-canonical.
-        let mut unsorted = good.clone();
+        let mut unsorted = good;
         let first = 16;
         unsorted.swap(first, first + 2);
         assert_eq!(

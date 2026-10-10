@@ -42,8 +42,8 @@ fn seal_with(
 ) -> Result<Vec<u8>, String> {
     let mut salt = [0u8; SALT_LEN];
     let mut nonce = [0u8; NONCE_LEN];
-    getrandom::fill(&mut salt).map_err(|e| format!("rng failure: {e}"))?;
-    getrandom::fill(&mut nonce).map_err(|e| format!("rng failure: {e}"))?;
+    getrandom::getrandom(&mut salt).map_err(|e| format!("rng failure: {e}"))?;
+    getrandom::getrandom(&mut nonce).map_err(|e| format!("rng failure: {e}"))?;
 
     let mut out = Vec::with_capacity(
         HEADER_LEN
