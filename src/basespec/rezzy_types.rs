@@ -3657,13 +3657,12 @@ impl LeanEvent<String, Value, String> {
             let digest = reference_hash_bytes(value, ver)?;
             let mut id = String::with_capacity(1 + HASH_B64_MAX_LEN);
             id.push('$');
-            id.push_str(&crate::base64_utils::encode(
-                &hash_base64_engine(ver),
-                &digest,
-            ));
+            let mut encoded = [0u8; HASH_B64_MAX_LEN];
+            let n = encode_hash_slice(&digest, ver, &mut encoded)?;
+            let mut id = String::with_capacity(1 + n);
+            id.push('$');
+            id.push_str(core::str::from_utf8(&encoded[..n]).expect("base64 is ASCII"));
             id
-        } else {
-            return Err(String::from(
                 "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
             ));
         };
