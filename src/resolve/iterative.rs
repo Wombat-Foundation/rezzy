@@ -1820,4 +1820,134 @@ mod tests {
         );
         assert!(power_events.contains_key("$pl"));
     }
+
+    /// Synapse `test_state_reset_replay_conflicted_subgraph` (MSC4297 / V2.1):
+    /// ME2 (cites old power1 + ME1) must be replayed before ME1 (cites power3),
+    /// so ME1 wins Evelyn's slot.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn v2_1_replays_old_epoch_member_before_new_epoch_member() {
+        const A: &str = "@alice:example.com";
+        const B: &str = "@bob:example.com";
+        const C: &str = "@charlie:example.com";
+        const E: &str = "@evelyn:example.com";
+        const Z: &str = "@zara:example.com";
+        let ids = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let mk = |id: &str, ty: &str, sk: &str, sender: &str, content, auth: &[&str], ts: u64| {
+            LeanEvent {
+                event_id: id.into(),
+                event_type: ty.into(),
+                state_key: Some(sk.into()),
+                sender: sender.into(),
+                content,
+                auth_events: ids(auth),
+                origin_server_ts: ts,
+                ..Default::default()
+            }
+        };
+        let join = || crate::json!({ "membership": MEM_JOIN });
+        let evs = [
+            mk(
+                "$e1",
+                "m.room.create",
+                "",
+                A,
+                crate::json!({"creator": "@alice:example.com"}),
+                &[],
+                1,
+            ),
+            mk("$e2", M_ROOM_MEMBER, A, A, join(), &[], 2),
+            mk(
+                "$e3",
+                "m.room.power_levels",
+                "",
+                A,
+                crate::json!({"users": {}}),
+                &["$e2"],
+                3,
+            ),
+            mk(
+                "$e4",
+                "m.room.join_rules",
+                "",
+                A,
+                crate::json!({"join_rule": "public"}),
+                &["$e2", "$e3"],
+                4,
+            ),
+            mk("$e5", M_ROOM_MEMBER, B, B, join(), &["$e3", "$e4"], 5),
+            mk("$e6", M_ROOM_MEMBER, C, C, join(), &["$e3", "$e4"], 6),
+            mk(
+                "$e7",
+                "m.room.power_levels",
+                "",
+                A,
+                crate::json!({"users": {"@bob:example.com": 50}}),
+                &["$e2", "$e3"],
+                7,
+            ),
+            mk(
+                "$e8",
+                "m.room.power_levels",
+                "",
+                B,
+                crate::json!({"users": {"@bob:example.com": 50, "@charlie:example.com": 50}}),
+                &["$e5", "$e7"],
+                8,
+            ),
+            mk("$e9", M_ROOM_MEMBER, E, E, join(), &["$e8", "$e4"], 9),
+            mk(
+                "$e10",
+                M_ROOM_MEMBER,
+                E,
+                E,
+                join(),
+                &["$e3", "$e4", "$e9"],
+                10,
+            ),
+            mk("$e11", M_ROOM_MEMBER, Z, Z, join(), &["$e8", "$e4"], 11),
+        ];
+        let ac: HashMap<String, LeanEvent> = evs
+            .iter()
+            .map(|e| (e.event_id.clone(), e.clone()))
+            .collect();
+        let mut unconflicted = SharedState::new();
+        for (ty, sk, id) in [
+            ("m.room.create", "", "$e1"),
+            ("m.room.join_rules", "", "$e4"),
+            (M_ROOM_MEMBER, A, "$e2"),
+            (M_ROOM_MEMBER, B, "$e5"),
+            (M_ROOM_MEMBER, C, "$e6"),
+        ] {
+            unconflicted.insert((EventType::from(ty), sk.to_string()), id.to_string());
+        }
+        let conflicted: HashMap<String, LeanEvent> =
+            ["$e3", "$e4", "$e5", "$e7", "$e8", "$e9", "$e10", "$e11"]
+                .iter()
+                .map(|id| ((*id).to_string(), ac[*id].clone()))
+                .collect();
+
+        let (resolved, deltas) = resolve_iterative_sort_with_cache_and_deltas(
+            IterativeInputs::new(
+                &unconflicted,
+                &conflicted,
+                &ac,
+                StateResVersion::V2_1,
+                &mut HashMap::new(),
+                &String::new(),
+            ),
+            ResolveOptions::new(None, None),
+        );
+        let trace: Vec<_> = deltas
+            .iter()
+            .map(|d| (&d.event_id[..], d.accepted))
+            .collect();
+        assert_eq!(
+            resolved
+                .get(&(EventType::from(M_ROOM_MEMBER), E.to_string()))
+                .map(String::as_str),
+            Some("$e9"),
+            "replay trace: {trace:?}"
+        );
+    }
 }
