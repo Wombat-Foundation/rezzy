@@ -280,15 +280,29 @@ fn assert_pl_users_rejected(users: &rezzy::JsonValue) {
     }
 }
 
-/// Auth-checks a `$pl0` event whose `ban` is a boolean (Rule 10.1 non-integer
-/// scalar).
-fn check_ban_true_pl(state: &RoomState, version: StateResVersion) -> Result<(), AuthError<'_>> {
-    let events: &'static Vec<LeanEvent> = Box::leak(Box::new(utils::parse_jsonl_events(
-        r#"
+/// Rule 10.1 fixture: a `$pl0` power-levels event whose `ban` is a boolean
+/// (non-integer scalar) instead of an integer.
+const BAN_TRUE_PL_JSONL: &str = r#"
 {"event_id": "$pl0", "type": "m.room.power_levels", "state_key": "", "sender": "@admin:example.com", "content": {"ban": true}}
-"#,
-    )));
-    check_auth(&events[0], state, version, None)
+"#;
+
+/// Auth-checks the boolean-`ban` fixture and asserts the rejection. The events
+/// are built here because `check_auth`'s error borrows them -- the assertion
+/// must run while they are still in scope.
+fn assert_ban_true_pl_rejected(state: &RoomState, version: StateResVersion, msg: &str) {
+    let events = utils::parse_jsonl_events(BAN_TRUE_PL_JSONL);
+    let res = check_auth(&events[0], state, version, None);
+    assert!(res.is_err(), "{msg}: {res:?}");
+}
+
+/// Auth-checks the boolean-`ban` fixture and asserts it is accepted (room
+/// versions ≤ 9 predate the V10 integer-typing requirement). The events are
+/// built here because `check_auth`'s error borrows them -- the assertion must
+/// run while they are still in scope.
+fn assert_ban_true_pl_allowed(state: &RoomState, version: StateResVersion, msg: &str) {
+    let events = utils::parse_jsonl_events(BAN_TRUE_PL_JSONL);
+    let res = check_auth(&events[0], state, version, None);
+    assert!(res.is_ok(), "{msg}: {res:?}");
 }
 
 /// Shared Rule 2.2 fixture: create + admin join in state and a provider.
@@ -326,16 +340,6 @@ fn assert_incomplete_bob_member(res: &Result<(), AuthError>) {
         ),
         "expected IncompleteAuthEvents for @bob:example.com, got {res:?}"
     );
-}
-
-/// Auth-checks a chain under `V2_1` against an empty initial state.
-fn check_chain(events: &[LeanEvent]) -> (Vec<String>, Vec<(String, AuthError<'_>)>) {
-    let empty: &'static RoomState = Box::leak(Box::new(RoomState::new()));
-    check_auth_chain(
-        events,
-        empty,
-        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
-    )
 }
 
 /// Asserts exactly one rejection: `$msg` citing `expected_auth_event_id` as a
@@ -834,7 +838,14 @@ fn test_iterative_auth_chain() {
     // once it exists in state (added by $join).
     msg.auth_events = vec!["$join".into()];
     let events = [create, join, msg];
-    let (accepted, rejected) = check_chain(&events);
+    // Both fixtures are test locals so the borrowed `AuthError`s in
+    // `rejected` stay valid for the assertions below.
+    let empty_state = RoomState::new();
+    let (accepted, rejected) = check_auth_chain(
+        &events,
+        &empty_state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
     assert_eq!(accepted, vec!["$create", "$join", "$msg"]);
     assert!(rejected.is_empty(), "unexpected rejections: {rejected:?}");
 }
@@ -926,7 +937,14 @@ fn test_iterative_auth_chain_rejects_untagged_auth_event_once_citing_side_popula
     msg.auth_events = vec!["$join".into()];
 
     let events = [create, join, msg];
-    let (accepted, rejected) = check_chain(&events);
+    // Both fixtures are test locals so the borrowed `AuthError`s in
+    // `rejected` stay valid for the assertions below.
+    let empty_state = RoomState::new();
+    let (accepted, rejected) = check_auth_chain(
+        &events,
+        &empty_state,
+        rezzy::basespec::rezzy_types::StateResVersion::V2_1,
+    );
 
     assert_eq!(
         accepted,
@@ -2981,10 +2999,10 @@ fn test_pl_validation_scalar_old_value_too_high_rejected() {
 fn test_pl_v12_scalar_not_integer_rejected() {
     let state = admin_joined_state("12");
     // First PL event with ban as a boolean instead of integer
-    let res = check_ban_true_pl(&state, rezzy::StateResVersion::V2_1);
-    assert!(
-        res.is_err(),
-        "Non-integer scalar PL should be rejected in V12: {res:?}"
+    assert_ban_true_pl_rejected(
+        &state,
+        rezzy::StateResVersion::V2_1,
+        "Non-integer scalar PL should be rejected in V12",
     );
 }
 
@@ -2993,10 +3011,10 @@ fn test_pl_v12_scalar_not_integer_rejected() {
 #[test]
 fn test_pl_v2_scalar_not_integer_allowed() {
     let state = admin_joined_state("9");
-    let res = check_ban_true_pl(&state, rezzy::StateResVersion::V2);
-    assert!(
-        res.is_ok(),
-        "Non-integer scalar PL should be allowed in room V9: {res:?}"
+    assert_ban_true_pl_allowed(
+        &state,
+        rezzy::StateResVersion::V2,
+        "Non-integer scalar PL should be allowed in room V9",
     );
 }
 
@@ -3607,6 +3625,49 @@ fn test_rule_11_redaction_insufficient_pl_same_domain_allowed() {
     assert!(
         res.is_ok(),
         "Redaction of an event on the same domain must be allowed, got {res:?}"
+    );
+}
+
+/// Room versions 1 and 2 accept oversized event IDs with a warning rather than
+/// rejecting them (only v11+ hard-enforces the 255-byte limit), so Rule 11's
+/// same-domain check must still work when the redaction's own event ID blows
+/// past the stack buffer `domain_matches_display` renders into.
+#[test]
+fn test_rule_11_redaction_oversized_event_id_same_domain_allowed() {
+    let state = rule_11_base_state("1");
+    // ~315 bytes: over the 256-byte render buffer, but a legal v1 event ID.
+    let oversized_id = format!("$r{}:domain1.com", "a".repeat(300));
+    let redaction = make_event(
+        &oversized_id,
+        "m.room.redaction",
+        None,
+        "@bob:domain1.com",
+        json!({"redacts": "$target:domain1.com"}),
+    );
+    let res = check_auth(&redaction, &state, StateResVersion::V1, None);
+    assert!(
+        res.is_ok(),
+        "an oversized event ID must not defeat the Rule 11 same-domain check, got {res:?}"
+    );
+}
+
+/// The oversized-ID fallback must not widen Rule 11: a same-length ID on a
+/// *different* domain is still rejected.
+#[test]
+fn test_rule_11_redaction_oversized_event_id_different_domain_rejected() {
+    let state = rule_11_base_state("1");
+    let oversized_id = format!("$r{}:domain2.com", "a".repeat(300));
+    let redaction = make_event(
+        &oversized_id,
+        "m.room.redaction",
+        None,
+        "@bob:domain1.com",
+        json!({"redacts": "$target:domain1.com"}),
+    );
+    let res = check_auth(&redaction, &state, StateResVersion::V1, None);
+    assert!(
+        matches!(res, Err(AuthError::InvalidSyntax(msg)) if msg.contains("m.room.redaction requires sender PL")),
+        "an oversized event ID on another domain must still be rejected, got {res:?}"
     );
 }
 

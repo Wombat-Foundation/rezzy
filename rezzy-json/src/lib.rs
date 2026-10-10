@@ -1,4 +1,4 @@
-//! Small `alloc`-only JSON value and parser used by the no-std core.
+//! Small JSON value and parser used by the Rezzy core.
 //!
 //! Objects use `BTreeMap` so iteration is deterministic and already suitable
 //! for Matrix canonical JSON. Integers retain their source spelling (floats

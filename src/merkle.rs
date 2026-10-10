@@ -74,9 +74,21 @@ impl From<Hash> for UnsignedRoot {
 }
 
 /// A field name copied into a fixed inline buffer so error variants never
-/// allocate. Names longer than [`FieldName::MAX_LEN`] bytes are truncated on a
-/// UTF-8 boundary (Matrix event field names are far shorter; the truncation
-/// affects only the rendered message, never control flow).
+/// allocate.
+///
+/// A `FieldName` can only hold [`FieldName::MAX_LEN`] bytes, so a name that is
+/// stored truncated would not compare equal to another over-long name sharing
+/// the same prefix -- and derived equality on [`MerkleError`] would then treat
+/// distinct names as identical. To keep that from happening the validated
+/// entry points ([`leaf_hash`], [`leaf_hash_bytes`], [`component_hash`],
+/// [`leaf_path`]) reject names longer than [`FieldName::MAX_LEN`] bytes with
+/// [`MerkleError::InvalidFieldName`] instead of truncating them, so every name
+/// that reaches `DuplicateField`/`FieldNotFound` is stored exactly.
+///
+/// [`FieldName::from`] remains infallible and still truncates on a UTF-8
+/// boundary for callers who build one directly; that truncation is
+/// display-only (it changes only what [`FieldName::as_str`] and `Debug`
+/// render for that value) and is unreachable from the validation boundary.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FieldName {
     buf: [u8; Self::MAX_LEN],
@@ -216,7 +228,10 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, MerkleError> {
 /// # Errors
 ///
 /// Returns [`MerkleError::EmptyFieldName`] if `field_name` is empty, or
-/// [`MerkleError::InvalidFieldName`] if it contains invalid bytes (for example a NUL byte).
+/// [`MerkleError::InvalidFieldName`] if it contains invalid bytes (for example
+/// a NUL byte) or is longer than [`FieldName::MAX_LEN`] bytes -- the length
+/// cap keeps the name representable when a later error variant has to carry
+/// it.
 pub fn leaf_hash(field_name: &str, canonical_value: &[u8]) -> Result<Hash, MerkleError> {
     validate_field_name(field_name)?;
     Ok(leaf_hash_unchecked(field_name.as_bytes(), canonical_value))
@@ -230,7 +245,9 @@ pub fn leaf_hash(field_name: &str, canonical_value: &[u8]) -> Result<Hash, Merkl
 /// # Errors
 ///
 /// Returns [`MerkleError::EmptyFieldName`] when `field_name` is empty, or
-/// [`MerkleError::InvalidFieldName`] when it is not valid UTF-8.
+/// [`MerkleError::InvalidFieldName`] when it is not valid UTF-8, contains a
+/// NUL byte, or is longer than [`FieldName::MAX_LEN`] bytes -- the length cap
+/// keeps the name representable when a later error variant has to carry it.
 pub fn leaf_hash_bytes(field_name: &[u8], canonical_value: &[u8]) -> Result<Hash, MerkleError> {
     validate_field_name_bytes(field_name)?;
     Ok(leaf_hash_unchecked(field_name, canonical_value))
@@ -240,8 +257,9 @@ pub fn leaf_hash_bytes(field_name: &[u8], canonical_value: &[u8]) -> Result<Hash
 ///
 /// # Errors
 ///
-/// Returns a [`MerkleError`] if the field name is invalid or `value` cannot be
-/// encoded as Matrix Canonical JSON.
+/// Returns a [`MerkleError`] if the field name is invalid (empty, containing
+/// a NUL byte, or longer than [`FieldName::MAX_LEN`] bytes) or `value` cannot
+/// be encoded as Matrix Canonical JSON.
 pub fn component_hash(field_name: &str, value: &Value) -> Result<Hash, MerkleError> {
     validate_field_name(field_name)?;
     let canonical = canonical_json(value)?;
@@ -306,7 +324,8 @@ pub fn content_hash(redacted_content_hash: Hash, redactable_content_hash: Hash) 
 /// # Errors
 ///
 /// Returns a [`MerkleError`] when there are no fields, duplicate field names, an
-/// empty field name, or a field value that cannot be canonically encoded.
+/// empty or over-long field name, or a field value that cannot be canonically
+/// encoded.
 pub fn root(fields: &[Field]) -> Result<Hash, MerkleError> {
     let leaves = leaves(fields)?;
     root_from_leaves(&leaves)
@@ -403,13 +422,19 @@ pub struct ProofStep {
 ///
 /// # Errors
 ///
-/// Returns a [`MerkleError`] if `fields` cannot be canonicalized or contains
-/// a duplicate field name, or [`MerkleError::FieldNotFound`] if no field
-/// named `field_name` is present.
+/// Returns [`MerkleError::EmptyFieldName`] if `field_name` is empty, or
+/// [`MerkleError::InvalidFieldName`] if it contains invalid bytes (for example
+/// a NUL byte) or is longer than [`FieldName::MAX_LEN`] bytes. Also returns a
+/// [`MerkleError`] if `fields` cannot be canonicalized or contains a duplicate
+/// field name, or [`MerkleError::FieldNotFound`] if no field named
+/// `field_name` is present. Validating `field_name` before the lookup keeps
+/// the `FieldNotFound` payload faithful: it carries the name exactly, never a
+/// truncation of it.
 pub fn leaf_path(
     fields: &[Field],
     field_name: &str,
 ) -> Result<(Vec<ProofStep>, Hash), MerkleError> {
+    validate_field_name(field_name)?;
     let ls = leaves(fields)?;
     let idx = ls
         .iter()
@@ -541,6 +566,10 @@ fn inner_hash(left: Hash, right: Hash) -> Hash {
     hash_parts(&[NODE_DST, &left, &right])
 }
 
+// Validation boundary for `&str` field names. Rejecting over-long names here
+// (rather than truncating inside `FieldName`) is what keeps derived equality
+// on `MerkleError` honest: two distinct names sharing a 64-byte prefix must
+// never collapse into equal `DuplicateField`/`FieldNotFound` payloads.
 fn validate_field_name(field_name: &str) -> Result<(), MerkleError> {
     if field_name.is_empty() {
         return Err(MerkleError::EmptyFieldName);
@@ -548,9 +577,14 @@ fn validate_field_name(field_name: &str) -> Result<(), MerkleError> {
     if field_name.as_bytes().contains(&0) {
         return Err(MerkleError::InvalidFieldName);
     }
+    if field_name.len() > FieldName::MAX_LEN {
+        return Err(MerkleError::InvalidFieldName);
+    }
     Ok(())
 }
 
+// Byte-slice counterpart of `validate_field_name`; the length cap applies to
+// the raw byte length, matching what `FieldName` can store.
 fn validate_field_name_bytes(field_name: &[u8]) -> Result<(), MerkleError> {
     if field_name.is_empty() {
         return Err(MerkleError::EmptyFieldName);
@@ -559,6 +593,9 @@ fn validate_field_name_bytes(field_name: &[u8]) -> Result<(), MerkleError> {
         return Err(MerkleError::InvalidFieldName);
     }
     if core::str::from_utf8(field_name).is_err() {
+        return Err(MerkleError::InvalidFieldName);
+    }
+    if field_name.len() > FieldName::MAX_LEN {
         return Err(MerkleError::InvalidFieldName);
     }
     Ok(())

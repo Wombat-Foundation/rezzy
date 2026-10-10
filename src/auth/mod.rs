@@ -514,13 +514,15 @@ fn banned_user<'a, Id: EventId>(sender: &'a str, event_id: &'a Id) -> AuthError<
 }
 
 /// Like [`domain_matches`], but renders `id2`'s `Display` form into a stack
-/// buffer so the comparison does not allocate. Fails closed (`false`) if the
-/// Display form does not fit in 256 bytes — event IDs are validated to ≤255,
-/// so this only trips on already-invalid input.
+/// buffer so the comparison does not allocate. Falls back to an allocating
+/// render if the Display form does not fit in 256 bytes: the 255-byte event ID
+/// limit is only hard-enforced from room version 11 onwards, and v1/v2 accept
+/// oversized IDs with a warning, so failing closed here would reject a valid
+/// same-domain redaction in a legacy room.
 fn domain_matches_display(id1: &str, id2: &impl core::fmt::Display) -> bool {
     let mut buf = [0u8; 256];
     let Some(n) = crate::basespec::rezzy_types::write_display_into(&mut buf, id2) else {
-        return false;
+        return crate::basespec::rezzy_types::domain_matches(id1, &id2.to_string());
     };
     let Ok(id2_str) = core::str::from_utf8(&buf[..n]) else {
         return false;

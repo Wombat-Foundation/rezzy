@@ -940,6 +940,12 @@ pub const HASH_B64_MAX_LEN: usize = 43;
 /// Writes the unpadded base64 encoding of `hash` into `out` using the room
 /// version's alphabet, without allocating.
 ///
+/// The room version's alphabet is the **event-ID** alphabet (STANDARD for v3,
+/// URL-safe from v4 onwards), which is what [`reference_hash_bytes`] needs.
+/// Content hashes are standard base64 in *every* room version — encode those
+/// with `base64::engine::general_purpose::STANDARD_NO_PAD`'s `encode_slice`
+/// instead.
+///
 /// Returns the number of bytes written (always 43 for a 32-byte digest).
 ///
 /// # Errors
@@ -997,8 +1003,12 @@ pub fn reference_hash_bytes<'a>(
 ///
 /// This is the zero-alloc core of [`compute_content_hash`]: same validation and
 /// canonicalization path, but returns the 32-byte digest instead of a base64
-/// `String`. Encode with [`encode_hash_slice`] (STANDARD unpadded) or
-/// [`compute_content_hash`]'s wrapper.
+/// `String`. Encode with `base64::engine::general_purpose::STANDARD_NO_PAD`'s
+/// `encode_slice`, or use [`compute_content_hash`]'s wrapper. Do **not** use
+/// [`encode_hash_slice`]: content hashes are standard base64 in every room
+/// version, while that encoder follows the room version's event-ID alphabet
+/// (URL-safe from v4 onwards), which would produce a `hashes.sha256` that
+/// fails verification.
 ///
 /// # Errors
 /// Returns `Err` when `room_version` is not a recognised room version, or when
@@ -1056,8 +1066,12 @@ pub fn reference_hash<'a>(
 /// `signatures`, and `hashes` removed, encoded with standard unpadded base64
 /// for every room version.
 ///
-/// Prefer [`content_hash_bytes`] + [`encode_hash_slice`] when the caller can
-/// supply stack storage; this wrapper allocates one `String` for the result.
+/// Prefer [`content_hash_bytes`] plus `base64::engine::general_purpose::STANDARD_NO_PAD`'s
+/// `encode_slice` when the caller can supply stack storage; this wrapper
+/// allocates one `String` for the result. Do **not** use [`encode_hash_slice`]:
+/// content hashes are standard base64 in every room version, while that
+/// encoder follows the room version's event-ID alphabet (URL-safe from v4
+/// onwards), which would produce a `hashes.sha256` that fails verification.
 ///
 /// # Errors
 /// Returns `Err` when `room_version` is not a recognised room version, or
@@ -3178,9 +3192,10 @@ pub fn extract_domain(id: &str) -> Option<&str> {
 ///
 /// Returns the number of bytes written, or `None` if the output did not fit
 /// (or was not valid UTF-8, which `Display` cannot produce for valid writes).
-/// Event IDs are validated to ≤255 bytes, so a 256-byte buffer always fits
-/// post-validation; pre-validation callers should treat `None` as "skip the
-/// optimization / fail closed".
+/// Room versions 1-10 accept event IDs longer than the 255-byte limit (they
+/// are logged, not rejected), so `None` is reachable for valid input and
+/// callers that need to compare must fall back to an allocating render rather
+/// than treating it as a mismatch.
 pub(crate) fn write_display_into(buf: &mut [u8], value: &impl core::fmt::Display) -> Option<usize> {
     struct Adapter<'a> {
         buf: &'a mut [u8],
@@ -3655,14 +3670,14 @@ impl LeanEvent<String, Value, String> {
             String::from(id)
         } else if let Some(ver) = room_version {
             let digest = reference_hash_bytes(value, ver)?;
-            let mut id = String::with_capacity(1 + HASH_B64_MAX_LEN);
-            id.push('$');
-            let mut encoded = [0u8; HASH_B64_MAX_LEN];
-            let n = encode_hash_slice(&digest, ver, &mut encoded)?;
-            let mut id = String::with_capacity(1 + n);
-            id.push('$');
-            id.push_str(core::str::from_utf8(&encoded[..n]).expect("base64 is ASCII"));
+            let mut id = String::from('$');
+            id.push_str(&crate::base64_utils::encode(
+                &hash_base64_engine(ver),
+                &digest,
+            ));
             id
+        } else {
+            return Err(String::from(
                 "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
             ));
         };
