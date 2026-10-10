@@ -26,6 +26,45 @@ use core::fmt;
 use core::iter::FromIterator;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Sub, SubAssign};
 
+/// Magic prefix for [`Bitmap::encode`].
+pub const BITMAP_MAGIC: [u8; 4] = *b"RBMP";
+/// Version of the [`Bitmap`] wire format.
+pub const BITMAP_FORMAT_VERSION: u8 = 1;
+
+/// Errors returned by [`Bitmap::decode`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitmapDecodeError {
+    /// The input ended before a complete value could be read.
+    Truncated,
+    /// The input does not have the [`BITMAP_MAGIC`] prefix.
+    InvalidMagic,
+    /// The input uses a format version this crate does not understand.
+    UnsupportedVersion(u8),
+    /// A chunk kind byte is not defined by the format.
+    InvalidChunkKind(u8),
+    /// The payload is not in canonical bitmap form.
+    NonCanonical,
+    /// Bytes remain after the encoded bitmap.
+    TrailingBytes,
+}
+
+impl fmt::Display for BitmapDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated => f.write_str("truncated bitmap encoding"),
+            Self::InvalidMagic => f.write_str("invalid bitmap encoding magic"),
+            Self::UnsupportedVersion(version) => {
+                write!(f, "unsupported bitmap encoding version {version}")
+            }
+            Self::InvalidChunkKind(kind) => write!(f, "invalid bitmap chunk kind {kind}"),
+            Self::NonCanonical => f.write_str("non-canonical bitmap encoding"),
+            Self::TrailingBytes => f.write_str("trailing bytes after bitmap encoding"),
+        }
+    }
+}
+
+impl core::error::Error for BitmapDecodeError {}
+
 /// A sorted array container holds at most this many values; denser chunks use a bitset.
 const ARRAY_MAX: usize = 4096;
 /// Number of `u64` words in a bitset container (65 536 bits).
@@ -63,6 +102,14 @@ fn set_bit(words: &mut [u64; WORDS], lo: u16) -> bool {
     let fresh = *w & mask == 0;
     *w |= mask;
     fresh
+}
+
+fn clear_bit(words: &mut [u64; WORDS], lo: u16) -> bool {
+    let w = &mut words[usize::from(lo >> 6)];
+    let mask = 1u64 << (lo & 63);
+    let present = *w & mask != 0;
+    *w &= !mask;
+    present
 }
 
 fn popcount(words: &[u64; WORDS]) -> u32 {
@@ -151,6 +198,58 @@ impl Chunk {
                 self.len += u32::from(fresh);
                 fresh
             }
+        }
+    }
+
+    fn remove(&mut self, lo: u16) -> bool {
+        match &mut self.store {
+            Store::Array(v) => {
+                let Ok(pos) = v.binary_search(&lo) else {
+                    return false;
+                };
+                v.remove(pos);
+                self.len -= 1;
+                true
+            }
+            Store::Dense(w) => {
+                if !clear_bit(w, lo) {
+                    return false;
+                }
+                self.len -= 1;
+                if self.len as usize <= ARRAY_MAX {
+                    self.store = Store::Array(words_to_array(w));
+                }
+                true
+            }
+        }
+    }
+
+    fn is_subset(&self, other: &Self) -> bool {
+        match (&self.store, &other.store) {
+            (Store::Array(a), Store::Array(b)) => a.iter().all(|x| b.binary_search(x).is_ok()),
+            (Store::Array(a), Store::Dense(b)) => a.iter().all(|&x| test_bit(b, x)),
+            (Store::Dense(_), Store::Array(_)) => false,
+            (Store::Dense(a), Store::Dense(b)) => a.iter().zip(b.iter()).all(|(x, y)| x & !y == 0),
+        }
+    }
+
+    fn is_disjoint(&self, other: &Self) -> bool {
+        match (&self.store, &other.store) {
+            (Store::Array(a), Store::Array(b)) => {
+                let (mut i, mut j) = (0, 0);
+                while i < a.len() && j < b.len() {
+                    match a[i].cmp(&b[j]) {
+                        core::cmp::Ordering::Less => i += 1,
+                        core::cmp::Ordering::Greater => j += 1,
+                        core::cmp::Ordering::Equal => return false,
+                    }
+                }
+                true
+            }
+            (Store::Array(a), Store::Dense(b)) | (Store::Dense(b), Store::Array(a)) => {
+                a.iter().all(|&x| !test_bit(b, x))
+            }
+            (Store::Dense(a), Store::Dense(b)) => a.iter().zip(b.iter()).all(|(x, y)| x & y == 0),
         }
     }
 
@@ -346,6 +445,162 @@ impl Bitmap {
             .is_ok_and(|i| self.chunks[i].contains(lo))
     }
 
+    /// Removes `value`, returning `true` if it was present.
+    pub fn remove(&mut self, value: u32) -> bool {
+        let (key, lo) = split(value);
+        let Ok(pos) = self.chunks.binary_search_by_key(&key, |c| c.key) else {
+            return false;
+        };
+        let chunk = Arc::make_mut(&mut self.chunks[pos]);
+        if !chunk.remove(lo) {
+            return false;
+        }
+        if chunk.len == 0 {
+            self.chunks.remove(pos);
+        }
+        true
+    }
+
+    /// Returns whether every value in `self` is also in `other`.
+    #[must_use]
+    pub fn is_subset(&self, other: &Self) -> bool {
+        self.chunks.iter().all(|chunk| {
+            other
+                .chunks
+                .binary_search_by_key(&chunk.key, |c| c.key)
+                .is_ok_and(|i| chunk.is_subset(&other.chunks[i]))
+        })
+    }
+
+    /// Returns whether `self` and `other` have no values in common.
+    #[must_use]
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        let (mut i, mut j) = (0, 0);
+        while let (Some(a), Some(b)) = (self.chunks.get(i), other.chunks.get(j)) {
+            match a.key.cmp(&b.key) {
+                core::cmp::Ordering::Less => i += 1,
+                core::cmp::Ordering::Greater => j += 1,
+                core::cmp::Ordering::Equal => {
+                    if !a.is_disjoint(b) {
+                        return false;
+                    }
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        true
+    }
+
+    /// Encodes this bitmap in a stable, versioned binary format.
+    ///
+    /// The format is little-endian and stores each canonical chunk as either
+    /// its sorted `u16` values or its 1024-word bitset. It is intentionally a
+    /// payload format: callers that need domain separation should wrap it in
+    /// their own domain-tagged envelope.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        // Header plus the smallest possible per-chunk records. The vector is
+        // allowed to grow for dense chunks.
+        let mut out = Vec::with_capacity(9 + self.chunks.len() * 7);
+        out.extend_from_slice(&BITMAP_MAGIC);
+        out.push(BITMAP_FORMAT_VERSION);
+        out.extend_from_slice(&(self.chunks.len() as u32).to_le_bytes());
+        for chunk in &self.chunks {
+            out.extend_from_slice(&chunk.key.to_le_bytes());
+            match &chunk.store {
+                Store::Array(values) => {
+                    out.push(0);
+                    out.extend_from_slice(&chunk.len.to_le_bytes());
+                    for value in values {
+                        out.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                Store::Dense(words) => {
+                    out.push(1);
+                    out.extend_from_slice(&chunk.len.to_le_bytes());
+                    for word in words.iter() {
+                        out.extend_from_slice(&word.to_le_bytes());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Decodes a bitmap produced by [`Bitmap::encode`].
+    ///
+    /// The decoder validates ordering, lengths, cardinalities and trailing
+    /// bytes, rejecting malformed or non-canonical input.
+    ///
+    /// # Errors
+    /// Returns [`BitmapDecodeError`] when the input is truncated, uses an
+    /// unsupported version, or is otherwise malformed.
+    pub fn decode(bytes: &[u8]) -> Result<Self, BitmapDecodeError> {
+        let mut input = bytes;
+        if input.len() < 9 {
+            return Err(BitmapDecodeError::Truncated);
+        }
+        if input[..4] != BITMAP_MAGIC {
+            return Err(BitmapDecodeError::InvalidMagic);
+        }
+        if input[4] != BITMAP_FORMAT_VERSION {
+            return Err(BitmapDecodeError::UnsupportedVersion(input[4]));
+        }
+        input = &input[5..];
+        let count = read_u32(&mut input)? as usize;
+        let mut chunks = Vec::with_capacity(count.min(input.len() / 7));
+        let mut previous = None;
+        for _ in 0..count {
+            let key = read_u16(&mut input)?;
+            if previous.is_some_and(|previous| key <= previous) {
+                return Err(BitmapDecodeError::NonCanonical);
+            }
+            previous = Some(key);
+            let kind = read_byte(&mut input)?;
+            let len = read_u32(&mut input)?;
+            let chunk = match kind {
+                0 => {
+                    if len == 0 || len as usize > ARRAY_MAX {
+                        return Err(BitmapDecodeError::NonCanonical);
+                    }
+                    let mut values = Vec::with_capacity(len as usize);
+                    for _ in 0..len {
+                        let value = read_u16(&mut input)?;
+                        if values.last().is_some_and(|last| value <= *last) {
+                            return Err(BitmapDecodeError::NonCanonical);
+                        }
+                        values.push(value);
+                    }
+                    Chunk::from_array(key, values).ok_or(BitmapDecodeError::NonCanonical)?
+                }
+                1 => {
+                    if len as usize <= ARRAY_MAX {
+                        return Err(BitmapDecodeError::NonCanonical);
+                    }
+                    let mut words = empty_words();
+                    for word in words.iter_mut() {
+                        *word = read_u64(&mut input)?;
+                    }
+                    if popcount(&words) != len {
+                        return Err(BitmapDecodeError::NonCanonical);
+                    }
+                    Chunk {
+                        key,
+                        len,
+                        store: Store::Dense(words),
+                    }
+                }
+                other => return Err(BitmapDecodeError::InvalidChunkKind(other)),
+            };
+            chunks.push(Arc::new(chunk));
+        }
+        if !input.is_empty() {
+            return Err(BitmapDecodeError::TrailingBytes);
+        }
+        Ok(Self { chunks })
+    }
+
     /// Adds `value`, returning `true` if it was not already present.
     pub fn insert(&mut self, value: u32) -> bool {
         let (key, lo) = split(value);
@@ -443,6 +698,33 @@ enum Mode {
 
 const fn split(value: u32) -> (u16, u16) {
     ((value >> 16) as u16, value as u16)
+}
+
+fn read_byte(input: &mut &[u8]) -> Result<u8, BitmapDecodeError> {
+    let (&byte, rest) = input.split_first().ok_or(BitmapDecodeError::Truncated)?;
+    *input = rest;
+    Ok(byte)
+}
+
+fn read_array<const N: usize>(input: &mut &[u8]) -> Result<[u8; N], BitmapDecodeError> {
+    if input.len() < N {
+        return Err(BitmapDecodeError::Truncated);
+    }
+    let (head, rest) = input.split_at(N);
+    *input = rest;
+    head.try_into().map_err(|_| BitmapDecodeError::Truncated)
+}
+
+fn read_u16(input: &mut &[u8]) -> Result<u16, BitmapDecodeError> {
+    Ok(u16::from_le_bytes(read_array(input)?))
+}
+
+fn read_u32(input: &mut &[u8]) -> Result<u32, BitmapDecodeError> {
+    Ok(u32::from_le_bytes(read_array(input)?))
+}
+
+fn read_u64(input: &mut &[u8]) -> Result<u64, BitmapDecodeError> {
+    Ok(u64::from_le_bytes(read_array(input)?))
 }
 
 /// Position within the chunk list: which chunk, and the next array index or bit.
@@ -834,5 +1116,49 @@ mod tests {
         let mut c = ba.clone();
         c.extend(b.iter().copied());
         check(&c, &a.union(&b).copied().collect());
+    }
+
+    #[test]
+    fn remove_and_relationships() {
+        let mut bitmap: Bitmap = [0, 1, 65_536, u32::MAX].into_iter().collect();
+        assert!(bitmap.is_subset(&bitmap));
+        assert!(bitmap.is_disjoint(&Bitmap::new()));
+        assert!(!bitmap.is_disjoint(&[1u32].into_iter().collect()));
+        assert!(!bitmap.is_subset(&[0, 1].into_iter().collect()));
+        assert!(bitmap.remove(1));
+        assert!(!bitmap.remove(1));
+        assert!(!bitmap.contains(1));
+        assert!(bitmap.remove(0));
+        assert!(bitmap.remove(65_536));
+        assert!(bitmap.remove(u32::MAX));
+        assert!(bitmap.is_empty());
+    }
+
+    #[test]
+    fn encode_decode_round_trip_and_rejects_bad_input() {
+        let values: BTreeSet<u32> = (0..=ARRAY_MAX as u32)
+            .map(|value| value * 3)
+            .chain([u32::MAX])
+            .collect();
+        let bitmap = build(&values);
+        let encoded = bitmap.encode();
+        assert_eq!(Bitmap::decode(&encoded).unwrap(), bitmap);
+
+        let mut bad = encoded.clone();
+        bad[4] = 2;
+        assert_eq!(
+            Bitmap::decode(&bad),
+            Err(BitmapDecodeError::UnsupportedVersion(2))
+        );
+        assert_eq!(
+            Bitmap::decode(&encoded[..encoded.len() - 1]),
+            Err(BitmapDecodeError::Truncated)
+        );
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            Bitmap::decode(&trailing),
+            Err(BitmapDecodeError::TrailingBytes)
+        );
     }
 }

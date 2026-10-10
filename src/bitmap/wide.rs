@@ -61,6 +61,35 @@ macro_rules! wide_bitmap {
                     .insert(value as u32)
             }
 
+            /// Removes `value`, returning `true` if it was present.
+            pub fn remove(&mut self, value: $value) -> bool {
+                let key = (value >> 32) as $key;
+                let Some(bitmap) = self.map.get_mut(&key) else {
+                    return false;
+                };
+                let removed = bitmap.remove(value as u32);
+                if bitmap.is_empty() {
+                    self.map.remove(&key);
+                }
+                removed
+            }
+
+            /// Returns whether every value in `self` is also in `other`.
+            #[must_use]
+            pub fn is_subset(&self, other: &Self) -> bool {
+                self.map.iter().all(|(key, bitmap)| {
+                    other.map.get(key).is_some_and(|candidate| bitmap.is_subset(candidate))
+                })
+            }
+
+            /// Returns whether `self` and `other` have no values in common.
+            #[must_use]
+            pub fn is_disjoint(&self, other: &Self) -> bool {
+                self.map.iter().all(|(key, bitmap)| {
+                    other.map.get(key).is_none_or(|candidate| bitmap.is_disjoint(candidate))
+                })
+            }
+
             /// Merges `bitmap` into the entry for `key`.
             fn absorb(&mut self, key: $key, bitmap: Bitmap) {
                 match self.map.entry(key) {
@@ -350,5 +379,21 @@ mod tests {
             assert!(s.contains(v));
         }
         assert!(!s.contains(u128::MAX - 1));
+    }
+
+    #[test]
+    fn wide_relationships_and_remove() {
+        let mut a: Bitmap64 = [1, 1u64 << 32, u64::MAX].into_iter().collect();
+        let b: Bitmap64 = [1, u64::MAX].into_iter().collect();
+        assert!(!a.is_subset(&b));
+        assert!(!a.is_disjoint(&b));
+        assert!(a.remove(1));
+        assert!(!a.remove(1));
+        assert!(a.remove(u64::MAX));
+        assert!(a.is_disjoint(&b));
+
+        let mut wide: Bitmap128 = [0, 1 << 100].into_iter().collect();
+        assert!(wide.remove(1 << 100));
+        assert!(wide.is_subset(&Bitmap128::from_iter([0])));
     }
 }
