@@ -174,11 +174,19 @@ fn mem_event(
     for _ in 0..n {
         prev_events.push(pool[rng.below(pool.len())].clone());
     }
-    // auth: always create; plus a subset of the pool (which includes earlier
-    // candidates, so a candidate can transitively cite a prior candidate).
+    // auth: always create and power_levels (real auth selection always cites
+    // the room's PL; omitting it makes the mainline position `len()`); plus a
+    // subset of the pool (which includes earlier candidates, so a candidate
+    // can transitively cite a prior candidate).
     auth_events.push("$create".to_string());
+    // The bootstrap creator join predates `$pl` (which cites it), so it is
+    // the one legitimate exception: key off whether `$pl` is in the pool.
+    let has_pl = pool.iter().any(|b| b == "$pl");
+    if has_pl {
+        auth_events.push("$pl".to_string());
+    }
     for b in pool {
-        if rng.below(3) == 0 {
+        if rng.below(3) == 0 && b != "$pl" && b != "$create" {
             auth_events.push(b.clone());
         }
     }
