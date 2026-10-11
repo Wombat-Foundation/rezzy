@@ -79,8 +79,8 @@ fn empty_causal_set_root_and_count() {
     // Fixed MSC4511 vector; this must not be derived through the implementation
     // under test, or an accidental hash/domain change would be tautological.
     let expected = [
-        23, 97, 227, 153, 40, 226, 79, 149, 96, 195, 145, 136, 160, 160, 219, 134, 148, 84, 139,
-        227, 173, 255, 100, 116, 186, 217, 38, 106, 114, 41, 183, 162,
+        71, 102, 51, 196, 116, 79, 222, 86, 123, 133, 66, 39, 222, 158, 246, 210, 38, 232, 71, 73,
+        234, 124, 38, 1, 177, 168, 45, 179, 213, 152, 182, 75,
     ];
     assert_eq!(empty_root(), expected);
     assert_eq!(empty.root(), expected);

@@ -15,10 +15,10 @@ pub type MerkleHash = [u8; 32];
 /// The fixed bit depth of the resolved-state sparse Merkle map.
 pub const STATE_DEPTH: usize = 256;
 
-const KEY_DST: &[u8] = b"msc4511:state-key:v1";
-const LEAF_DST: &[u8] = b"msc4511:state-leaf:v1";
-const NODE_DST: &[u8] = b"msc4511:state-node:v1";
-const EMPTY_DST: &[u8] = b"msc4511:state-empty:v1";
+const KEY_DST: &[u8] = b"msc4511:state-key:sha256:v1";
+const LEAF_DST: &[u8] = b"msc4511:state-leaf:sha256:v1";
+const NODE_DST: &[u8] = b"msc4511:state-node:sha256:v1";
+const EMPTY_DST: &[u8] = b"msc4511:state-empty:sha256:v1";
 
 fn bit(key: &MerkleHash, depth: usize) -> u8 {
     (key[depth / 8] >> 7_usize.saturating_sub(depth % 8)) & 1
@@ -361,8 +361,10 @@ mod tests {
             &path,
             root,
         ));
+        // A present key can never be proven absent. (An absent probe key may
+        // legitimately share this proof's prefix, so it is not used here.)
         assert!(!verify_non_inclusion(
-            "m.room.name",
+            "m.room.create",
             "",
             terminal_depth,
             &path,

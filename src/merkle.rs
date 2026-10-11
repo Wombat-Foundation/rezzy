@@ -17,9 +17,9 @@ pub const HASH_SIZE: usize = 32;
 const MAX_CANONICAL_INT: i64 = (1_i64 << 53) - 1;
 const MIN_CANONICAL_INT: i64 = -MAX_CANONICAL_INT;
 
-const LEAF_DST: &[u8] = b"msc4511:leaf:v1";
-const NODE_DST: &[u8] = b"msc4511:node:v1";
-const ROOT_DST: &[u8] = b"msc4511:root:v1";
+const LEAF_DST: &[u8] = b"msc4511:leaf:sha256:v1";
+const NODE_DST: &[u8] = b"msc4511:node:sha256:v1";
+const ROOT_DST: &[u8] = b"msc4511:root:sha256:v1";
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
 /// A SHA-256 digest.
@@ -172,7 +172,7 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, MerkleError> {
     Ok(out)
 }
 
-/// Computes SHA-256("msc4511:leaf:v1" || `field_name` || "\x00" ||
+/// Computes SHA-256("msc4511:leaf:sha256:v1" || `field_name` || "\x00" ||
 /// `canonical_value`).
 ///
 /// # Errors
@@ -311,7 +311,7 @@ pub fn header_root(header: &Header) -> Result<EventHeaderRoot, MerkleError> {
     .map(EventHeaderRoot)
 }
 
-/// Computes SHA-256("msc4511:root:v1" || `prev_events_hash` ||
+/// Computes SHA-256("msc4511:root:sha256:v1" || `prev_events_hash` ||
 /// `auth_events_hash` || `event_header_root` || `content_hash` ||
 /// `other_signed_fields_hash`).
 #[must_use]
@@ -628,16 +628,16 @@ pub mod causal {
     /// level per bit of a 32-byte (256-bit) event-ID digest key.
     pub const CAUSAL_DEPTH: usize = 256;
 
-    const CAUSAL_LEAF_DST: &[u8] = b"msc4511:causal-leaf:v1";
-    const CAUSAL_NODE_DST: &[u8] = b"msc4511:causal-node:v1";
-    const CAUSAL_EMPTY_LEAF_DST: &[u8] = b"msc4511:causal-empty-leaf:v1";
+    const CAUSAL_LEAF_DST: &[u8] = b"msc4511:causal-leaf:sha256:v1";
+    const CAUSAL_NODE_DST: &[u8] = b"msc4511:causal-node:sha256:v1";
+    const CAUSAL_EMPTY_LEAF_DST: &[u8] = b"msc4511:causal-empty-leaf:sha256:v1";
 
-    /// Computes SHA-256("msc4511:causal-leaf:v1" || `key`).
+    /// Computes SHA-256("msc4511:causal-leaf:sha256:v1" || `key`).
     fn causal_leaf(key: Hash) -> Hash {
         hash_parts(&[CAUSAL_LEAF_DST, &key])
     }
 
-    /// Computes SHA-256("msc4511:causal-node:v1" || `u16be(depth)` ||
+    /// Computes SHA-256("msc4511:causal-node:sha256:v1" || `u16be(depth)` ||
     /// `left_hash` || `u64be(left_count)` || `right_hash` ||
     /// `u64be(right_count)`).
     fn causal_node(
