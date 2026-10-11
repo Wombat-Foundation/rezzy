@@ -54,6 +54,15 @@ pub const HAMT_CODEC_VERSION: u8 = 1;
 /// Current routing version (1 = full keyed structural hash routing).
 pub const HAMT_ROUTING_VERSION: u8 = 1;
 
+/// Why a JSON document is not a valid [`RootHandle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootHandleJsonError {
+    /// The document is not a JSON object.
+    NotAnObject,
+    /// A required field is missing or has the wrong shape.
+    InvalidField(&'static str),
+}
+
 /// A resolved root handle carrying the local structural hash, global state-group identifier,
 /// and explicit codec/routing version metadata.
 ///
@@ -79,6 +88,82 @@ pub struct RootHandle {
 }
 
 impl RootHandle {
+    /// Serializes to the JSON persistence form (byte arrays as number arrays).
+    #[must_use]
+    pub fn to_json(&self) -> rezzy_json::Value {
+        fn bytes(b: &[u8]) -> rezzy_json::Value {
+            rezzy_json::Value::Array(
+                b.iter()
+                    .map(|x| rezzy_json::Value::from(u64::from(*x)))
+                    .collect(),
+            )
+        }
+        rezzy_json::json!({
+            "codec_version": u64::from(self.codec_version),
+            "routing_version": u64::from(self.routing_version),
+            "routing_params": bytes(&self.routing_params),
+            "structural_hash": bytes(&self.structural_hash),
+            "state_group_id": bytes(&self.state_group_id),
+        })
+    }
+
+    /// Reads the JSON persistence form.
+    ///
+    /// Documents written before version metadata existed omit `codec_version`,
+    /// `routing_version` and `routing_params`; those default to codec 1,
+    /// routing 1 and zero params.
+    ///
+    /// # Errors
+    /// Returns an error if the value is not an object or a field is malformed.
+    pub fn from_json(value: &rezzy_json::Value) -> Result<Self, RootHandleJsonError> {
+        fn byte_array<const N: usize>(
+            value: &rezzy_json::Value,
+            name: &'static str,
+        ) -> Result<[u8; N], RootHandleJsonError> {
+            let items = value
+                .as_array()
+                .filter(|a| a.len() == N)
+                .ok_or(RootHandleJsonError::InvalidField(name))?;
+            let mut out = [0_u8; N];
+            for (slot, item) in out.iter_mut().zip(items) {
+                *slot = item
+                    .as_u64()
+                    .and_then(|v| u8::try_from(v).ok())
+                    .ok_or(RootHandleJsonError::InvalidField(name))?;
+            }
+            Ok(out)
+        }
+        fn version(
+            value: &rezzy_json::Value,
+            name: &'static str,
+            default: u8,
+        ) -> Result<u8, RootHandleJsonError> {
+            value.get(name).map_or(Ok(default), |v| {
+                v.as_u64()
+                    .and_then(|v| u8::try_from(v).ok())
+                    .ok_or(RootHandleJsonError::InvalidField(name))
+            })
+        }
+        if value.as_object().is_none() {
+            return Err(RootHandleJsonError::NotAnObject);
+        }
+        let required = |name: &'static str| {
+            value
+                .get(name)
+                .ok_or(RootHandleJsonError::InvalidField(name))
+        };
+        Ok(Self {
+            codec_version: version(value, "codec_version", 1)?,
+            routing_version: version(value, "routing_version", 1)?,
+            routing_params: match value.get("routing_params") {
+                Some(v) => byte_array(v, "routing_params")?,
+                None => [0; 4],
+            },
+            structural_hash: byte_array(required("structural_hash")?, "structural_hash")?,
+            state_group_id: byte_array(required("state_group_id")?, "state_group_id")?,
+        })
+    }
+
     /// Builds a root handle with the current codec and v1 routing from a precomputed
     /// structural hash and a state lattice.
     #[must_use]
@@ -170,5 +255,33 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(handle.clone());
         assert!(set.contains(&handle));
+    }
+
+    #[test]
+    fn root_handle_json_round_trips() {
+        let handle = RootHandle {
+            codec_version: 1,
+            routing_version: 1,
+            routing_params: [1, 2, 3, 4],
+            structural_hash: [7; 32],
+            state_group_id: [9; 32],
+        };
+        assert!(RootHandle::from_json(&handle.to_json()).unwrap() == handle);
+    }
+
+    #[test]
+    fn root_handle_legacy_json_defaults_version_metadata() {
+        let legacy = rezzy_json::Value::parse(&std::format!(
+            r#"{{"structural_hash":{:?},"state_group_id":{:?}}}"#,
+            [1; 32],
+            [2; 32]
+        ))
+        .unwrap();
+        let handle = RootHandle::from_json(&legacy).unwrap();
+        assert_eq!(handle.codec_version, 1);
+        assert_eq!(handle.routing_version, 1);
+        assert_eq!(handle.routing_params, [0; 4]);
+        assert_eq!(handle.structural_hash, [1; 32]);
+        assert!(RootHandle::from_json(&rezzy_json::json!([])).is_err());
     }
 }
