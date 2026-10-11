@@ -814,11 +814,24 @@ fn initialize_dag(request: &DagRequest<'_>) -> Result<(DagWalkState, usize), App
             "get-remote-dag needs at least one --from <event-id> or --from-file <path> (the CLI has no local timeline to infer a starting event)",
         ));
     }
+    if let Some(missing) = request.emit_missing {
+        crate::repair::ensure_paths_distinct(request.output, missing)?;
+    }
     let mut queue = VecDeque::new();
     let mut queued = HashSet::new();
     for id in request.starts {
         if queued.insert(id.clone()) {
             queue.push_back(id.clone());
+        }
+    }
+    let output_writer = open_output_writer(request.output)?;
+    if let Some(missing) = request.emit_missing.filter(|path| *path != Path::new("-")) {
+        // The output exists now, so a symlink or relative alias resolves.
+        if crate::repair::ensure_distinct_paths(request.output, missing).is_err() {
+            return Err(AppError::new(
+                ErrorCode::IoError,
+                "--output and --emit-missing must be different files",
+            ));
         }
     }
     let max = if request.limit < 0 {
@@ -833,7 +846,7 @@ fn initialize_dag(request: &DagRequest<'_>) -> Result<(DagWalkState, usize), App
             seen: HashSet::new(),
             unresolved: Vec::new(),
             failures: FetchFailures::default(),
-            output_writer: open_output_writer(request.output)?,
+            output_writer,
             event_count: 0,
         },
         max,
@@ -1413,6 +1426,29 @@ mod tests {
             summary.contains("first: [E014_NETWORK_ERROR] HTTP 401"),
             "{summary}"
         );
+    }
+
+    #[test]
+    fn crawl_rejects_emit_missing_aliasing_output() {
+        let dir = std::env::temp_dir().join(format!("rezzy-dag-alias-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("dag.jsonl");
+        let starts = vec!["$a".to_owned()];
+        let alias = dir.join(".").join("dag.jsonl");
+        let request = super::DagRequest {
+            origin: "o",
+            destination: "d",
+            room_id: "!r",
+            starts: &starts,
+            room_version: "12",
+            limit: -1,
+            output: &out,
+            key_path: None,
+            no_fallback: false,
+            emit_missing: Some(&alias),
+        };
+        assert!(super::initialize_dag(&request).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

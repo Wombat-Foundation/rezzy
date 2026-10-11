@@ -118,6 +118,19 @@ mod tests {
     }
 
     #[test]
+    fn preview_walks_back_off_a_three_byte_char_at_the_limit() {
+        // 3-byte chars put boundaries at multiples of 3, so byte 500 sits
+        // inside the character spanning [498, 501).
+        let body = "€".repeat(400); // 1200 bytes
+        assert_eq!(body.len(), 1200);
+        assert!(!body.is_char_boundary(500));
+        let preview = body_preview(&body, 500);
+        assert_eq!(preview.len(), 498);
+        assert!(preview.is_char_boundary(preview.len()));
+        assert!(body.starts_with(preview));
+    }
+
+    #[test]
     fn preview_never_panics_on_any_boundary() {
         // Every possible max that could land inside the multi-byte run.
         let body = "€".repeat(100); // 3-byte chars

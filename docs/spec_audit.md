@@ -1,5 +1,10 @@
 # Auth Rules Audit — rezzy vs Matrix Spec
 
+> **Implementation scope:** Rezzy currently supports state-resolution V1 only.
+> The later Matrix room-version rows below document the specification and
+> ongoing design/test coverage; they do not mean that V2, V2.1, V2.2, or V3
+> state resolution is currently shipped or supported.
+
 Cross-version compliance audit of rezzy's `check_auth` against the Matrix spec
 authorization rules. Three distinct rule sets exist:
 

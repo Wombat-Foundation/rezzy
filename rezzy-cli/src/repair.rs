@@ -25,27 +25,28 @@ pub fn command() -> Command {
 /// # Errors
 /// Returns an error if `input` cannot be resolved or both paths name one file.
 pub(crate) fn ensure_distinct_paths(input: &Path, output: &Path) -> Result<(), AppError> {
-    let input_identity = fs::canonicalize(input)?;
-    let output_identity = if output.exists() {
-        fs::canonicalize(output)?
-    } else {
-        let parent = output
-            .parent()
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let Ok(parent) = fs::canonicalize(parent) else {
-            return Ok(());
+    ensure_paths_distinct(input, output)
+}
+
+/// Rejects two paths that identify the same file, including symlink aliases.
+pub(crate) fn ensure_paths_distinct(first: &Path, second: &Path) -> Result<(), AppError> {
+    let identity = |path: &Path| -> Result<PathBuf, AppError> {
+        if path.exists() {
+            return Ok(fs::canonicalize(path)?);
+        }
+        let absolute = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            std::env::current_dir()?.join(path)
         };
-        parent.join(
-            output
-                .file_name()
-                .ok_or_else(|| AppError::new(ErrorCode::IoError, "output path has no file name"))?,
-        )
+        Ok(absolute.components().collect())
     };
-    if input_identity == output_identity {
+    let first_identity = identity(first)?;
+    let second_identity = identity(second)?;
+    if first_identity == second_identity {
         return Err(AppError::new(
             ErrorCode::IoError,
-            "--input and --output must be different files",
+            "input and output paths must be different files",
         ));
     }
     Ok(())

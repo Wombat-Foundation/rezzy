@@ -203,6 +203,8 @@ MATRIX_ORIGIN=example.org \
 MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
 rezzy federation request --destination remote.example --path /_matrix/federation/v1/version
 
+MATRIX_ORIGIN=example.org \
+MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
 rezzy federation get-remote-dag --origin example.org \
   --destination remote.example --room '!room:example.org' \
   --from '$event:example.org' --output remote.jsonl

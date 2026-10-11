@@ -181,7 +181,8 @@ pub fn kahn_order(
 ///
 /// `keys[index]` orders the currently-ready events only; it never lets a child
 /// precede an unemitted parent. Cycles are appended by the same key after all
-/// acyclic events have been emitted.
+/// acyclic events have been emitted. Equal keys fall back to the event ID, so
+/// the order never depends on the input order.
 #[must_use]
 pub fn kahn_order_by(
     ids: &[String],
@@ -205,12 +206,12 @@ pub fn kahn_order_by(
     let mut ready = BinaryHeap::new();
     for (index, degree) in indegree.iter().enumerate() {
         if *degree == 0 {
-            ready.push(Reverse((&keys[index], index)));
+            ready.push(Reverse((&keys[index], &ids[index], index)));
         }
     }
     let mut emitted = vec![false; ids.len()];
     let mut ordered = Vec::with_capacity(ids.len());
-    while let Some(Reverse((_, index))) = ready.pop() {
+    while let Some(Reverse((_, _, index))) = ready.pop() {
         if emitted[index] {
             continue;
         }
@@ -219,7 +220,7 @@ pub fn kahn_order_by(
         for child in &children[index] {
             indegree[*child] = indegree[*child].saturating_sub(1);
             if indegree[*child] == 0 {
-                ready.push(Reverse((&keys[*child], *child)));
+                ready.push(Reverse((&keys[*child], &ids[*child], *child)));
             }
         }
     }
@@ -228,7 +229,7 @@ pub fn kahn_order_by(
         .enumerate()
         .filter_map(|(index, emitted)| (!emitted).then_some(index))
         .collect();
-    remainder.sort_by(|a, b| keys[*a].cmp(&keys[*b]));
+    remainder.sort_by(|a, b| keys[*a].cmp(&keys[*b]).then_with(|| ids[*a].cmp(&ids[*b])));
     ordered.extend(remainder);
     ordered
 }
@@ -286,5 +287,15 @@ mod tests {
             vec![KeyValue::Num(1), KeyValue::Text(String::from("c"))],
         ];
         assert_eq!(kahn_order_by(&ids, &parents, &keys), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn kahn_order_by_breaks_equal_keys_by_event_id() {
+        let keys = vec![vec![KeyValue::Num(1)]; 3];
+        let parents = vec![Vec::new(); 3];
+        let a = vec!["c".to_owned(), "a".to_owned(), "b".to_owned()];
+        assert_eq!(kahn_order_by(&a, &parents, &keys), vec![1, 2, 0]);
+        let b = vec!["b".to_owned(), "c".to_owned(), "a".to_owned()];
+        assert_eq!(kahn_order_by(&b, &parents, &keys), vec![2, 0, 1]);
     }
 }

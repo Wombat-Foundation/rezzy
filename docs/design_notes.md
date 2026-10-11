@@ -56,7 +56,9 @@ Under the hood:
   and Canonical JSON SHA-256 reference hashing.
 - **Minisketch set reconciliation**: GF(2^64) PinSketch with SIMD-accelerated
   root finding for federation sync. Budget-hardened strata estimation prevents
-  32× CPU amplification across the full decode pass.
+  32× CPU amplification across the full decode pass. Widening the field to
+  GF(2^128) is costed in
+  [gf128_widening_analysis.md](gf128_widening_analysis.md).
 - **Generic type decoupling**: Parameterized over `Id: EventId`, `K: StateKey`,
   `C: EventContent`, and `S: BuildHasher`.
 - **`std`-based**: The workspace targets the Rust standard library directly;

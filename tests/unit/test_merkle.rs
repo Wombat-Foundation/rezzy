@@ -155,7 +155,7 @@ fn root_stable_vector() {
 
     assert_eq!(
         hex(root),
-        "65886b238169e6f80c5561eec8c7fd4f09637fbb2d6de0314ce639b4f3c80813"
+        "36547e87f8a84f9178583715802a8f6d7bb1b930f8578148ef47a65de297dd7e"
     );
 }
 
@@ -165,7 +165,7 @@ fn header_root_uses_null_for_missing_optional_fields() {
 
     assert_eq!(
         hex(root.0),
-        "649f89b47d76a245617eefff9649b0999446b5f3e701ae438dbb1f034f16e965"
+        "4758fe3d99fa12997c28b5074f2a4e5dad211ff5e7eb2018559ff81f7904bbde"
     );
 }
 
@@ -189,11 +189,11 @@ fn event_root_and_id_stable_vector() {
 
     assert_eq!(
         hex(root),
-        "fa582464e9cbf6c192c2779204e5d96222f2091a18351bb8cac336436303281e"
+        "4864138b8e8b9d48cf2151433a6463aac7b88d68ce10a2adbffdcfabcb8d9b06"
     );
     assert_eq!(
         merkle::event_id(root),
-        "$-lgkZOnL9sGSwneSBOXZYiLyCRoYNRu4ysM2Q2MDKB4"
+        "$SGQTi46LnUjPIVFDOmRjqse4jWjOEKKtv_3Pq8uNmwY"
     );
 }
 

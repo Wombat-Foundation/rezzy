@@ -653,11 +653,7 @@ pub fn format_summary_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
 
     let min_depth = ctx.events_map.values().map(|e| e.depth).min().unwrap_or(0);
     let max_depth = ctx.events_map.values().map(|e| e.depth).max().unwrap_or(0);
-    let root_event_id = ctx
-        .events_map
-        .values()
-        .min_by_key(|e| e.depth)
-        .map_or("", |e| e.event_id.as_str());
+    let root_event_id = root_event_id_of(ctx.events_map.values());
 
     let component_roots_prev = compute_component_roots(ctx.events_map, true, false);
     let component_roots_auth = compute_component_roots(ctx.events_map, false, true);
@@ -856,11 +852,16 @@ struct StreamOrderTally {
     mismatched: usize,
     unbound: usize,
     room_mismatch: usize,
+    conflicting: usize,
 }
 
 impl StreamOrderTally {
     const fn is_complete(&self) -> bool {
-        self.missing == 0 && self.mismatched == 0 && self.room_mismatch == 0 && self.unbound == 0
+        self.missing == 0
+            && self.mismatched == 0
+            && self.room_mismatch == 0
+            && self.unbound == 0
+            && self.conflicting == 0
     }
 }
 
@@ -968,6 +969,7 @@ fn merge_sidecar_records<S1, S2>(
     raw_map: &HashMap<String, rezzy::JsonValue, S2>,
     index: &mut StreamOrderIndex,
     tally: &mut StreamOrderTally,
+    conflicting_stream_events: &mut std::collections::BTreeSet<String>,
 ) where
     S1: std::hash::BuildHasher,
     S2: std::hash::BuildHasher,
@@ -987,7 +989,16 @@ fn merge_sidecar_records<S1, S2>(
         }
         match record.stream_ordering {
             Some(value) => {
-                index.by_event.insert(event_id.clone(), value);
+                if conflicting_stream_events.contains(event_id) {
+                    continue;
+                }
+                if let Some(previous) = index.by_event.insert(event_id.clone(), value) {
+                    if previous != value {
+                        index.by_event.remove(event_id);
+                        conflicting_stream_events.insert(event_id.clone());
+                        tally.conflicting = tally.conflicting.saturating_add(1);
+                    }
+                }
             }
             None => tally.missing = tally.missing.saturating_add(1),
         }
@@ -1027,6 +1038,7 @@ where
     let explicit = args.metadata.is_some();
     let mut index = StreamOrderIndex::default();
     let mut tally = StreamOrderTally::default();
+    let mut conflicting_stream_events = std::collections::BTreeSet::new();
     for (path, aggregate_path) in &paths {
         let Some(sidecar) = load_sidecar_or_warn(path, explicit, args.quiet)? else {
             continue;
@@ -1041,7 +1053,14 @@ where
         ) {
             continue;
         }
-        merge_sidecar_records(&sidecar, events_map, raw_map, &mut index, &mut tally);
+        merge_sidecar_records(
+            &sidecar,
+            events_map,
+            raw_map,
+            &mut index,
+            &mut tally,
+            &mut conflicting_stream_events,
+        );
     }
     if index.is_empty() {
         warn_once(
@@ -1054,12 +1073,28 @@ where
         warn_once(
             args.quiet,
             &format!(
-                "stream_ordering incomplete ({} missing/conflicting, {} payload/generation mismatch, {} legacy unbound, {} room/version mismatch); those events sort after events with a known stream order",
-                tally.missing, tally.mismatched, tally.unbound, tally.room_mismatch
+                "stream_ordering incomplete ({} missing, {} conflicting, {} payload/generation mismatch, {} legacy unbound, {} room/version mismatch); those events sort after events with a known stream order",
+                tally.missing,
+                tally.conflicting,
+                tally.mismatched,
+                tally.unbound,
+                tally.room_mismatch
             ),
         );
     }
     Ok(Some(index))
+}
+
+/// The shallowest event, with ties broken by event ID so the result does not
+/// depend on map iteration order.
+fn root_event_id_of<'a>(events: impl Iterator<Item = &'a LeanEvent>) -> &'a str {
+    events
+        .min_by(|a, b| {
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        })
+        .map_or("", |e| e.event_id.as_str())
 }
 
 fn warn_once(quiet: bool, message: &str) {
@@ -1893,6 +1928,38 @@ mod tests {
             index.by_event.insert((*event_id).to_string(), *stream);
         }
         index
+    }
+
+    #[test]
+    fn root_event_id_is_independent_of_iteration_order() {
+        let a = timeline_event("$a", &[], 1, 0);
+        let b = timeline_event("$b", &[], 1, 0);
+        assert_eq!(root_event_id_of([&a, &b].into_iter()), "$a");
+        assert_eq!(root_event_id_of([&b, &a].into_iter()), "$a");
+        assert_eq!(root_event_id_of(std::iter::empty()), "");
+    }
+
+    #[test]
+    fn conflicting_stream_order_across_sidecars_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("rezzy-xsidecar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut args = test_args(OutputFormat::Timeline);
+        args.quiet = true;
+        for (name, stream) in [("a", 1), ("b", 2)] {
+            let input = dir.join(format!("{name}.jsonl"));
+            std::fs::write(&input, "").unwrap();
+            let line = format!(
+                "{{\"record_type\":\"event\",\"event_id\":\"$e\",\"payload_sha256\":\"sha256:x\",\"observations\":[{{\"stream_ordering\":{stream}}}]}}\n"
+            );
+            std::fs::write(provenance::sidecar_path(&input), line).unwrap();
+            args.input.push(input);
+        }
+        let e = timeline_event("$e", &[], 1, 0);
+        let events: HashMap<String, LeanEvent> = [(e.event_id.clone(), e)].into();
+        let raw = HashMap::new();
+        let index = load_stream_order(&args, &events, &raw, None).unwrap();
+        assert!(index.is_none_or(|i| i.get("$e").is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
