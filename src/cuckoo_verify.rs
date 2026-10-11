@@ -707,6 +707,76 @@ mod tests {
         );
     }
 
+    /// Real 42-cycle mined with Tromp's `mean29x4` solver (header "", nonce 63,
+    /// `cuckoo30`): the solver prints its siphash keys directly, so this checks
+    /// the verifier against an independent C++ implementation.
+    #[test]
+    fn verifies_tromp_mean_solver_42_cycle() {
+        let keys: [u64; 4] = [
+            0x7d4f_06d5_f68d_c772,
+            0x3310_1708_0ac6_3322,
+            0xe629_26ee_68af_70ed,
+            0xcf2e_fe7e_2f4d_bc16,
+        ];
+        let mut seed = [0_u8; 32];
+        for (chunk, key) in seed.chunks_exact_mut(8).zip(keys) {
+            chunk.copy_from_slice(&key.to_le_bytes());
+        }
+        let solution: [u64; PROOF_SIZE] = [
+            0x23ece,
+            0x027e_0856,
+            0x02ad_8c27,
+            0x02cb_b0b5,
+            0x0369_4cdd,
+            0x0477_a095,
+            0x064d_e6fc,
+            0x064e_1c92,
+            0x068e_624d,
+            0x06aa_4c6f,
+            0x06b1_d0c2,
+            0x076f_07d2,
+            0x0c27_3122,
+            0x0c2e_38ed,
+            0x0c65_5cde,
+            0x0c97_ba17,
+            0x0e70_8130,
+            0x0ec8_890d,
+            0x0ecb_9932,
+            0x0f28_d66d,
+            0x0f57_7aff,
+            0x104d_8441,
+            0x116d_e91f,
+            0x116e_61cb,
+            0x1178_ea28,
+            0x1184_0f8a,
+            0x11ce_10b0,
+            0x1279_2630,
+            0x12ae_2388,
+            0x140a_e893,
+            0x1439_b9fd,
+            0x146a_3047,
+            0x1538_d93c,
+            0x176c_b068,
+            0x17e0_1c9b,
+            0x1876_ee0a,
+            0x1c87_1774,
+            0x1d37_d976,
+            0x1d6f_a785,
+            0x1d9c_1669,
+            0x1d9d_015e,
+            0x1db8_5f7e,
+        ];
+        assert_eq!(
+            CuckooVerifier::from_graph_seed(seed).verify(&solution),
+            Ok(())
+        );
+        let mut tampered = solution;
+        tampered[0] += 1;
+        assert!(CuckooVerifier::from_graph_seed(seed)
+            .verify(&tampered)
+            .is_err());
+    }
+
     /// Real 42-cycle mined by gomatrixcrypto (`msc00e4-nutra.tk-sha3-256-cogen-42-29-v1`).
     /// Its graph seed is SHA3-derived, so only the cycle verifier is exercised
     /// here (`from_graph_seed` is hash-agnostic). Edges above `2^28` pin the
