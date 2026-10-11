@@ -12,6 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// A response-body preview of at most `max_bytes`, never splitting a UTF-8
+/// character.
+///
+/// Indexing a `str` at a non-char-boundary panics, and a remote server controls
+/// the response bytes, so the window is walked back to the nearest boundary.
+fn body_preview(body: &str, max_bytes: usize) -> &str {
+    let mut end = body.len().min(max_bytes);
+    while !body.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    &body[..end]
+}
+
 /// Fetch the room state over the network.
 ///
 /// # Errors
@@ -64,9 +77,54 @@ pub fn fetch_room_state(
             format!(
                 "Failed to parse JSON: {}. Response: {}",
                 e,
-                &body[..body.len().min(500)]
+                body_preview(&body, 500)
             ),
         )
     })?;
     Ok(val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::body_preview;
+
+    #[test]
+    fn preview_walks_back_off_a_multi_byte_char() {
+        // "aé" is 3 bytes; 200 of them is 600 bytes, and offset 500 lands on
+        // the second byte of a two-byte `é`. The unguarded slice panicked here.
+        let body = "aé".repeat(200);
+        assert_eq!(body.len(), 600);
+        assert!(!body.is_char_boundary(500));
+        let preview = body_preview(&body, 500);
+        assert_eq!(preview.len(), 499);
+        assert!(preview.is_char_boundary(preview.len()));
+    }
+
+    #[test]
+    fn preview_truncates_on_char_boundary() {
+        let body = "aé".repeat(200); // 600 bytes
+        assert!(body.len() > 500);
+        let preview = body_preview(&body, 500);
+        assert!(preview.len() <= 500);
+        assert!(preview.is_char_boundary(preview.len()));
+        assert!(body.starts_with(preview));
+    }
+
+    #[test]
+    fn preview_handles_short_and_empty() {
+        assert_eq!(body_preview("", 500), "");
+        assert_eq!(body_preview("abc", 500), "abc");
+        assert_eq!(body_preview("abc", 2), "ab");
+    }
+
+    #[test]
+    fn preview_never_panics_on_any_boundary() {
+        // Every possible max that could land inside the multi-byte run.
+        let body = "€".repeat(100); // 3-byte chars
+        for max in 0..=300 {
+            let preview = body_preview(&body, max);
+            assert!(preview.is_char_boundary(preview.len()));
+            assert!(preview.len() <= max);
+        }
+    }
 }
