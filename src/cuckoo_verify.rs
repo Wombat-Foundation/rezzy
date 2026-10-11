@@ -707,6 +707,72 @@ mod tests {
         );
     }
 
+    /// Real 42-cycle mined by gomatrixcrypto (`msc00e4-nutra.tk-sha3-256-cogen-42-29-v1`).
+    /// Its graph seed is SHA3-derived, so only the cycle verifier is exercised
+    /// here (`from_graph_seed` is hash-agnostic). Edges above `2^28` pin the
+    /// 29-bit node mask.
+    #[test]
+    fn verifies_mined_42_cycle_from_gomatrixcrypto() {
+        let seed: [u8; 32] = [
+            0xcd, 0xaa, 0x09, 0xdc, 0xd8, 0x8a, 0xd1, 0x8a, 0xac, 0xd4, 0x71, 0x5d, 0xc5, 0x4a,
+            0x6b, 0xec, 0x01, 0x0c, 0x85, 0xd2, 0xfa, 0x94, 0x62, 0x6b, 0x11, 0xb9, 0x16, 0xe4,
+            0x11, 0x4a, 0x9d, 0xfc,
+        ];
+        let solution: [u64; PROOF_SIZE] = [
+            4_590_392,
+            8_405_414,
+            10_107_314,
+            11_364_941,
+            33_994_319,
+            36_107_954,
+            73_271_279,
+            77_777_621,
+            113_443_375,
+            132_789_936,
+            136_650_915,
+            139_191_506,
+            147_596_024,
+            155_171_945,
+            159_809_803,
+            167_519_112,
+            173_844_528,
+            176_549_681,
+            181_596_280,
+            192_705_018,
+            274_509_526,
+            290_598_257,
+            291_673_107,
+            296_125_684,
+            320_366_368,
+            321_119_623,
+            321_265_161,
+            323_509_927,
+            326_987_802,
+            357_519_875,
+            358_369_236,
+            359_034_451,
+            380_702_735,
+            396_982_039,
+            404_063_076,
+            434_023_514,
+            434_958_878,
+            452_479_119,
+            460_152_988,
+            481_447_809,
+            494_192_288,
+            495_231_268,
+        ];
+        assert_eq!(
+            CuckooVerifier::from_graph_seed(seed).verify(&solution),
+            Ok(())
+        );
+        let mut tampered = solution;
+        tampered[41] += 1;
+        assert!(CuckooVerifier::from_graph_seed(seed)
+            .verify(&tampered)
+            .is_err());
+    }
+
     #[test]
     fn minting_key_id_uses_sha256() {
         // The proof-shaped object is used to pin the SHA-256 key-id binding.
