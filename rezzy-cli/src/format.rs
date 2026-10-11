@@ -653,15 +653,7 @@ pub fn format_summary_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
 
     let min_depth = ctx.events_map.values().map(|e| e.depth).min().unwrap_or(0);
     let max_depth = ctx.events_map.values().map(|e| e.depth).max().unwrap_or(0);
-    let root_event_id = ctx
-        .events_map
-        .values()
-        .min_by(|a, b| {
-            a.depth
-                .cmp(&b.depth)
-                .then_with(|| a.event_id.cmp(&b.event_id))
-        })
-        .map_or("", |e| e.event_id.as_str());
+    let root_event_id = root_event_id_of(ctx.events_map.values());
 
     let component_roots_prev = compute_component_roots(ctx.events_map, true, false);
     let component_roots_auth = compute_component_roots(ctx.events_map, false, true);
@@ -1001,6 +993,18 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
         );
     }
     Ok(Some(index))
+}
+
+/// The shallowest event, with ties broken by event ID so the result does not
+/// depend on map iteration order.
+fn root_event_id_of<'a>(events: impl Iterator<Item = &'a LeanEvent>) -> &'a str {
+    events
+        .min_by(|a, b| {
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        })
+        .map_or("", |e| e.event_id.as_str())
 }
 
 fn warn_once(quiet: bool, message: &str) {
@@ -1834,6 +1838,38 @@ mod tests {
             index.by_event.insert((*event_id).to_string(), *stream);
         }
         index
+    }
+
+    #[test]
+    fn root_event_id_is_independent_of_iteration_order() {
+        let a = timeline_event("$a", &[], 1, 0);
+        let b = timeline_event("$b", &[], 1, 0);
+        assert_eq!(root_event_id_of([&a, &b].into_iter()), "$a");
+        assert_eq!(root_event_id_of([&b, &a].into_iter()), "$a");
+        assert_eq!(root_event_id_of(std::iter::empty()), "");
+    }
+
+    #[test]
+    fn conflicting_stream_order_across_sidecars_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("rezzy-xsidecar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut args = test_args(OutputFormat::Timeline);
+        args.quiet = true;
+        for (name, stream) in [("a", 1), ("b", 2)] {
+            let input = dir.join(format!("{name}.jsonl"));
+            std::fs::write(&input, "").unwrap();
+            let line = format!(
+                "{{\"record_type\":\"event\",\"event_id\":\"$e\",\"payload_sha256\":\"sha256:x\",\"observations\":[{{\"stream_ordering\":{stream}}}]}}\n"
+            );
+            std::fs::write(provenance::sidecar_path(&input), line).unwrap();
+            args.input.push(input);
+        }
+        let e = timeline_event("$e", &[], 1, 0);
+        let events: HashMap<String, LeanEvent> = [(e.event_id.clone(), e)].into();
+        let raw = HashMap::new();
+        let index = load_stream_order(&args, &events, &raw, None).unwrap();
+        assert!(index.is_none_or(|i| i.get("$e").is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

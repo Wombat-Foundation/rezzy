@@ -59,20 +59,40 @@ pub fn fetch_room_state(
     }
 
     let val: rezzy::JsonValue = rezzy::JsonValue::parse(&body).map_err(|e| {
-        let preview_end = body
-            .char_indices()
-            .map(|(index, _)| index)
-            .take_while(|index| *index <= 500)
-            .last()
-            .unwrap_or(0);
         crate::error::AppError::new(
             crate::error::ErrorCode::NetworkError,
             format!(
                 "Failed to parse JSON: {}. Response: {}",
                 e,
-                &body[..preview_end]
+                body_preview(&body)
             ),
         )
     })?;
     Ok(val)
+}
+
+/// The first ~500 bytes of `body`, cut at a character boundary.
+fn body_preview(body: &str) -> &str {
+    let end = body
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= 500)
+        .last()
+        .unwrap_or(0);
+    &body[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::body_preview;
+
+    #[test]
+    fn preview_never_splits_a_multibyte_character() {
+        // 3-byte characters straddle byte 500.
+        let body = "€".repeat(400);
+        let preview = body_preview(&body);
+        assert!(preview.len() <= 500);
+        assert!(body.starts_with(preview));
+        assert_eq!(body_preview("short"), "shor");
+    }
 }

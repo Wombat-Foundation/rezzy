@@ -889,6 +889,37 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    #[test]
+    fn load_sidecar_rejects_non_object_records() {
+        for (n, line) in ["42", "[1]", "\"s\""].into_iter().enumerate() {
+            let path = write_temp_sidecar(&format!("scalar{n}"), line.as_bytes());
+            assert!(load_sidecar(&path).is_err(), "{line} must be rejected");
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn derive_flags_unsigned_reason_and_stripped_disagreement() {
+        let base = observation("$a", 1, None);
+        let mut unsigned = observation("$a", 2, None);
+        unsigned.unsigned = Some(rezzy::json!({"age": 1}));
+        let mut reason = observation("$a", 3, None);
+        reason.rejection_reason = Some(String::from("bad"));
+        let mut stripped = observation("$a", 4, None);
+        stripped
+            .stripped
+            .insert(String::from("__x"), rezzy::json!(1));
+        for (variant, field) in [
+            (&unsigned, "unsigned"),
+            (&reason, "rejection_reason"),
+            (&stripped, "stripped"),
+        ] {
+            let (status, _, fields) = derive(&[(0, &base), (1, variant)]);
+            assert_eq!(status, "source_disagreement", "{field}");
+            assert!(fields.iter().any(|f| f == field), "{field}: {fields:?}");
+        }
+    }
+
     fn write_temp_sidecar(name: &str, bytes: &[u8]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rezzy-sidecar-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

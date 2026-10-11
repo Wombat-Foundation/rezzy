@@ -20,12 +20,12 @@ they are not claimed as supported implementations here.
 
 <!-- markdownlint-disable MD013 -->
 
-|      Room Version       | State Resolution | Notes                                     |
-| :---------------------: | :--------------: | ----------------------------------------- |
-|         **1**           |      **V1**      | **Supported — depth-based ordering**      |
-|         2–11            |       —          | Not currently supported                  |
-|          12             |       —          | Not currently supported ([MSC4297])      |
-| _org.matrix.msc4242_ \* |       —          | Design/experimental only ([MSC4242])     |
+|      Room Version       | State Resolution | Notes                                  |
+| :---------------------: | :--------------: | :------------------------------------- |
+|         **1**           |      **V1**      | **Supported — depth-based ordering**   |
+|         2–11            |       —          | Not currently supported                |
+|          12             |       —          | Not currently supported ([MSC4297])    |
+| _org.matrix.msc4242_ \* |       —          | Design/experimental only ([MSC4242])   |
 
 <!-- markdownlint-enable MD013 -->
 
