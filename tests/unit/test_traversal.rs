@@ -1946,10 +1946,7 @@ fn auth_diff_context_event_scenario(version: StateResVersion) -> Option<String> 
         },
         &String::new(),
     );
-    assert!(
-        completed,
-        "compute_state_at_streaming_optimized detected a cycle"
-    );
+    assert!(completed, "StreamingInputs traversal detected a cycle");
 
     let final_state = final_state.expect("$merge must resolve to a New state update");
     let jr_key = ("m.room.join_rules".to_string(), String::new());

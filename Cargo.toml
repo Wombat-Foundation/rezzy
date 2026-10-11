@@ -76,7 +76,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
 
 [workspace.dependencies]
-rezzy = { path = ".", version = "0.6.0-rc.1" }
+rezzy = { path = ".", version = "0.6.0-rc.1", default-features = false }
 rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.1" }
 rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1" }
 

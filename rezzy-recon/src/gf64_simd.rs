@@ -188,6 +188,7 @@ pub enum EvaluatorBackend {
     /// `x86_64` evaluator.
     Sse,
     #[cfg(all(target_arch = "x86_64", has_avx512_support))]
+    /// AVX-512 evaluator when supported by the compiler and CPU.
     Avx512,
 }
 

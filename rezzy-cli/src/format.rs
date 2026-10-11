@@ -656,7 +656,11 @@ pub fn format_summary_output(ctx: &FormattingContext<'_>) -> rezzy::JsonValue {
     let root_event_id = ctx
         .events_map
         .values()
-        .min_by_key(|e| e.depth)
+        .min_by(|a, b| {
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        })
         .map_or("", |e| e.event_id.as_str());
 
     let component_roots_prev = compute_component_roots(ctx.events_map, true, false);
@@ -897,6 +901,7 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     let mut mismatched = 0_usize;
     let mut unbound = 0_usize;
     let mut room_mismatch = 0_usize;
+    let mut conflicting_stream_events = std::collections::BTreeSet::new();
     for (path, aggregate_path) in &paths {
         let sidecar = if explicit.is_some() {
             provenance::load_sidecar(path)?
@@ -966,7 +971,15 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
             }
             match record.stream_ordering {
                 Some(value) => {
-                    index.by_event.insert(event_id.clone(), value);
+                    if conflicting_stream_events.contains(event_id) {
+                        continue;
+                    }
+                    if let Some(previous) = index.by_event.insert(event_id.clone(), value) {
+                        if previous != value {
+                            index.by_event.remove(event_id);
+                            conflicting_stream_events.insert(event_id.clone());
+                        }
+                    }
                 }
                 None => missing = missing.saturating_add(1),
             }

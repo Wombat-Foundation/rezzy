@@ -59,12 +59,18 @@ pub fn fetch_room_state(
     }
 
     let val: rezzy::JsonValue = rezzy::JsonValue::parse(&body).map_err(|e| {
+        let preview_end = body
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= 500)
+            .last()
+            .unwrap_or(0);
         crate::error::AppError::new(
             crate::error::ErrorCode::NetworkError,
             format!(
                 "Failed to parse JSON: {}. Response: {}",
                 e,
-                &body[..body.len().min(500)]
+                &body[..preview_end]
             ),
         )
     })?;

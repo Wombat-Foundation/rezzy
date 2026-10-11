@@ -3,8 +3,9 @@
 Matrix state resolution engine, in Rust. `no_std` core, synchronous by design,
 no I/O.
 
-Reference implementation of state resolution `v2`, `v2.1` and `v2.1.1`, plus
-experimental V2.2 ([MSC4242]).
+Currently implements state resolution V1 only. Later Matrix room versions and
+state-resolution variants remain specification, design, or experimental work;
+they are not claimed as supported implementations here.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gamesguru/rezzy/rust.yml?branch=master&label=CI)](https://github.com/gamesguru/rezzy/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/gamesguru/rezzy/graph/badge.svg)](https://codecov.io/gh/gamesguru/rezzy)
@@ -21,13 +22,10 @@ experimental V2.2 ([MSC4242]).
 
 |      Room Version       | State Resolution | Notes                                     |
 | :---------------------: | :--------------: | ----------------------------------------- |
-|         _1_ \*          |       _V1_       | _Legacy — depth-based ordering_           |
-|         _2_ \*          |       _V2_       | _Mainline sort + iterative auth_          |
-|           3–6           |        V2        | Event ID format changes only              |
-|          7–10           |        V2        | Knocking, restricted joins                |
-|           11            |        V2        | Redaction rules update                    |
-|         **12**          |     **V2.1**     | [MSC4297] — conflicted subgraph expansion |
-| _org.matrix.msc4242_ \* |      _V2.2_      | Experimental — State DAGs ([MSC4242])     |
+|         **1**           |      **V1**      | **Supported — depth-based ordering**      |
+|         2–11            |       —          | Not currently supported                  |
+|          12             |       —          | Not currently supported ([MSC4297])      |
+| _org.matrix.msc4242_ \* |       —          | Design/experimental only ([MSC4242])     |
 
 <!-- markdownlint-enable MD013 -->
 

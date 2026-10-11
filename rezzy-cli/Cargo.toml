@@ -40,7 +40,7 @@ clap_complete.workspace = true
 ed25519-zebra = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
-rezzy = { workspace = true, features = ["cli"] }
+rezzy = { workspace = true, default-features = false, features = ["cli"] }
 rpassword = { workspace = true, optional = true }
 sha2.workspace = true
 ureq.workspace = true

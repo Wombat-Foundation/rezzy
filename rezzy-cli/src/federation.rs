@@ -814,6 +814,9 @@ fn initialize_dag(request: &DagRequest<'_>) -> Result<(DagWalkState, usize), App
             "get-remote-dag needs at least one --from <event-id> or --from-file <path> (the CLI has no local timeline to infer a starting event)",
         ));
     }
+    if let Some(missing) = request.emit_missing {
+        crate::repair::ensure_paths_distinct(request.output, missing)?;
+    }
     let mut queue = VecDeque::new();
     let mut queued = HashSet::new();
     for id in request.starts {

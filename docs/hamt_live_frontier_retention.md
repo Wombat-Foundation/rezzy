@@ -1,7 +1,7 @@
 # HAMT live-frontier retention in the live walk
 
 Status: implemented. `rezzy-cli/src/format.rs`, `run_hamt_live_walk`
-(`format.rs:128`); commits `610b1b5` (Kahn order), `8e8de61` (citation GC +
+(`format.rs:136`); commits `610b1b5` (Kahn order), `8e8de61` (citation GC +
 conditional buffering), `ffadb38` (helper dedupe/format).
 
 This covers the live event walk that builds one HAMT root per event. It does not
@@ -11,10 +11,10 @@ path described in the README.
 ## Traversal order
 
 `run_hamt_live_walk` reorders the event set with `reorder_by_kahn` before
-walking it (`format.rs:143`; definition at `format.rs:1048`):
+walking it (`format.rs:151`; definition at `format.rs:1115`):
 
 ```rust
-let sorted_events = reorder_by_kahn(&raw_events, tie_break, ctx.stream_order);
+let order = reorder_by_kahn(&raw_events, tie_break, ctx.stream_order);
 ```
 
 Kahn's algorithm emits parents strictly before their children, driven only by
@@ -26,7 +26,7 @@ out-degree accounting below sound: when child C is visited, every parent P in
 `C.prev_events` has already been evaluated.
 
 Before the loop it precomputes every event's out-degree over deduplicated
-parents (`format.rs:161`):
+parents (`format.rs:175`):
 
 ```text
 child_citations[P] = |{ C in DAG | P in C.unique_prevs }|
@@ -40,13 +40,13 @@ ignored gracefully (saturating decrement, never underflow).
 
 For each processed event:
 
-- `root_hashes_map` (`format.rs:174`) always records the event's 32-byte
-  `StructuralHash` string. Parent references (`format.rs:206`) and output
+- `root_hashes_map` (`format.rs:153`) always records the event's 32-byte
+  `StructuralHash` string. Parent references (`format.rs:192`) and output
   emission read from it.
-- `roots_map` (`format.rs:172`) keeps the `Arc<HamtNode>` only while
-  `child_citations[event] > 0` (`format.rs:319`).
+- `roots_map` (`format.rs:153`) keeps the `Arc<HamtNode>` only while
+  `child_citations[event] > 0` (`format.rs:401`).
 - Visiting an event decrements each parent's count and evicts the parent's `Arc`
-  from `roots_map` when the count reaches 0 (`format.rs:331`).
+  from `roots_map` when the count reaches 0 (`format.rs:413`).
 
 | State                | Condition                 | Held as                                                                                   |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------------------- |
@@ -72,9 +72,9 @@ addressable by its 32-byte hash downstream.
 
 ## Node buffering
 
-`need_nodes = matches!(ctx.args.format, OutputFormat::Hamt)` (`format.rs:171`)
+`need_nodes = matches!(ctx.args.format, OutputFormat::Hamt)` (`format.rs:152`)
 gates decoding and accumulation of `PersistedInternalNode` JSON, for both merged
-roots (`format.rs:263`) and per-event mutations (`format.rs:289`). Under
+roots (`format.rs:296`) and per-event mutations (`format.rs:357`). Under
 `--format deltas` no node list is built; under `--format hamt` the final
 `{roots, nodes}` output requires the records, so they are retained.
 
