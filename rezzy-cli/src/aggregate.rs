@@ -708,59 +708,15 @@ fn aggregate(options: &Options) -> Result<rezzy::JsonValue, AppError> {
     };
     let sidecar_path = provenance::sidecar_path(&options.output);
     if options.check {
-        let existing_output = fs::read(&options.output).map_err(|e| {
-            AppError::new(
-                ErrorCode::AggregateStale,
-                format!("aggregate is unavailable: {e}"),
-            )
-        })?;
-        if existing_output != output {
-            return Err(stale_error(&options.output));
-        }
-        if let Some(sidecar) = &sidecar {
-            let existing_sidecar = fs::read(&sidecar_path).map_err(|error| {
-                AppError::new(
-                    ErrorCode::AggregateStale,
-                    format!("provenance sidecar is unavailable: {error}"),
-                )
-            })?;
-            if existing_sidecar != *sidecar {
-                return Err(stale_error(&sidecar_path));
-            }
-        }
-        return Ok(rezzy::json!({"status": "current", "unique_events": events.len()}));
+        return check_published_pair(
+            options,
+            &output,
+            sidecar.as_deref(),
+            &sidecar_path,
+            events.len(),
+        );
     }
-    if let Some(parent) = options.output.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // Stage both files under unique names first, so a failed write never touches
-    // the published pair, then commit. A failure between the two renames leaves
-    // a stale sidecar, which `--check` reports and a rerun repairs.
-    let output_temp = stage_file(&options.output, &output)?;
-    let sidecar_temp = match &sidecar {
-        Some(sidecar) => match stage_file(&sidecar_path, sidecar) {
-            Ok(temp) => Some(temp),
-            Err(error) => {
-                let _ = fs::remove_file(&output_temp);
-                return Err(error);
-            }
-        },
-        None => None,
-    };
-    commit_staged(&output_temp, &options.output).inspect_err(|_| {
-        if let Some(temp) = &sidecar_temp {
-            let _ = fs::remove_file(temp);
-        }
-    })?;
-    if let Some(temp) = &sidecar_temp {
-        commit_staged(temp, &sidecar_path)?;
-    } else if let Err(error) = fs::remove_file(&sidecar_path) {
-        // With provenance disabled, drop a sidecar left by an earlier run so
-        // timeline auto-discovery cannot apply stale stream metadata.
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error.into());
-        }
-    }
+    write_pair_staged(options, &output, sidecar.as_deref(), &sidecar_path)?;
     let mut result = rezzy::json!({
         "status": "written",
         "output": options.output.to_string_lossy().to_string(),
@@ -785,6 +741,76 @@ fn stale_error(path: &Path) -> AppError {
             path.display()
         ),
     )
+}
+
+fn check_published_pair(
+    options: &Options,
+    output: &[u8],
+    sidecar: Option<&[u8]>,
+    sidecar_path: &Path,
+    unique_events: usize,
+) -> Result<rezzy::JsonValue, AppError> {
+    let existing_output = fs::read(&options.output).map_err(|e| {
+        AppError::new(
+            ErrorCode::AggregateStale,
+            format!("aggregate is unavailable: {e}"),
+        )
+    })?;
+    if existing_output.as_slice() != output {
+        return Err(stale_error(&options.output));
+    }
+    if let Some(sidecar) = sidecar {
+        let existing_sidecar = fs::read(sidecar_path).map_err(|error| {
+            AppError::new(
+                ErrorCode::AggregateStale,
+                format!("provenance sidecar is unavailable: {error}"),
+            )
+        })?;
+        if existing_sidecar.as_slice() != sidecar {
+            return Err(stale_error(sidecar_path));
+        }
+    }
+    Ok(rezzy::json!({"status": "current", "unique_events": unique_events}))
+}
+
+fn write_pair_staged(
+    options: &Options,
+    output: &[u8],
+    sidecar: Option<&[u8]>,
+    sidecar_path: &Path,
+) -> Result<(), AppError> {
+    if let Some(parent) = options.output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Stage both files under unique names first, so a failed write never touches
+    // the published pair, then commit. A failure between the two renames leaves
+    // a stale sidecar, which `--check` reports and a rerun repairs.
+    let output_temp = stage_file(&options.output, output)?;
+    let sidecar_temp = match sidecar {
+        Some(sidecar) => match stage_file(sidecar_path, sidecar) {
+            Ok(temp) => Some(temp),
+            Err(error) => {
+                let _ = fs::remove_file(&output_temp);
+                return Err(error);
+            }
+        },
+        None => None,
+    };
+    commit_staged(&output_temp, &options.output).inspect_err(|_| {
+        if let Some(temp) = &sidecar_temp {
+            let _ = fs::remove_file(temp);
+        }
+    })?;
+    if let Some(temp) = &sidecar_temp {
+        commit_staged(temp, sidecar_path)?;
+    } else if let Err(error) = fs::remove_file(sidecar_path) {
+        // With provenance disabled, drop a sidecar left by an earlier run so
+        // timeline auto-discovery cannot apply stale stream metadata.
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
+    }
+    Ok(())
 }
 
 fn build_sidecar(

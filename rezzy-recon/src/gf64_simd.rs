@@ -303,7 +303,7 @@ fn get_evaluator_features() -> (bool, bool) {
 }
 
 #[cfg(all(feature = "std", target_arch = "x86_64", has_avx512_support))]
-fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
+const fn select_evaluator_backend(has_avx512: bool, has_pclmul: bool) -> EvaluatorBackend {
     if has_avx512 {
         EvaluatorBackend::Avx512
     } else if has_pclmul {

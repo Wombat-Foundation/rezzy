@@ -219,7 +219,10 @@ pub fn strip_non_envelope_fields(event: &mut JsonValue) {
 /// merged event, in the order the events appear in the aggregate.
 ///
 /// # Errors
-/// Returns [`ErrorCode::MalformedJson`] if a record cannot be serialized.
+/// Cannot currently fail: record serialization never returns an error (see
+/// [`rezzy::json::write_string_value`]) and records are only appended to an
+/// in-memory buffer. The `Result` is kept so a serialization failure can
+/// surface without an API change.
 pub fn build_sidecar(
     sources: &[SourceInfo],
     observations: &[(usize, RawObservation)],
@@ -234,6 +237,12 @@ pub fn build_sidecar(
 ///
 /// The binding lets readers reject a sidecar published beside a different
 /// aggregate generation after a crash or interrupted two-file commit.
+///
+/// # Errors
+/// Cannot currently fail: record serialization never returns an error (see
+/// [`rezzy::json::write_string_value`]) and records are only appended to an
+/// in-memory buffer. The `Result` is kept so a serialization failure can
+/// surface without an API change.
 pub fn build_sidecar_bound(
     sources: &[SourceInfo],
     observations: &[(usize, RawObservation)],

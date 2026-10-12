@@ -23,9 +23,9 @@ use crate::{Args, OutputFormat};
 use rezzy::auth::{apply_authorized_redactions_with_state_at, RedactionReport, RoomState};
 use rezzy::basespec::event_types::EventType;
 use rezzy::{resolved_state_entries, LeanEvent, StateResVersion};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Everything an output formatter needs from one state-resolution run.
 pub struct FormattingContext<'a> {
@@ -859,8 +859,60 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
     raw_map: &HashMap<String, rezzy::JsonValue, S2>,
     room_version: Option<&str>,
 ) -> Result<Option<StreamOrderIndex>, AppError> {
-    let explicit = args.metadata.clone();
-    let paths: Vec<(PathBuf, Option<PathBuf>)> = explicit.as_ref().map_or_else(
+    let paths = sidecar_candidates(args);
+    if paths.is_empty() {
+        warn_once(
+            args.quiet,
+            "no provenance sidecar found; stream ordering unavailable",
+        );
+        return Ok(None);
+    }
+
+    let expected_room_id = raw_map
+        .values()
+        .find_map(|value| value.get("room_id").and_then(rezzy::JsonValue::as_str));
+    let mut index = StreamOrderIndex::default();
+    let mut tally = StreamOrderTally::default();
+    for (path, aggregate_path) in &paths {
+        let validated = validated_sidecar(
+            args,
+            path,
+            aggregate_path.as_deref(),
+            room_version,
+            expected_room_id,
+            &mut tally,
+        )?;
+        if let Some(sidecar) = validated {
+            merge_stream_records(&sidecar, events_map, raw_map, &mut index, &mut tally);
+        }
+    }
+    if index.is_empty() {
+        warn_once(
+            args.quiet,
+            "provenance sidecar had no usable stream_ordering",
+        );
+        return Ok(None);
+    }
+    let StreamOrderTally {
+        missing,
+        mismatched,
+        unbound,
+        room_mismatch,
+        ..
+    } = tally;
+    if missing > 0 || mismatched > 0 || room_mismatch > 0 || unbound > 0 {
+        warn_once(
+            args.quiet,
+            &format!(
+                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload/generation mismatch, {unbound} legacy unbound, {room_mismatch} room/version mismatch); those events sort after events with a known stream order"
+            ),
+        );
+    }
+    Ok(Some(index))
+}
+
+fn sidecar_candidates(args: &Args) -> Vec<(PathBuf, Option<PathBuf>)> {
+    args.metadata.as_ref().map_or_else(
         || {
             args.input
                 .iter()
@@ -876,123 +928,118 @@ pub fn load_stream_order<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>
             let aggregate = (args.input.len() == 1).then(|| args.input[0].clone());
             vec![(path.clone(), aggregate)]
         },
-    );
-    if paths.is_empty() {
-        warn_once(
-            args.quiet,
-            "no provenance sidecar found; stream ordering unavailable",
-        );
+    )
+}
+
+/// Issue counts accumulated while folding sidecar records into the index.
+#[derive(Default)]
+struct StreamOrderTally {
+    missing: usize,
+    mismatched: usize,
+    unbound: usize,
+    room_mismatch: usize,
+    conflicting_stream_events: BTreeSet<String>,
+}
+
+fn validated_sidecar(
+    args: &Args,
+    path: &Path,
+    aggregate_path: Option<&Path>,
+    room_version: Option<&str>,
+    expected_room_id: Option<&str>,
+    tally: &mut StreamOrderTally,
+) -> Result<Option<provenance::LoadedSidecar>, AppError> {
+    let sidecar = if args.metadata.is_some() {
+        provenance::load_sidecar(path)?
+    } else {
+        match provenance::load_sidecar(path) {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                warn_once(
+                    args.quiet,
+                    &format!("ignoring provenance sidecar {}: {error}", path.display()),
+                );
+                return Ok(None);
+            }
+        }
+    };
+    if room_version.is_some()
+        && sidecar.room_version.is_some()
+        && room_version != sidecar.room_version.as_deref()
+    {
+        tally.room_mismatch = tally.room_mismatch.saturating_add(1);
         return Ok(None);
     }
-
-    let expected_room_id = raw_map
-        .values()
-        .find_map(|value| value.get("room_id").and_then(rezzy::JsonValue::as_str));
-    let mut index = StreamOrderIndex::default();
-    let mut missing = 0_usize;
-    let mut mismatched = 0_usize;
-    let mut unbound = 0_usize;
-    let mut room_mismatch = 0_usize;
-    let mut conflicting_stream_events = std::collections::BTreeSet::new();
-    for (path, aggregate_path) in &paths {
-        let sidecar = if explicit.is_some() {
-            provenance::load_sidecar(path)?
-        } else {
-            match provenance::load_sidecar(path) {
-                Ok(sidecar) => sidecar,
+    if let Some(aggregate_path) = aggregate_path {
+        match sidecar.aggregate_sha256.as_deref() {
+            Some(expected) => match fs::read(aggregate_path) {
+                Ok(bytes) if provenance::sha256_hex(&bytes) == expected => {}
+                Ok(_) => {
+                    tally.mismatched = tally.mismatched.saturating_add(1);
+                    return Ok(None);
+                }
                 Err(error) => {
                     warn_once(
                         args.quiet,
-                        &format!("ignoring provenance sidecar {}: {error}", path.display()),
+                        &format!(
+                            "cannot validate aggregate binding for {}: {error}",
+                            aggregate_path.display()
+                        ),
                     );
+                    tally.mismatched = tally.mismatched.saturating_add(1);
+                    return Ok(None);
+                }
+            },
+            None => tally.unbound = tally.unbound.saturating_add(1),
+        }
+    }
+    if expected_room_id.is_some()
+        && sidecar
+            .room_id
+            .as_deref()
+            .is_some_and(|id| Some(id) != expected_room_id)
+    {
+        tally.room_mismatch = tally.room_mismatch.saturating_add(1);
+        return Ok(None);
+    }
+    Ok(Some(sidecar))
+}
+
+fn merge_stream_records<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+    sidecar: &provenance::LoadedSidecar,
+    events_map: &HashMap<String, LeanEvent, S1>,
+    raw_map: &HashMap<String, rezzy::JsonValue, S2>,
+    index: &mut StreamOrderIndex,
+    tally: &mut StreamOrderTally,
+) {
+    for event_id in events_map.keys() {
+        let Some(record) = sidecar.events.get(event_id) else {
+            tally.missing = tally.missing.saturating_add(1);
+            continue;
+        };
+        if let Some(raw) = raw_map.get(event_id) {
+            if let Ok(serialized) = rezzy::json::write_string_value(raw) {
+                if provenance::sha256_id(serialized.as_bytes()) != record.payload_sha256 {
+                    tally.mismatched = tally.mismatched.saturating_add(1);
                     continue;
                 }
             }
-        };
-        if room_version.is_some()
-            && sidecar.room_version.is_some()
-            && room_version != sidecar.room_version.as_deref()
-        {
-            room_mismatch = room_mismatch.saturating_add(1);
-            continue;
         }
-        if let Some(aggregate_path) = aggregate_path.as_deref() {
-            match sidecar.aggregate_sha256.as_deref() {
-                Some(expected) => match fs::read(aggregate_path) {
-                    Ok(bytes) if provenance::sha256_hex(&bytes) == expected => {}
-                    Ok(_) => {
-                        mismatched = mismatched.saturating_add(1);
-                        continue;
-                    }
-                    Err(error) => {
-                        warn_once(
-                            args.quiet,
-                            &format!(
-                                "cannot validate aggregate binding for {}: {error}",
-                                aggregate_path.display()
-                            ),
-                        );
-                        mismatched = mismatched.saturating_add(1);
-                        continue;
-                    }
-                },
-                None => unbound = unbound.saturating_add(1),
-            }
-        }
-        if expected_room_id.is_some()
-            && sidecar
-                .room_id
-                .as_deref()
-                .is_some_and(|id| Some(id) != expected_room_id)
-        {
-            room_mismatch = room_mismatch.saturating_add(1);
-            continue;
-        }
-        for event_id in events_map.keys() {
-            let Some(record) = sidecar.events.get(event_id) else {
-                missing = missing.saturating_add(1);
-                continue;
-            };
-            if let Some(raw) = raw_map.get(event_id) {
-                if let Ok(serialized) = rezzy::json::write_string_value(raw) {
-                    if provenance::sha256_id(serialized.as_bytes()) != record.payload_sha256 {
-                        mismatched = mismatched.saturating_add(1);
-                        continue;
+        match record.stream_ordering {
+            Some(value) => {
+                if tally.conflicting_stream_events.contains(event_id) {
+                    continue;
+                }
+                if let Some(previous) = index.by_event.insert(event_id.clone(), value) {
+                    if previous != value {
+                        index.by_event.remove(event_id);
+                        tally.conflicting_stream_events.insert(event_id.clone());
                     }
                 }
             }
-            match record.stream_ordering {
-                Some(value) => {
-                    if conflicting_stream_events.contains(event_id) {
-                        continue;
-                    }
-                    if let Some(previous) = index.by_event.insert(event_id.clone(), value) {
-                        if previous != value {
-                            index.by_event.remove(event_id);
-                            conflicting_stream_events.insert(event_id.clone());
-                        }
-                    }
-                }
-                None => missing = missing.saturating_add(1),
-            }
+            None => tally.missing = tally.missing.saturating_add(1),
         }
     }
-    if index.is_empty() {
-        warn_once(
-            args.quiet,
-            "provenance sidecar had no usable stream_ordering",
-        );
-        return Ok(None);
-    }
-    if missing > 0 || mismatched > 0 || room_mismatch > 0 || unbound > 0 {
-        warn_once(
-            args.quiet,
-            &format!(
-                "stream_ordering incomplete ({missing} missing/conflicting, {mismatched} payload/generation mismatch, {unbound} legacy unbound, {room_mismatch} room/version mismatch); those events sort after events with a known stream order"
-            ),
-        );
-    }
-    Ok(Some(index))
 }
 
 /// The shallowest event, with ties broken by event ID so the result does not
