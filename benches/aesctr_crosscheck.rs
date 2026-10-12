@@ -55,7 +55,10 @@ fn collapse(lattice: &[u16; LANES]) -> String {
         bytes.extend_from_slice(&lane.to_le_bytes());
     }
     let digest = blake3::hash(&bytes);
-    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, digest.as_bytes())
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        digest.as_bytes(),
+    )
 }
 
 fn accumulate(ni: bool) -> String {
