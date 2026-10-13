@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["ALGORITHM","EDGE_BITS","EDGE_MASK","NEDGES","PROOF_SIZE"],"enum":["VerifyError"],"fn":["graph_seed","minting_key_id","short_key_id","verify_minting_pow"],"struct":["CuckooVerifier","MintingPow"]};
+window.SIDEBAR_ITEMS = {"constant":["ALGORITHM","EDGE_BITS","EDGE_MASK","NEDGES","NODE_BITS","NODE_MASK","PROOF_SIZE"],"enum":["VerifyError"],"fn":["graph_seed","minting_key_id","short_key_id","verify_minting_pow"],"struct":["CuckooVerifier","MintingPow"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["at","cache","delta","diff","lthash"]};
+window.SIDEBAR_ITEMS = {"mod":["at","cache","dag","delta","diff","lthash","merkle","persistent_ord_map"]};

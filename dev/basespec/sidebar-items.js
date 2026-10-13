@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["event_types","interned_key","rezzy_types","version_props"]};

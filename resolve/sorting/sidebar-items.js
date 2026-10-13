@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["lean_kahn_sort","lean_kahn_sort_with_cycle_diagnostics","mainline_sort"]};
+window.SIDEBAR_ITEMS = {"fn":["mainline_sort"],"struct":["KahnSortInputs"]};

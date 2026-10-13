@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["partition_state_maps","resolve_state_maps","resolve_state_maps_lazy_with_diff"]};
+window.SIDEBAR_ITEMS = {"fn":["partition_state_maps","resolve_state_maps","resolve_state_maps_cached","resolve_state_maps_diff","resolve_state_maps_lazy_with_diff","resolve_state_maps_with_reachability"],"struct":["ForkResolveCaches"]};

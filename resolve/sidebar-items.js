@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["cdo","iterative","lattice","multi","reachability","sorting","subgraph"]};
+window.SIDEBAR_ITEMS = {"mod":["cdo","iterative","multi","reachability","semilattice","sorting","subgraph","v3"]};

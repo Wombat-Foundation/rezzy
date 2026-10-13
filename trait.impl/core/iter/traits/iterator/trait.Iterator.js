@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["rezzy",[["impl&lt;'a, 'b, K: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a>, V: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/cmp/trait.PartialEq.html\" title=\"trait core::cmp::PartialEq\">PartialEq</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/iter/traits/iterator/trait.Iterator.html\" title=\"trait core::iter::traits::iterator::Iterator\">Iterator</a> for <a class=\"struct\" href=\"rezzy/state/persistent_ord_map/struct.Diff.html\" title=\"struct rezzy::state::persistent_ord_map::Diff\">Diff</a>&lt;'a, 'b, K, V&gt;"],["impl&lt;'a, K, V&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/iter/traits/iterator/trait.Iterator.html\" title=\"trait core::iter::traits::iterator::Iterator\">Iterator</a> for <a class=\"struct\" href=\"rezzy/state/persistent_ord_map/struct.Iter.html\" title=\"struct rezzy::state::persistent_ord_map::Iter\">Iter</a>&lt;'a, K, V&gt;"],["impl&lt;'a, K: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a>, V, R: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/ops/range/trait.RangeBounds.html\" title=\"trait core::ops::range::RangeBounds\">RangeBounds</a>&lt;K&gt;&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/iter/traits/iterator/trait.Iterator.html\" title=\"trait core::iter::traits::iterator::Iterator\">Iterator</a> for <a class=\"struct\" href=\"rezzy/state/persistent_ord_map/struct.Range.html\" title=\"struct rezzy::state::persistent_ord_map::Range\">Range</a>&lt;'a, K, V, R&gt;"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1678]}

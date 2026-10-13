@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BITMAP_FORMAT_VERSION","BITMAP_MAGIC"],"enum":["BitmapDecodeError"],"struct":["Bitmap","Bitmap128","Bitmap64","IntoIter","Iter","Iter128","Iter64"]};

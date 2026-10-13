@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["compute_state_hash"],"struct":["LtHash"]};
+window.SIDEBAR_ITEMS = {"enum":["DigestAgreement"],"fn":["compute_state_hash"],"struct":["PduLtHash","RedactionOverlay","ResolutionInputRecord","ResolutionInputs","StateDigest","StateDigestTransition"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["HAMT_CODEC_VERSION","HAMT_ROUTING_VERSION"],"fn":["state_group_id_from_lthash"],"struct":["RootHandle"],"type":["StateGroupId","StructuralHash"]};

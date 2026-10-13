@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["EvaluatorBackend"],"fn":["get_evaluator"],"struct":["ScalarEvaluator","SseEvaluator"],"trait":["Gf64Evaluator"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["state_group_id_from_lthash"],"struct":["RootHandle"],"type":["StateGroupId","StructuralHash"]};
+window.SIDEBAR_ITEMS = {"constant":["HAMT_CODEC_VERSION","HAMT_ROUTING_VERSION"],"enum":["RootHandleJsonError"],"fn":["state_group_id_from_lthash"],"struct":["RootHandle"],"type":["StateGroupId","StructuralHash"]};

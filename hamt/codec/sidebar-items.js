@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["PersistedInternalNode"],"trait":["HamtCodec"]};
+window.SIDEBAR_ITEMS = {"constant":["HAMT_NODE_MAGIC","HAMT_ROOT_MAGIC","HAMT_WIRE_VERSION"],"struct":["PersistedInternalNode"],"trait":["HamtCodec"]};

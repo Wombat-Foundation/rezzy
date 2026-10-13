@@ -1,0 +1,51 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Extensible homomorphic accumulation via `LtHash`."><title>rezzy::incremental::lthash - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="rezzy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../static.files/storage-4e99c027.js"></script><script defer src="./sidebar-items.js"></script><script defer src="../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../index.html">rezzy</a><span class="version">0.6.0-rc.1</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module lthash</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#why-blake3-instead-of-shake256" title="Why BLAKE3 instead of SHAKE256">Why BLAKE3 instead of SHAKE256</a></li><li><a href="#layout-1" title="Layout">Layout</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#types" title="Type Aliases">Type Aliases</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="./index.html">In rezzy::<wbr>incremental</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">rezzy</a>::<wbr><a href="./index.html">incremental</a></div><h1>Module <span>lthash</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/rezzy/incremental/lthash/mod.rs.html#15-79">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Extensible homomorphic accumulation via <code>LtHash</code>.</p>
+<p><code>LtHash</code> (Lattice Hash) is based on the homomorphic hashing paradigm first
+introduced by Bellare and Micciancio in their 1997 paper <em>“A New Paradigm
+for Collision-Free Hashing: Incrementality at Reduced Cost”</em>. This specific
+instantiation (by default 2048 bytes, using 1024 16-bit integers and
+wrapping addition) is modeled after the industry-standard implementation in
+Meta’s Folly library (<code>folly::crypto::LtHash</code>).</p>
+<p>Each element is expanded to <code>2 * LANES</code> bytes with the BLAKE3 extendable
+output function (XOF), unpacked into <code>LANES</code> little-endian 16-bit lanes.
+The accumulator is the wrapping addition of those vectors, and the wire
+digest is <code>BLAKE3(lattice)</code>. This provides:</p>
+<ul>
+<li><strong>O(1) incremental updates</strong>: insert = <code>hash + expanded</code>,
+remove = <code>hash - expanded</code>.</li>
+<li><strong>Order independence</strong>: addition is commutative + associative.</li>
+<li><strong>Cryptographic security</strong>: hard to find set collisions (SVP).</li>
+</ul>
+<h2 id="why-blake3-instead-of-shake256"><a class="doc-anchor" href="#why-blake3-instead-of-shake256">§</a>Why BLAKE3 instead of SHAKE256</h2>
+<p>The original draft expanded elements with SHAKE256 (FIPS 202). Squeezing
+2048 bytes costs 16 <code>Keccak-f1600</code> permutations, and no mainstream CPU has
+a Keccak instruction, so expansion dominated every insert. BLAKE3 replaces
+it with an ARX construction that maps to the same SIMD paths on every
+target (AVX2/AVX-512 on x86, NEON on ARM, <code>simd128</code> on wasm) and is
+constant-time by construction.</p>
+<p>The win is real but it is a constant factor, not an order of magnitude: on a
+3.6 GHz Skylake-derived core this module squeezes 2048 bytes in roughly
+1.8 us against roughly 5.5 us for the SHAKE256 path it replaces, so expect
+single-digit microseconds per seed rather than nanoseconds. Reproduce with
+<code>cargo bench --manifest-path benches/Cargo.toml -- lthash_comprehensive</code>,
+whose expansion section measures the XOF and the collapse separately, or
+with <code>cargo bench --manifest-path benches/Cargo.toml --bench rezzy -- lthash_backends</code>, which times this stack head to head against the
+retired SHAKE256 + <code>BLAKE2b</code> one after checking it against the published
+MSC4500 vectors.</p>
+<p>Note that the pinned <code>blake3</code> dependency keeps <code>default-features = false</code>,
+so expansion uses the portable backend. Enabling blake3’s <code>std</code> feature
+turns on runtime SIMD detection; the digest is fixed by the BLAKE3 spec, so
+both backends agree byte for byte, and it was not measurably faster for the
+XOF path when measured here.</p>
+<p>The domain-separation tags are versioned <code>...:blake3:v1</code> so a digest
+produced by this module can never be confused with a SHAKE256
+instantiation of the same shape.</p>
+<h2 id="layout-1"><a class="doc-anchor" href="#layout-1">§</a>Layout</h2>
+<ul>
+<li><code>lattice</code> holds <a href="struct.LtLattice.html" title="struct rezzy::incremental::lthash::LtLattice"><code>LtLattice</code></a>, <a href="type.LtHash.html" title="type rezzy::incremental::lthash::LtHash"><code>LtHash</code></a>, the arithmetic traits and
+serialization.</li>
+<li><code>encoding</code> holds the BLAKE3 expansion and seed encodings.</li>
+</ul>
+<p>This module has no dependency on room state. The MSC4500 domain layers
+(<code>RedactionOverlay</code>, <code>ResolutionInputs</code>, <code>PduLtHash</code>) and <code>from_state</code>
+live in <a href="../state/lthash/index.html" title="mod rezzy::state::lthash"><code>crate::state::lthash</code></a>.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.LtLattice.html" title="struct rezzy::incremental::lthash::LtLattice">LtLattice</a></dt><dd>A homomorphic lattice hash over <code>LANES</code> 16-bit lanes.</dd><dt><a class="struct" href="struct.WrongLatticeLength.html" title="struct rezzy::incremental::lthash::WrongLatticeLength">Wrong<wbr>Lattice<wbr>Length</a></dt><dd>A lattice byte string was not <code>LANES * 2</code> bytes long.</dd></dl><h2 id="types" class="section-header">Type Aliases<a href="#types" class="anchor">§</a></h2><dl class="item-table"><dt><a class="type" href="type.LtHash.html" title="type rezzy::incremental::lthash::LtHash">LtHash</a></dt><dd>The MSC4500-shaped 2048-byte state hash: 1024 lanes of 16 bits.</dd></dl></section></div></main></body></html>

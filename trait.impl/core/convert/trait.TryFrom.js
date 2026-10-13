@@ -1,9 +1,9 @@
 (function() {
-    const implementors = Object.fromEntries([["rezzy",[["impl&lt;K, V&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.98.1/core/convert/trait.TryFrom.html\" title=\"trait core::convert::TryFrom\">TryFrom</a>&lt;<a class=\"struct\" href=\"rezzy/hamt/codec/struct.PersistedInternalNode.html\" title=\"struct rezzy::hamt::codec::PersistedInternalNode\">PersistedInternalNode</a>&lt;K, V&gt;&gt; for <a class=\"struct\" href=\"rezzy/hamt/struct.HamtNode.html\" title=\"struct rezzy::hamt::HamtNode\">HamtNode</a>&lt;K, V&gt;",0]]]]);
+    var implementors = Object.fromEntries([["rezzy",[["impl&lt;const LANES: <a class=\"primitive\" href=\"https://doc.rust-lang.org/1.88.0/std/primitive.usize.html\">usize</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.88.0/core/convert/trait.TryFrom.html\" title=\"trait core::convert::TryFrom\">TryFrom</a>&lt;&amp;[<a class=\"primitive\" href=\"https://doc.rust-lang.org/1.88.0/std/primitive.u8.html\">u8</a>]&gt; for <a class=\"struct\" href=\"rezzy/incremental/lthash/struct.LtLattice.html\" title=\"struct rezzy::incremental::lthash::LtLattice\">LtLattice</a>&lt;LANES&gt;"]]]]);
     if (window.register_implementors) {
         window.register_implementors(implementors);
     } else {
         window.pending_implementors = implementors;
     }
 })()
-//{"start":59,"fragment_lengths":[491]}
+//{"start":57,"fragment_lengths":[554]}

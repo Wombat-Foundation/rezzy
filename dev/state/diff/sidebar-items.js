@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["StateDiffEntry"],"fn":["compute_state_diff","compute_state_diff_generic"],"struct":["StateDiff"]};

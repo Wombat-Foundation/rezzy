@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ADJACENCY_MASK"],"fn":["discover_array_spans","discover_envelope_spans","discover_federation_spans","discover_jsonl_spans","extract_matrix_event_into"],"struct":["EnvelopeSpans","FederationSpans","MatrixEventScratch","MatrixEventView","OwnedMatrixEvent","RawEventSpan"]};
