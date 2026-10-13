@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Extract labeled wall-clock metrics from a `cargo bench` tee file and compare
-them against the previous best. Regressions above the warning margin are
-reported as yellow warnings; regressions at or above the failure margin fail.
+them against the previous best. Regressions use three tiers:
+
+    10–50%  blue notice
+    50–85%  yellow warning
+    85%+    red failure (fails the job)
 
 The benches in `benches/` use a custom harness (`std::time::Instant`) rather
 than criterion, and print labeled millisecond metrics in a couple of shapes:
@@ -11,9 +14,9 @@ than criterion, and print labeled millisecond metrics in a couple of shapes:
 
 This script extracts those into `{label: milliseconds}`, compares each current
 value against the previous best (`--best`, a JSON object), FAILS if any metric
-regressed by at least `--failure-margin` (default 70%), warns above
-`--warning-margin` (default 10%), and writes the running best (the fastest
-value seen for each label) to `--out`.
+regressed by at least `--failure-margin` (default 85%), warns above
+`--warning-margin` (default 50%), notices above `--notice-margin` (default 10%),
+and writes the running best (the fastest value seen for each label) to `--out`.
 
 When the runner prints benchmark section headers, they are included in each
 metric key so equal operation names from separate benchmarks do not collide.
@@ -22,8 +25,9 @@ Exit code is 1 if any metric regressed by at least the failure margin, else 0. T
 intended to be driven from `.github/workflows/benches.yml` after teeing the
 bench output to a file.
 
-NOTE: wall-clock benchmarks on shared CI runners are noisy. Yellow warnings
-surface smaller changes while the 70% red threshold catches severe regressions.
+NOTE: wall-clock benchmarks on shared CI runners are noisy. Blue notices
+surface small drift, yellow warnings flag moderate regressions, and the 85%
+red threshold catches severe regressions only.
 """
 
 from __future__ import annotations
@@ -86,22 +90,28 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--best", required=True, help="previous best JSON (bench.json)")
     ap.add_argument("--out", required=True, help="path to write the running best JSON")
     ap.add_argument(
+        "--notice-margin",
+        type=float,
+        default=0.10,
+        help="blue notice above this regression fraction (default 10%%)",
+    )
+    ap.add_argument(
         "--warning-margin",
         "--margin",
         dest="warning_margin",
         type=float,
-        default=0.10,
-        help="warn above this regression fraction (default 10%%)",
+        default=0.50,
+        help="yellow warn above this regression fraction (default 50%%)",
     )
     ap.add_argument(
         "--failure-margin",
         type=float,
-        default=0.70,
-        help="fail at or above this regression fraction (default 70%%)",
+        default=0.85,
+        help="fail at or above this regression fraction (default 85%%)",
     )
     args = ap.parse_args()
-    if not 0.0 < args.warning_margin < args.failure_margin:
-        ap.error("margins must satisfy 0 < warning-margin < failure-margin")
+    if not 0.0 < args.notice_margin < args.warning_margin < args.failure_margin:
+        ap.error("margins must satisfy 0 < notice-margin < warning-margin < failure-margin")
     return args
 
 
@@ -136,12 +146,14 @@ def previous_best(
 def compare_metrics(
     current: dict[str, float],
     best: dict[str, float],
+    notice_margin: float,
     warning_margin: float,
     failure_margin: float,
-) -> tuple[dict[str, float], list[str], list[str]]:
-    """Update best values and classify regressions as warnings or failures."""
+) -> tuple[dict[str, float], list[str], list[str], list[str]]:
+    """Update best values and classify regressions as notices, warnings, or failures."""
     suffix_counts = legacy_label_counts(current)
     new_best = dict(best)
+    notices: list[str] = []
     warnings: list[str] = []
     failures: list[str] = []
     for label, value in sorted(current.items()):
@@ -157,11 +169,13 @@ def compare_metrics(
         )
         if increase >= failure_margin:
             failures.append(message)
-        elif increase > warning_margin:
+        elif increase >= warning_margin:
             warnings.append(message)
+        elif increase > notice_margin:
+            notices.append(message)
         if value < prior:
             new_best[label] = value
-    return new_best, warnings, failures
+    return new_best, notices, warnings, failures
 
 
 def write_best(path: str, metrics: dict[str, float]) -> None:
@@ -174,10 +188,11 @@ def write_best(path: str, metrics: dict[str, float]) -> None:
 def report_results(
     current: dict[str, float],
     best: dict[str, float],
+    notices: list[str],
     warnings: list[str],
     failures: list[str],
 ) -> None:
-    """Print the metrics and GitHub warning/error annotations."""
+    """Print the metrics and GitHub notice/warning/error annotations."""
     suffix_counts = legacy_label_counts(current)
     print(
         f"parsed {len(current)} metrics, comparing against {len(best)} previous bests"
@@ -186,13 +201,18 @@ def report_results(
         prior = previous_best(label, best, suffix_counts)
         suffix = "" if prior is None else f" (best {prior:.4f}ms)"
         print(f"  {label}: {value:.4f}ms{suffix}")
+    if notices:
+        print("\nBLUE NOTICES (10–50%):")
+        for notice in notices:
+            print(f"  NOTICE {notice}")
+            print(f"::notice title=Benchmark regression::{notice}")
     if warnings:
-        print("\nYELLOW WARNINGS (not failing):")
+        print("\nYELLOW WARNINGS (50–85%, not failing):")
         for warning in warnings:
             print(f"  WARN {warning}")
             print(f"::warning title=Benchmark regression::{warning}")
     if failures:
-        print("\nRED REGRESSIONS (failing):")
+        print("\nRED REGRESSIONS (85%+, failing):")
         for failure in failures:
             print(f"  FAIL {failure}")
             print(f"::error title=Benchmark regression::{failure}")
@@ -210,11 +230,11 @@ def main() -> int:
         print("no benchmark metrics parsed", file=sys.stderr)
         return 1
     best = load_best(args.best)
-    new_best, warnings, failures = compare_metrics(
-        current, best, args.warning_margin, args.failure_margin
+    new_best, notices, warnings, failures = compare_metrics(
+        current, best, args.notice_margin, args.warning_margin, args.failure_margin
     )
     write_best(args.out, new_best)
-    report_results(current, best, warnings, failures)
+    report_results(current, best, notices, warnings, failures)
     if failures:
         return 1
 

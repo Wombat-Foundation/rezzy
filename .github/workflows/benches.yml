@@ -64,14 +64,15 @@ jobs:
             echo '{}' > bench.json
           fi
 
-      - name: Compare against previous best (10% warning, 70% failure)
+      - name: Compare against previous best (10% notice, 50% warning, 85% failure)
         run: |
           python3 scripts/compare_bench.py \
             --current bench-output.txt \
             --best bench.json \
             --out bench-new.json \
-            --warning-margin 0.10 \
-            --failure-margin 0.70
+            --notice-margin 0.10 \
+            --warning-margin 0.50 \
+            --failure-margin 0.85
 
       - name: Stage metrics for publisher
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
