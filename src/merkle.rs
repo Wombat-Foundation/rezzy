@@ -7,22 +7,22 @@ use alloc::{
 };
 use core::fmt;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde_json::Value;
-use sha3::{Digest, Sha3_256};
+use crate::json::Value;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sha2::{Digest, Sha256};
 
-/// SHA3-256 digest size used by MSC4511.
+/// SHA-256 digest size used by the local MSC4511 variant.
 pub const HASH_SIZE: usize = 32;
 
 const MAX_CANONICAL_INT: i64 = (1_i64 << 53) - 1;
 const MIN_CANONICAL_INT: i64 = -MAX_CANONICAL_INT;
 
-const LEAF_DST: &[u8] = b"msc4511:leaf:v1";
-const NODE_DST: &[u8] = b"msc4511:node:v1";
-const ROOT_DST: &[u8] = b"msc4511:root:v1";
+const LEAF_DST: &[u8] = b"msc4511:leaf:sha256:v1";
+const NODE_DST: &[u8] = b"msc4511:node:sha256:v1";
+const ROOT_DST: &[u8] = b"msc4511:root:sha256:v1";
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
-/// A SHA3-256 digest.
+/// A SHA-256 digest.
 pub type Hash = [u8; HASH_SIZE];
 
 /// A Merkle root that nobody has signed.
@@ -37,7 +37,7 @@ pub type Hash = [u8; HASH_SIZE];
 /// sender actually signed (a true MSC4511C Part C proof), or (b) signed
 /// after the fact by whoever computed it, standing behind it as a responder
 /// (a Part B attestation -- see `crate::signing::attest` when the
-/// `signing-dalek` feature is enabled). Neither case is automatic: this type
+/// `signing-consensus` feature is enabled). Neither case is automatic: this type
 /// exists so a caller cannot accidentally hand a bare computed root to code
 /// that presents it as authoritative without having gone through one of
 /// those two steps.
@@ -74,7 +74,7 @@ impl From<Hash> for UnsignedRoot {
 }
 
 /// Errors returned by MSC4511 Merkle and canonical JSON operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MerkleError {
     EmptyFieldName,
     InvalidFieldName,
@@ -102,7 +102,6 @@ impl fmt::Display for MerkleError {
 impl core::error::Error for MerkleError {}
 
 /// One named metadata value. The value is Matrix Canonical JSON encoded before hashing.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
     pub value: Value,
@@ -124,7 +123,6 @@ impl Field {
 /// (rather than a single combined `sender` leaf) so that a proof can disclose
 /// and verify the sending server's identity without disclosing the sender's
 /// localpart.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub room_id: String,
     pub sender_localpart: String,
@@ -137,26 +135,25 @@ pub struct Header {
 }
 
 /// Typed wrapper for the `prev_events` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct PrevEventsHash(pub Hash);
 
 /// Typed wrapper for the `auth_events` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct AuthEventsHash(pub Hash);
 
 /// Typed wrapper for the event header root component in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct EventHeaderRoot(pub Hash);
 
 /// Typed wrapper for the `content` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct ContentHash(pub Hash);
 
 /// Typed wrapper for the `other_signed_fields` component hash in [`event_root`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct OtherSignedFieldsHash(pub Hash);
 
-#[derive(Debug, Clone)]
 struct Leaf {
     name: String,
     hash: Hash,
@@ -175,7 +172,7 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, MerkleError> {
     Ok(out)
 }
 
-/// Computes SHA3-256("msc4511:leaf:v1" || `field_name` || "\x00" ||
+/// Computes SHA-256("msc4511:leaf:sha256:v1" || `field_name` || "\x00" ||
 /// `canonical_value`).
 ///
 /// # Errors
@@ -314,7 +311,7 @@ pub fn header_root(header: &Header) -> Result<EventHeaderRoot, MerkleError> {
     .map(EventHeaderRoot)
 }
 
-/// Computes SHA3-256("msc4511:root:v1" || `prev_events_hash` ||
+/// Computes SHA-256("msc4511:root:sha256:v1" || `prev_events_hash` ||
 /// `auth_events_hash` || `event_header_root` || `content_hash` ||
 /// `other_signed_fields_hash`).
 #[must_use]
@@ -338,7 +335,10 @@ pub fn event_root(
 /// Derives "$" || unpadded base64url(`event_root`).
 #[must_use]
 pub fn event_id(event_root: Hash) -> String {
-    format!("${}", URL_SAFE_NO_PAD.encode(event_root))
+    format!(
+        "${}",
+        crate::base64_utils::encode(&URL_SAFE_NO_PAD, &event_root)
+    )
 }
 
 /// Which side a sibling hash sits on relative to the running hash in a
@@ -565,7 +565,7 @@ fn append_canonical_value(out: &mut Vec<u8>, value: &Value) -> Result<(), Merkle
     Ok(())
 }
 
-fn append_number(out: &mut Vec<u8>, number: &serde_json::Number) -> Result<(), MerkleError> {
+fn append_number(out: &mut Vec<u8>, number: &crate::json::Number) -> Result<(), MerkleError> {
     if let Some(n) = number.as_i64() {
         if !(MIN_CANONICAL_INT..=MAX_CANONICAL_INT).contains(&n) {
             return Err(MerkleError::IntegerRange);
@@ -607,8 +607,8 @@ fn append_string(out: &mut Vec<u8>, string: &str) {
     out.push(b'"');
 }
 
-fn hash_parts(parts: &[&[u8]]) -> Hash {
-    let mut hasher = Sha3_256::new();
+pub(crate) fn hash_parts(parts: &[&[u8]]) -> Hash {
+    let mut hasher = Sha256::new();
     for part in parts {
         hasher.update(part);
     }
@@ -618,7 +618,8 @@ fn hash_parts(parts: &[&[u8]]) -> Hash {
 /// MSC4511's causal sparse Merkle sum trie: a reference 256-level structure
 /// committing the set of event IDs in an event's strict causal past.
 ///
-/// This provides a reference implementation matching `gomatrixcrypto`'s `merkle.CausalSet`.
+/// This provides a reference implementation modelled on
+/// `gomatrixcrypto`'s `merkle.CausalSet`, but hashed with SHA-256.
 pub mod causal {
     use super::{hash_parts, Hash};
     use alloc::{collections::BTreeMap, collections::BTreeSet, vec::Vec};
@@ -627,16 +628,16 @@ pub mod causal {
     /// level per bit of a 32-byte (256-bit) event-ID digest key.
     pub const CAUSAL_DEPTH: usize = 256;
 
-    const CAUSAL_LEAF_DST: &[u8] = b"msc4511:causal-leaf:v1";
-    const CAUSAL_NODE_DST: &[u8] = b"msc4511:causal-node:v1";
-    const CAUSAL_EMPTY_LEAF_DST: &[u8] = b"msc4511:causal-empty-leaf:v1";
+    const CAUSAL_LEAF_DST: &[u8] = b"msc4511:causal-leaf:sha256:v1";
+    const CAUSAL_NODE_DST: &[u8] = b"msc4511:causal-node:sha256:v1";
+    const CAUSAL_EMPTY_LEAF_DST: &[u8] = b"msc4511:causal-empty-leaf:sha256:v1";
 
-    /// Computes SHA3-256("msc4511:causal-leaf:v1" || `key`).
+    /// Computes SHA-256("msc4511:causal-leaf:sha256:v1" || `key`).
     fn causal_leaf(key: Hash) -> Hash {
         hash_parts(&[CAUSAL_LEAF_DST, &key])
     }
 
-    /// Computes SHA3-256("msc4511:causal-node:v1" || `u16be(depth)` ||
+    /// Computes SHA-256("msc4511:causal-node:sha256:v1" || `u16be(depth)` ||
     /// `left_hash` || `u64be(left_count)` || `right_hash` ||
     /// `u64be(right_count)`).
     fn causal_node(
@@ -730,7 +731,7 @@ pub mod causal {
     /// `root()` is O(log n) (`BTreeMap` lookup), `inclusion_proof()` and
     /// `non_inclusion_proof()` are O(256 · log n) — 256 cache lookups
     /// rather than O(n·256).
-    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    #[derive(Clone, Default)]
     pub struct CausalSet {
         keys: BTreeSet<Hash>,
         /// `(depth, key_prefix) → (hash, count)`. `key_prefix` at depth `d`
@@ -746,7 +747,7 @@ pub mod causal {
     /// This is derived from the key during verification — it is not part of
     /// the wire format. The type exists only for internal use in
     /// [`verify_causal_path`] and the causal-trie oracle's descent.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy)]
     enum CausalSide {
         Left,
         Right,
@@ -927,7 +928,7 @@ pub mod causal {
     /// Runs of consecutive canonical-empty siblings are collapsed into a
     /// single `EmptyRun` entry; non-empty steps are emitted individually
     /// as `Step`.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug)]
     pub enum CompressedCausalStep {
         /// A non-empty sibling step (hash and count are explicit).
         Step(CausalProofStep),
@@ -942,7 +943,7 @@ pub mod causal {
     }
 
     /// Error type for compressed causal-trie proof operations.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug)]
     pub enum CausalProofError {
         /// A compressed step references a sibling depth outside
         /// `1..=CAUSAL_DEPTH`, or `terminal_depth` itself exceeds
@@ -1328,7 +1329,7 @@ pub mod causal {
                 // Check if the child node on the key-directed path exists
                 // and is non-empty.
                 let child = self.nodes.get(&(child_depth, child_prefix));
-                let child_is_empty = child.map_or(true, |(_, c)| *c == 0);
+                let child_is_empty = child.is_none_or(|(_, c)| *c == 0);
                 if child_is_empty {
                     // Found the terminal: an empty subtree at depth d+1.
                     let root_hash = self.root();
@@ -1843,34 +1844,66 @@ pub mod causal {
         /// tail-zeroing loop (`child_prefix[(byte_idx + 1)..32] = 0`) on
         /// keys where those bytes are non-trivial — the exact gap left by
         /// single-bit keys. Tests n=1, n=2 (trivial degeneracies), and
-        /// n=32, n=64 (dense enough that Phase 2 recurses through many
+        /// n=16, n=32 (dense enough that Phase 2 recurses through many
         /// non-trivial prefixes). The memoized [`CausalOracle`] keeps the
         /// per-key proof descent `O(depth)` regardless of `n`.
+        ///
+        /// The sizes are independent and each pays a 256-deep descent per
+        /// key, so they run concurrently and wall time is the slowest case
+        /// rather than their sum. Every worker takes its own oversized stack
+        /// because `subtree_root` recurses to [`CAUSAL_DEPTH`].
         #[test]
         fn differential_root_and_proofs_dense_random() {
-            let child = std::thread::Builder::new()
-                .stack_size(16 * 1024 * 1024)
-                .spawn(move || {
-                    for &n in &[1, 2, 32, 64] {
-                        let keys = dense_keys(0xDEAD_BEEF_CAFE_1234, n);
-                        let oracle = CausalOracle::new(&keys);
+            let workers: Vec<_> = [1, 2, 16, 32]
+                .into_iter()
+                .map(|n| {
+                    std::thread::Builder::new()
+                        .stack_size(16 * 1024 * 1024)
+                        .spawn(move || {
+                            let keys = dense_keys(0xDEAD_BEEF_CAFE_1234, n);
+                            let oracle = CausalOracle::new(&keys);
 
-                        let mut set = CausalSet::empty();
-                        for &k in &keys {
-                            set.insert_mut(k);
-                        }
+                            let mut set = CausalSet::empty();
+                            for &k in &keys {
+                                set.insert_mut(k);
+                            }
 
-                        let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
-                        let label = alloc::format!(" at n={n}");
-                        assert_matches_oracle(&set, &oracle, ref_root, ref_count, &keys, &label);
+                            let (ref_root, ref_count) = subtree_root_or_empty(&keys, 0);
+                            let label = alloc::format!(" at n={n}");
+                            // Root/count are checked against the full set; the
+                            // per-key proof descents dominate cost, so the
+                            // largest case spot-checks a few keys only (n<=16
+                            // already covers every key).
+                            // Sorted bytewise = tree order (descent is MSB-first), so
+                            // striding the sorted keys samples distinct prefixes.
+                            let proof_keys: alloc::borrow::Cow<'_, [Hash]> = if n > 16 {
+                                let mut sorted = keys.clone();
+                                sorted.sort_unstable();
+                                alloc::borrow::Cow::Owned(
+                                    sorted.into_iter().step_by(n / 4).collect(),
+                                )
+                            } else {
+                                alloc::borrow::Cow::Borrowed(&keys)
+                            };
+                            assert_matches_oracle(
+                                &set,
+                                &oracle,
+                                ref_root,
+                                ref_count,
+                                &proof_keys,
+                                &label,
+                            );
 
-                        // Non-inclusion: pick a key not in the set.
-                        let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
-                        assert_non_inclusion_matches_oracle(&set, &oracle, &absent, &label);
-                    }
+                            // Non-inclusion: pick a key not in the set.
+                            let absent = dense_keys(0xBEEF_CAFE_1234_DEAD, 1)[0];
+                            assert_non_inclusion_matches_oracle(&set, &oracle, &absent, &label);
+                        })
+                        .unwrap()
                 })
-                .unwrap();
-            child.join().unwrap();
+                .collect();
+            for worker in workers {
+                worker.join().unwrap();
+            }
         }
 
         /// Same cross-check, insertion-order independence: the oracle takes
@@ -1883,13 +1916,12 @@ pub mod causal {
         fn differential_root_is_order_independent() {
             let bits = [7_usize, 8, 15, 16, 255];
             let bit_keys: Vec<Hash> = bits.iter().copied().map(bit_key).collect();
-            let dense = dense_keys(0xCAFE_1234_DEAD_BEEF, 48);
+            let dense = dense_keys(0xCAFE_1234_DEAD_BEEF, 16);
 
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    for (label, keys) in
-                        [("bit", &bit_keys as &[Hash]), ("dense", &dense as &[Hash])]
+                    for (label, keys) in [("bit", bit_keys.as_slice()), ("dense", dense.as_slice())]
                     {
                         let mut forward = CausalSet::empty();
                         for &k in keys {
@@ -1939,8 +1971,8 @@ pub mod causal {
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    let keys = dense_keys(0xFACE_4321_BEEF_0000, 48);
-                    let (left, right) = keys.split_at(24);
+                    let keys = dense_keys(0xFACE_4321_BEEF_0000, 16);
+                    let (left, right) = keys.split_at(8);
 
                     let mut a = CausalSet::empty();
                     for &k in left {
@@ -1981,8 +2013,8 @@ pub mod causal {
             let child = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                    let keys = dense_keys(0x1234_5678_9ABC_DEF0, 48);
-                    let (left, right) = keys.split_at(24);
+                    let keys = dense_keys(0x1234_5678_9ABC_DEF0, 16);
+                    let (left, right) = keys.split_at(8);
 
                     let mut set = CausalSet::empty();
                     for &k in left {

@@ -15,7 +15,8 @@
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |
 //! | `signing`   | ✗       | Signature-verification traits (`SignatureVerifier` et al.), backend-agnostic. |
-//! | `signing-dalek` | ✗   | `ed25519-dalek`-backed `SignatureVerifier` implementation. |
+//! | `signing-core` | ✗    | Backend-agnostic signature verification (`SignatureVerifier` et al.). |
+//! | `signing-consensus` | ✗   | `ed25519-zebra`-backed (ZIP 215) `SignatureVerifier` implementation. |
 //!
 //! Canonical-JSON SHA-256 hashing is always compiled in — see [`reference_hash`]
 //! and [`verify_content_hash`].
@@ -34,6 +35,7 @@
 
 #[cfg(feature = "std")]
 extern crate std;
+
 // Copyright 2026 Shane Jaroch
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,18 +52,25 @@ extern crate std;
 
 extern crate alloc;
 
+pub use rezzy_json as json;
+pub use rezzy_json::json;
+
+mod base64_utils;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod auth;
 pub mod basespec;
+pub mod bitmap;
 pub mod cuckoo_verify;
 pub mod dense_index;
 pub mod hamt;
+pub mod incremental;
 pub mod merkle;
-pub mod reconcile;
+pub mod raw_event;
 pub mod resolve;
-#[cfg(any(feature = "signing", feature = "signing-dalek"))]
+#[cfg(feature = "signing-core")]
 pub mod signing;
 pub mod state;
 pub mod warnings;
@@ -69,8 +78,13 @@ pub mod warnings;
 pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
-pub use reconcile::*;
+pub use raw_event::*;
 pub use resolve::*;
+pub use rezzy_json::{
+    write_raw_canonical_filtered, write_string_value_filtered, Error as JsonError, FieldMask,
+    MemberSpan, Number as JsonNumber, Object as JsonObject, Token, Tokenizer, TokenizerError,
+    Value as JsonValue, ValueRef, ValueType as JsonValueType,
+};
 pub use state::*;
 pub use warnings::{Outcome, Warning};
 
@@ -79,8 +93,7 @@ pub use warnings::{Outcome, Warning};
 /// This is a library-level input so downstream callers can choose between
 /// timeline-oriented output and the raw resolved-state view without depending
 /// on the CLI binary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum OutputFormat {
     #[default]
     Events,
@@ -89,12 +102,48 @@ pub enum OutputFormat {
     Federation,
     Summary,
     Timeline,
-    #[cfg_attr(feature = "cli", value(alias = "resolve_state"))]
+    TimelineChronological,
     ResolveState,
+    Hamt,
+}
+
+#[cfg(feature = "cli")]
+impl clap::ValueEnum for OutputFormat {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Self::Events,
+            Self::Default,
+            Self::Deltas,
+            Self::Federation,
+            Self::Summary,
+            Self::Timeline,
+            Self::TimelineChronological,
+            Self::ResolveState,
+            Self::Hamt,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Events => clap::builder::PossibleValue::new("events"),
+            Self::Default => clap::builder::PossibleValue::new("default"),
+            Self::Deltas => clap::builder::PossibleValue::new("deltas"),
+            Self::Federation => clap::builder::PossibleValue::new("federation"),
+            Self::Summary => clap::builder::PossibleValue::new("summary"),
+            Self::Timeline => clap::builder::PossibleValue::new("timeline"),
+            Self::TimelineChronological => {
+                clap::builder::PossibleValue::new("timeline-chronological")
+            }
+            Self::ResolveState => {
+                clap::builder::PossibleValue::new("resolve-state").alias("resolve_state")
+            }
+            Self::Hamt => clap::builder::PossibleValue::new("hamt"),
+        })
+    }
 }
 
 /// One resolved-state entry in `(type, state_key, event_id)` form.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ResolvedStateEntry<Id = String, K = String> {
     pub event_type: EventType,
     pub state_key: K,

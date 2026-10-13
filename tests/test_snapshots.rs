@@ -11,30 +11,19 @@
 //! Run: `cargo test --features std --test snapshots`
 mod utils;
 
+use rezzy::JsonValue as Value;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
-use serde_json::Value;
 use std::collections::HashMap;
-
-fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
-    events
-        .iter()
-        .map(|e| (e.event_id.clone(), e.clone()))
-        .collect()
-}
+use utils::to_event_map;
 
 fn load_fixture(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
-    let val: Value = serde_json::from_str(&content).unwrap();
-    if val.is_array() {
-        serde_json::from_value(val).unwrap()
-    } else {
-        serde_json::from_value(val["events"].clone()).unwrap()
-    }
+    utils::parse_fixture_json(&content)
 }
 
 fn load_oracle(path: &str) -> HashMap<String, String> {
     let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
-    let val: Value = serde_json::from_str(&content).unwrap();
+    let val: Value = Value::parse(&content).unwrap();
     let state = val["resolved_state"].as_array().unwrap();
     let mut map = HashMap::new();
     for entry in state {
@@ -49,14 +38,14 @@ fn load_oracle(path: &str) -> HashMap<String, String> {
 fn resolve_and_get_state(fixture_path: &str, version: StateResVersion) -> HashMap<String, String> {
     let events = load_fixture(fixture_path);
     let map = to_event_map(&events);
-    let resolved = resolve_iterative_sort(
+    let resolved = resolve_iterative_sort(rezzy::IterativeInputs::new(
         &utils::build_unconflicted_state_test_helper(&map),
         &map,
         &map,
         version,
         &mut std::collections::HashMap::new(),
         &String::new(),
-    );
+    ));
     resolved
         .into_iter()
         .map(|((t, sk), eid)| (format!("{t}|{sk}"), eid))

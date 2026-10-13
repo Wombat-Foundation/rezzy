@@ -18,20 +18,24 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
-use crate::basespec::rezzy_types::{EventLike, KahnSortResult, SortPriority, StateResVersion};
+use crate::basespec::rezzy_types::{
+    EventContent, EventId, EventLike, EventProvider, KahnSortResult, SortPriority, StateResVersion,
+};
+use crate::state::at::SharedState;
 use crate::{FastMap, HashMap};
+use core::hash::BuildHasher;
 
 /// Dynamically fetches the sender's power level by inspecting the event's immediate `auth_events`.
 /// Recursive traversal of the auth chain is avoided to prevent bypassing immediate restrictions.
 pub(crate) fn get_power_level_from_auth_chain<Id, C, E>(
     event: &E,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    auth_context: &impl EventProvider<Id, C, E>,
     create_ev: Option<&E>,
     version: StateResVersion,
 ) -> i64
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     let mut pl_event = None;
@@ -76,170 +80,194 @@ where
     event.power_level()
 }
 
-/// Detailed Kahn's Topological Sort algorithm for event power resolution.
+/// Bundled inputs for Kahn's topological sort over event power resolution.
 ///
-/// This function performs a reverse topological sort on a set of events, placing
-/// descendants before their ancestors. It returns diagnostic details about any cycles
-/// if they are detected.
-///
-/// # Panics
-///
-/// Will panic if graph invariants are violated during topological sorting (specifically, if
-/// the in-degree map lacks an entry for a child event during the queue processing phase).
-#[allow(clippy::implicit_hasher)]
-pub fn lean_kahn_sort_with_cycle_diagnostics<Id, C, E, S1, Spl>(
-    events: &HashMap<Id, E, S1>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
-    create_ev: Option<&E>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
-) -> KahnSortResult<Id>
+/// Held as one value so the diagnostic and fallback entry points share a single
+/// bound set instead of re-declaring the same five parameters.
+pub struct KahnSortInputs<'a, Id, E, P, S1, Spl> {
+    /// Events to sort, keyed by id.
+    pub events: &'a HashMap<Id, E, S1>,
+    /// Provides `auth_events` lookups for power-level resolution.
+    pub sort_context: &'a P,
+    /// Optional creator event used for V12+ infinite-power semantics.
+    pub create_ev: Option<&'a E>,
+    /// Room version selecting the auth rules.
+    pub version: StateResVersion,
+    /// Scratch cache of per-event power levels, reused across sort passes.
+    pub pl_cache: &'a mut HashMap<Id, i64, Spl>,
+}
+
+impl<'a, Id, E, P, S1, Spl> KahnSortInputs<'a, Id, E, P, S1, Spl>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
-    Spl: core::hash::BuildHasher,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id, Content = C>,
+    Id: EventId,
+    S1: BuildHasher,
+    Spl: BuildHasher,
+    E: EventLike<Id = Id>,
+    P: EventProvider<Id, E::Content, E>,
 {
-    pl_cache.clear();
+    /// Bundles the inputs accepted by the sort entry points.
+    #[must_use]
+    pub fn new(
+        events: &'a HashMap<Id, E, S1>,
+        sort_context: &'a P,
+        create_ev: Option<&'a E>,
+        version: StateResVersion,
+        pl_cache: &'a mut HashMap<Id, i64, Spl>,
+    ) -> Self {
+        Self {
+            events,
+            sort_context,
+            create_ev,
+            version,
+            pl_cache,
+        }
+    }
 
-    let mut in_degree: FastMap<&Id, usize> = FastMap::default();
-    let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
+    /// Detailed Kahn's Topological Sort algorithm for event power resolution.
+    ///
+    /// This function performs a reverse topological sort on a set of events, placing
+    /// descendants before their ancestors. It returns diagnostic details about any cycles
+    /// if they are detected.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if graph invariants are violated during topological sorting (specifically, if
+    /// the in-degree map lacks an entry for a child event during the queue processing phase).
+    #[must_use]
+    #[allow(clippy::implicit_hasher)]
+    pub fn with_cycle_diagnostics(self) -> KahnSortResult<Id> {
+        let Self {
+            events,
+            sort_context,
+            create_ev,
+            version,
+            pl_cache,
+        } = self;
+        pl_cache.clear();
 
-    for (id, event) in events {
-        in_degree.entry(id).or_insert(0);
-        for auth in event.dag_edges(version) {
-            if let Some((auth_key, _)) = events.get_key_value(auth) {
-                // Topological sort: ancestors come BEFORE descendants.
-                // But we want a REVERSE topological sort: descendants BEFORE ancestors.
-                // So we add edges from ancestors to descendants.
-                adjacency.entry(auth_key).or_default().push(id);
-                let val = in_degree.entry(id).or_insert(0);
-                *val = val.saturating_add(1);
+        let mut in_degree: FastMap<&Id, usize> = FastMap::default();
+        let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
+
+        for (id, event) in events {
+            in_degree.entry(id).or_insert(0);
+            for auth in event.dag_edges(version) {
+                if let Some((auth_key, _)) = events.get_key_value(auth) {
+                    // Topological sort: ancestors come BEFORE descendants.
+                    // But we want a REVERSE topological sort: descendants BEFORE ancestors.
+                    // So we add edges from ancestors to descendants.
+                    adjacency.entry(auth_key).or_default().push(id);
+                    let val = in_degree.entry(id).or_insert(0);
+                    *val = val.saturating_add(1);
+                }
             }
         }
-    }
 
-    // Pre-compute power levels once per event to avoid redundant auth chain walks
-    // inside the hot BinaryHeap push path.
-    for (id, ev) in events {
-        if !pl_cache.contains_key(id) {
-            pl_cache.insert(
-                id.clone(),
-                get_power_level_from_auth_chain(ev, sort_context, create_ev, version),
-            );
-        }
-    }
-
-    let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
-    for (id, &degree) in &in_degree {
-        if degree == 0 {
-            if let Some(event) = events.get(*id) {
-                queue.push(SortPriority {
-                    event,
-                    power_level: pl_cache.get(*id).copied().unwrap_or(0),
-                    version,
-                });
+        // Pre-compute power levels once per event to avoid redundant auth chain walks
+        // inside the hot BinaryHeap push path.
+        for (id, ev) in events {
+            if !pl_cache.contains_key(id) {
+                pl_cache.insert(
+                    id.clone(),
+                    get_power_level_from_auth_chain(ev, sort_context, create_ev, version),
+                );
             }
         }
-    }
 
-    let mut result = Vec::with_capacity(events.len());
-    while let Some(priority) = queue.pop() {
-        let event = priority.event;
-
-        result.push(event.event_id().clone());
-        if let Some(neighbors) = adjacency.get(event.event_id()) {
-            for &next_id in neighbors {
-                let degree = in_degree.get_mut(next_id).unwrap();
-                *degree = degree.saturating_sub(1);
-                if *degree == 0 {
-                    let next_ev = events.get(next_id).unwrap();
+        let mut queue: BinaryHeap<SortPriority<'_, E>> = BinaryHeap::new();
+        for (id, &degree) in &in_degree {
+            if degree == 0 {
+                if let Some(event) = events.get(*id) {
                     queue.push(SortPriority {
-                        event: next_ev,
-                        power_level: pl_cache.get(next_id).copied().unwrap_or(0),
+                        event,
+                        power_level: pl_cache.get(*id).copied().unwrap_or(0),
                         version,
                     });
                 }
             }
         }
+
+        let mut result = Vec::with_capacity(events.len());
+        while let Some(priority) = queue.pop() {
+            let event = priority.event;
+
+            result.push(event.event_id().clone());
+            if let Some(neighbors) = adjacency.get(event.event_id()) {
+                for &next_id in neighbors {
+                    let degree = in_degree.get_mut(next_id).unwrap();
+                    *degree = degree.saturating_sub(1);
+                    if *degree == 0 {
+                        let next_ev = events.get(next_id).unwrap();
+                        queue.push(SortPriority {
+                            event: next_ev,
+                            power_level: pl_cache.get(next_id).copied().unwrap_or(0),
+                            version,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Detect cycles: events that never reached in-degree 0.
+        if result.len() != events.len() {
+            let sorted_set: crate::FastSet<&Id> = result.iter().collect();
+            let stuck: Vec<Id> = events
+                .keys()
+                .filter(|id| !sorted_set.contains(id))
+                .cloned()
+                .collect();
+            drop(sorted_set);
+            return KahnSortResult::CycleDetected {
+                sorted: result,
+                stuck,
+            };
+        }
+
+        KahnSortResult::Ok(result)
     }
 
-    // Detect cycles: events that never reached in-degree 0.
-    if result.len() != events.len() {
-        let sorted_set: crate::FastSet<&Id> = result.iter().collect();
-        let stuck: Vec<Id> = events
-            .keys()
-            .filter(|id| !sorted_set.contains(id))
-            .cloned()
-            .collect();
-        drop(sorted_set);
-        return KahnSortResult::CycleDetected {
-            sorted: result,
-            stuck,
-        };
-    }
-
-    KahnSortResult::Ok(result)
-}
-
-/// A simplified implementation of Kahn's Topological Sort.
-/// Backward-compatible wrapper that falls back to standard tie-breaking on cycles.
-///
-/// # Panics
-///
-/// Will panic if graph invariants are violated (specifically, if an event returned
-/// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
-// jscpd:ignore-start
-#[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn lean_kahn_sort<Id, C, E, S1, Spl>(
-    events: &HashMap<Id, E, S1>,
-    sort_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
-    create_ev: Option<&E>,
-    version: StateResVersion,
-    pl_cache: &mut HashMap<Id, i64, Spl>,
-) -> Vec<Id>
-where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
-    Spl: core::hash::BuildHasher,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
-    E: EventLike<Id = Id, Content = C>,
-{
-    // jscpd:ignore-end
-    match lean_kahn_sort_with_cycle_diagnostics(events, sort_context, create_ev, version, pl_cache)
-    {
-        KahnSortResult::Ok(sorted) => sorted,
-        KahnSortResult::CycleDetected {
-            mut sorted,
-            mut stuck,
-        } => {
-            #[cfg(feature = "std")]
-            std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
-            stuck.sort_by(|a, b| {
-                let ev_a = events.get(a).unwrap();
-                let ev_b = events.get(b).unwrap();
-                // Standard tie-breaking fallback (origin_server_ts ascending, then event_id ascending)
-                ev_a.origin_server_ts()
-                    .cmp(&ev_b.origin_server_ts())
-                    .then_with(|| a.cmp(b))
-            });
-            sorted.append(&mut stuck);
-            sorted
+    /// A simplified implementation of Kahn's Topological Sort.
+    /// Backward-compatible wrapper that falls back to standard tie-breaking on cycles.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if graph invariants are violated (specifically, if an event returned
+    /// in the cycle-breaking list of stuck nodes is missing from the input `events` map).
+    #[must_use]
+    #[allow(clippy::implicit_hasher)]
+    pub fn sort(self) -> Vec<Id> {
+        let events = self.events;
+        match self.with_cycle_diagnostics() {
+            KahnSortResult::Ok(sorted) => sorted,
+            KahnSortResult::CycleDetected {
+                mut sorted,
+                mut stuck,
+            } => {
+                #[cfg(feature = "std")]
+                std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
+                stuck.sort_by(|a, b| {
+                    let ev_a = events.get(a).unwrap();
+                    let ev_b = events.get(b).unwrap();
+                    // Standard tie-breaking fallback (origin_server_ts ascending, then event_id ascending)
+                    ev_a.origin_server_ts()
+                        .cmp(&ev_b.origin_server_ts())
+                        .then_with(|| a.cmp(b))
+                });
+                sorted.append(&mut stuck);
+                sorted
+            }
         }
     }
 }
 
 pub(crate) fn build_mainline<Id, C, E, K>(
-    resolved: &crate::state::at::SharedState<Id, K>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    resolved: &SharedState<Id, K>,
+    auth_context: &impl EventProvider<Id, C, E>,
     empty_key: &K,
     version: StateResVersion,
 ) -> Vec<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
     K: Ord + Clone,
 {
@@ -263,15 +291,15 @@ where
 /// already resolved, turning the mainline walk from `O(M × B)` (M = mainline
 /// length, B = auth chain breadth) to `O(M)` on cache hits.
 pub(crate) fn build_mainline_with_cache<Id, C, E, K>(
-    resolved: &crate::state::at::SharedState<Id, K>,
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    resolved: &SharedState<Id, K>,
+    auth_context: &impl EventProvider<Id, C, E>,
     pl_parent_cache: &mut FastMap<Id, Option<Id>>,
     empty_key: &K,
     version: StateResVersion,
 ) -> Vec<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
     K: Ord + Clone,
 {
@@ -326,20 +354,20 @@ where
     mainline
 }
 
-/// Precompute the closest mainline position for every target event reachable via
-/// `auth_events` using a stack-safe O(V+E) iterative DFS upward search.
+/// Precompute the closest mainline position for every target event, following
+/// only each event's `m.room.power_levels` auth edge, using a stack-safe O(V+E) iterative DFS upward search.
 ///
 /// This entirely avoids `O(N)` cloning of the DAG, and prevents stack overflow
 /// by using an explicit stack to simulate recursion while memoizing distances.
 pub(crate) fn compute_closest_mainline_positions<Id, C, E>(
     events: &mut [&E],
     mainline: &[Id],
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    auth_context: &impl EventProvider<Id, C, E>,
     version: StateResVersion,
 ) -> HashMap<Id, usize>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     let mut memo = HashMap::new();
@@ -367,11 +395,22 @@ where
             let mut all_children_done = true;
             let mut min_pos = usize::MAX;
 
+            // Spec (V2/V2.1): an event's mainline position is found by
+            // repeatedly following only its `m.room.power_levels` auth event
+            // (the first one listed), NOT every auth edge. Taking the min over
+            // all edges lets an event that cites a newer-epoch membership
+            // inherit that epoch. An event with no PL auth edge (create, early
+            // joins) has no mainline ancestor and clamps to `mainline.len()`.
             if let Some(node) = auth_context.get_event(top) {
-                for aid in node.dag_edges(version) {
+                let pl_edge = node.dag_edges(version).iter().find(|aid| {
+                    auth_context
+                        .get_event(aid)
+                        .is_some_and(|a| a.event_type().as_ref() == M_ROOM_POWER_LEVELS)
+                });
+                if let Some(aid) = pl_edge {
                     if let Some(&child_pos) = memo.get(aid) {
                         if child_pos != usize::MAX - 1 {
-                            min_pos = min_pos.min(child_pos);
+                            min_pos = child_pos;
                         }
                     } else {
                         all_children_done = false;
@@ -401,7 +440,7 @@ where
 ///
 /// The mainline is the chain of `m.room.power_levels` events reachable from
 /// the currently resolved PL state. Each event's "mainline position" is the
-/// closest PL event in its auth chain. The sort order is:
+/// closest mainline PL event reached via its power-levels auth link. The sort order is:
 ///
 /// 1. **Mainline position** descending (farther = worse = applied first).
 /// 2. **`origin_server_ts`** ascending (earlier = applied first, later wins).
@@ -412,11 +451,11 @@ where
 pub fn mainline_sort<Id, C, E>(
     events: &mut [&E],
     mainline: &[Id],
-    auth_context: &impl crate::basespec::rezzy_types::EventProvider<Id, C, E>,
+    auth_context: &impl EventProvider<Id, C, E>,
     version: StateResVersion,
 ) where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: Clone + crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: Clone + EventContent,
     E: EventLike<Id = Id, Content = C>,
 {
     // O(V+E) iterative DFS to find the closest mainline index for all non-power events
@@ -456,6 +495,26 @@ mod tests {
     use crate::basespec::rezzy_types::LeanEvent;
     use alloc::{string::String, vec::Vec};
 
+    fn pl_event(event_id: &str) -> LeanEvent<String> {
+        LeanEvent::<String> {
+            event_id: event_id.into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        }
+    }
+
+    /// Computes mainline positions for `ev` against `auth_ctx` with the
+    /// standard single-entry `pl0` mainline.
+    fn closest_position(
+        ev: &LeanEvent<String>,
+        auth_ctx: &HashMap<String, LeanEvent<String>>,
+    ) -> HashMap<String, usize> {
+        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mut events = alloc::vec![ev];
+        compute_closest_mainline_positions(&mut events, &mainline, auth_ctx, StateResVersion::V2)
+    }
+
     #[test]
     fn test_build_mainline_cycle_detection() {
         // A and B both claim to be m.room.power_levels, and auth against each other, forming a cycle.
@@ -477,7 +536,7 @@ mod tests {
         auth_context.insert(alloc::string::String::from("B"), b);
 
         // Initial state sets A as the power levels event.
-        let mut resolved = imbl::OrdMap::new();
+        let mut resolved = SharedState::new();
         resolved.insert(
             (
                 crate::basespec::event_types::EventType::from("m.room.power_levels"),
@@ -514,14 +573,7 @@ mod tests {
             ..Default::default()
         };
         let auth_ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
-        let mainline: Vec<String> = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(
-            &mut events,
-            &mainline,
-            &auth_ctx,
-            StateResVersion::V2,
-        );
+        let dist = closest_position(&ev, &auth_ctx);
         // No path found → clamped to mainline.len() = 1, not usize::MAX
         assert_eq!(dist["orphan"], 1);
     }
@@ -529,12 +581,7 @@ mod tests {
     /// An event whose auth chain leads directly to a mainline event gets that position.
     #[test]
     fn test_closest_mainline_direct_hit() {
-        let pl = LeanEvent::<String> {
-            event_id: "pl0".into(),
-            event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
-            ..Default::default()
-        };
+        let pl = pl_event("pl0");
         let ev = LeanEvent::<String> {
             event_id: "msg".into(),
             event_type: "m.room.message".into(),
@@ -545,26 +592,15 @@ mod tests {
         auth_ctx.insert("pl0".into(), pl);
         auth_ctx.insert("msg".into(), ev.clone());
 
-        let mainline = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&ev];
-        let dist = compute_closest_mainline_positions(
-            &mut events,
-            &mainline,
-            &auth_ctx,
-            StateResVersion::V2,
-        );
+        let dist = closest_position(&ev, &auth_ctx);
         assert_eq!(dist["msg"], 0);
     }
 
-    /// Deep auth chain: event → intermediate → mainline event.
+    /// Per spec only the `power_levels` auth edge is followed: leaf → mid → pl0
+    /// has no PL edge on `leaf`, so it has no mainline ancestor.
     #[test]
-    fn test_closest_mainline_deep_chain() {
-        let pl = LeanEvent::<String> {
-            event_id: "pl0".into(),
-            event_type: "m.room.power_levels".into(),
-            auth_events: alloc::vec![],
-            ..Default::default()
-        };
+    fn test_closest_mainline_ignores_non_pl_edges() {
+        let pl = pl_event("pl0");
         let mid = LeanEvent::<String> {
             event_id: "mid".into(),
             event_type: "m.room.member".into(),
@@ -582,11 +618,64 @@ mod tests {
         ctx.insert("mid".into(), mid);
         ctx.insert("leaf".into(), leaf.clone());
 
-        let mainline = alloc::vec!["pl0".into()];
-        let mut events = alloc::vec![&leaf];
+        let dist = closest_position(&leaf, &ctx);
+        assert_eq!(dist["leaf"], 1, "no PL edge => mainline.len()");
+    }
+
+    /// A PL auth id that is absent from `auth_context` is not recognised as a
+    /// PL edge, and must not make the event inherit a position via other edges.
+    #[test]
+    fn test_closest_mainline_missing_pl_event_clamps_to_len() {
+        let mainline: Vec<String> = alloc::vec!["pl0".into()];
+        let mem = LeanEvent::<String> {
+            event_id: "mem".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let ev = LeanEvent::<String> {
+            event_id: "ev".into(),
+            event_type: "m.room.topic".into(),
+            auth_events: alloc::vec!["pl_missing".into(), "mem".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        ctx.insert("mem".into(), mem);
+        ctx.insert("ev".into(), ev.clone());
+        let mut events = alloc::vec![&ev];
         let dist =
-            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2);
-        assert_eq!(dist["leaf"], 0);
+            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2_1);
+        assert_eq!(dist["ev"], 1);
+    }
+
+    /// An event citing old PL directly plus a member event whose own PL is
+    /// newer must take the OLD PL's position (the V2.1 state-reset scenario).
+    #[test]
+    fn test_closest_mainline_uses_own_pl_edge_not_min_over_edges() {
+        let mainline: Vec<String> = alloc::vec!["pl_new".into(), "pl_old".into()];
+        let pl_old = pl_event("pl_old");
+        let pl_new = pl_event("pl_new");
+        let mem_new = LeanEvent::<String> {
+            event_id: "mem_new".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["pl_new".into()],
+            ..Default::default()
+        };
+        let mem_old = LeanEvent::<String> {
+            event_id: "mem_old".into(),
+            event_type: "m.room.member".into(),
+            auth_events: alloc::vec!["pl_old".into(), "mem_new".into()],
+            ..Default::default()
+        };
+        let mut ctx: HashMap<String, LeanEvent<String>> = HashMap::new();
+        for e in [&pl_old, &pl_new, &mem_new, &mem_old] {
+            ctx.insert(e.event_id.clone(), e.clone());
+        }
+        let mut events = alloc::vec![&mem_old, &mem_new];
+        let dist =
+            compute_closest_mainline_positions(&mut events, &mainline, &ctx, StateResVersion::V2_1);
+        assert_eq!(dist["mem_new"], 0);
+        assert_eq!(dist["mem_old"], 1);
     }
 
     /// `mainline_sort` must order events by mainline position (descending),
@@ -736,7 +825,7 @@ mod tests {
         ctx.insert("PL1".into(), pl1);
         ctx.insert("PL2".into(), pl2);
 
-        let mut resolved = imbl::OrdMap::new();
+        let mut resolved = SharedState::new();
         resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
 
         // First call: populates cache for PL2 → Some(PL1), PL1 → Some(PL0), PL0 → None
@@ -789,20 +878,22 @@ mod tests {
 
         let mut cache = HashMap::new();
 
-        let first_sort = lean_kahn_sort(&events, &events, None, StateResVersion::V2, &mut cache);
+        let first_sort =
+            KahnSortInputs::new(&events, &events, None, StateResVersion::V2, &mut cache).sort();
         assert_eq!(first_sort[0], "$first");
 
         let mut mutated_events = events.clone();
         mutated_events.get_mut("$first").unwrap().power_level = 0;
         mutated_events.get_mut("$second").unwrap().power_level = 10;
 
-        let second_sort = lean_kahn_sort(
+        let second_sort = KahnSortInputs::new(
             &mutated_events,
             &mutated_events,
             None,
             StateResVersion::V2,
             &mut cache,
-        );
+        )
+        .sort();
         assert_eq!(second_sort[0], "$second");
     }
 
@@ -833,13 +924,14 @@ mod tests {
         events.insert(pl.event_id.clone(), pl_ref);
         events.insert(msg.event_id.clone(), msg_ref);
 
-        let sorted = lean_kahn_sort(
+        let sorted = KahnSortInputs::new(
             &events,
             &events,
             None::<&LeanEventRef<'_, String>>,
             StateResVersion::V2,
             &mut HashMap::new(),
-        );
+        )
+        .sort();
 
         assert_eq!(
             sorted,

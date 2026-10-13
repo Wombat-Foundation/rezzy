@@ -1,3 +1,25 @@
+
+##############################
+10/05/2026
+##############################
+
+Short answer: nowhere, by default. The information is already available programmatically — printing is the wrong channel.
+with_cycle_diagnostics() at src/resolve/sorting.rs:138 is public and returns KahnSortResult::{Ok, CycleDetected { sorted, stuck }}. So sort() at :237 gets stuck handed to it, prints it, then throws it away:
+KahnSortResult::CycleDetected { mut sorted, mut stuck } => {
+    #[cfg(feature = "std")]
+    std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
+    stuck.sort_by(|a, b| { /* deterministic tie-break */ });
+Any caller who cares can call with_cycle_diagnostics() and inspect stuck itself. The eprintln! is the library writing to a global side channel that nobody can capture, redirect, or silence — and since std is a default feature, it fires for every consumer. Delete it and the diagnostic is strictly more accessible, not less.
+For sorting.rs:317 there's no such escape hatch: build_mainline_with_cache returns a bare Vec<Id>, so the cycle is silently swallowed and the caller gets a truncated mainline. That's the one that deserves a real design answer, and it isn't a logging question — it's that the signature can't express the failure. A Result<Vec<Id>, …> or an out-param on the cycle would make it testable and let the caller decide.
+If you want the diagnostics to survive without a new dependency, the options are:
+1. Do nothing — the info is in KahnSortResult; for the mainline case, change the signature so it can be.
+2. core::fmt::Write into a caller-supplied buffer — no dep, no global state, but adds plumbing through every call site.
+3. Add log — idiomatic and cheap, but it's a new dependency for two messages, and it's a policy decision for a library that's otherwise dependency-light.
+I'd take (1). Which do you want, and do you want the Result change on build_mainline_with_cache too, or leave that for a separate pass?
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 ##############################
 09/04/2026
 ##############################

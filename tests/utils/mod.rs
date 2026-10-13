@@ -2,13 +2,30 @@ use rezzy::basespec::rezzy_types::LeanEvent;
 use rezzy::basespec::rezzy_types::RoomId;
 use std::collections::HashMap;
 
+#[allow(dead_code)] // Shared test helper; the oracle regeneration binary does not use it.
+pub fn parse_event_json(input: &str) -> Result<LeanEvent, String> {
+    let value = rezzy::JsonValue::parse(input).map_err(|error| error.to_string())?;
+    LeanEvent::from_value(&value, None)
+}
+
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn parse_events_value(value: &rezzy::JsonValue) -> Result<Vec<LeanEvent>, String> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| String::from("expected an array of events"))?;
+    values
+        .iter()
+        .map(|value| LeanEvent::from_value(value, None))
+        .collect()
+}
+
 /// Builds an initial unconflicted state map containing only the `m.room.create` event
 /// extracted from the provided `auth_context`. This avoids needing a massive `auth_context`
 /// fallback in the production state resolution algorithm just for test fixtures.
 pub fn build_unconflicted_state_test_helper(
     auth_context: &HashMap<String, LeanEvent>,
-) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
-    let mut unconflicted = imbl::OrdMap::new();
+) -> rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String> {
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
 
     // Find the create event in the auth_context
     let mut create_events = auth_context
@@ -36,6 +53,60 @@ pub fn build_unconflicted_state_test_helper(
     unconflicted
 }
 
+/// Builds an `event_id`-keyed `HashMap` from a slice of events.
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
+    events
+        .iter()
+        .map(|e| (e.event_id.clone(), e.clone()))
+        .collect()
+}
+
+/// Parses a fixture file's contents, accepting either a bare array of events or
+/// an object with an `"events"` array (the two shapes used across `res/`).
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn parse_fixture_json(content: &str) -> Vec<LeanEvent> {
+    let value = rezzy::JsonValue::parse(content).expect("Failed to parse fixture JSON");
+    if value.is_array() {
+        parse_events_value(&value).unwrap()
+    } else {
+        parse_events_value(&value["events"]).unwrap()
+    }
+}
+
+/// Parses a JSONL file into a vector of [`LeanEvent`]s, skipping blank lines.
+#[allow(dead_code)] // Shared test helper; not every including test target uses it.
+pub fn parse_jsonl_dag<P: AsRef<std::path::Path>>(path: P) -> Vec<LeanEvent> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path.as_ref())
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.as_ref().display()));
+    let reader = std::io::BufReader::new(file);
+    let mut events = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.unwrap();
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev = parse_event_json(&line).expect("Failed to parse event JSON line");
+        events.push(ev);
+    }
+    events
+}
+
+/// Collects the string elements of an optional JSON array field into a `Vec`.
+fn event_id_list(value: Option<&rezzy::JsonValue>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parses a multiline JSONL string into a vector of [`LeanEvent`]s.
 /// Blank lines and lines starting with "//" are ignored.
 pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
@@ -45,7 +116,7 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
         if line.is_empty() || line.starts_with("//") {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_str(line).expect("Invalid JSONL line");
+        let value = rezzy::JsonValue::parse(line).expect("Invalid JSONL line");
 
         let event_id = value
             .get("event_id")
@@ -66,20 +137,17 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
             .and_then(|v| v.as_str())
             .expect("JSONL event must contain string 'sender'")
             .to_string();
-        let content = value
-            .get("content")
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
+        let content = value.get("content").cloned().unwrap_or(rezzy::json!({}));
 
         let rejected = value
             .get("__rejected")
             .or_else(|| value.get("rejected"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(rezzy::JsonValue::as_bool)
             .unwrap_or(false);
         let soft_fail = value
             .get("__soft_fail")
             .or_else(|| value.get("soft_fail"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(rezzy::JsonValue::as_bool)
             .unwrap_or(false);
 
         events.push(LeanEvent {
@@ -90,39 +158,23 @@ pub fn parse_jsonl_events(input: &str) -> Vec<LeanEvent> {
             state_key,
             power_level: value
                 .get("power_level")
-                .and_then(serde_json::Value::as_i64)
+                .and_then(rezzy::JsonValue::as_i64)
                 .unwrap_or(0),
             origin_server_ts: value
                 .get("origin_server_ts")
-                .and_then(serde_json::Value::as_u64)
+                .and_then(rezzy::JsonValue::as_u64)
                 .unwrap_or(0),
             sender,
             content,
-            prev_events: value
-                .get("prev_events")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            auth_events: value
-                .get("auth_events")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            prev_events: event_id_list(value.get("prev_events")),
+            auth_events: event_id_list(value.get("auth_events")),
             depth: value
                 .get("depth")
-                .and_then(serde_json::Value::as_u64)
+                .and_then(rezzy::JsonValue::as_u64)
                 .unwrap_or(0),
             room_id: value
                 .get("room_id")
-                .and_then(serde_json::Value::as_str)
+                .and_then(rezzy::JsonValue::as_str)
                 .map(RoomId::from),
         });
     }
@@ -138,57 +190,4 @@ pub fn load_jsonl_fixture(path: &str) -> HashMap<String, LeanEvent> {
         .into_iter()
         .map(|ev| (ev.event_id.clone(), ev))
         .collect()
-}
-
-/// A debug utility: computes a SHA-256 content hash of a raw JSON event string
-/// after stripping `event_id`, `unsigned`, and `signatures`. This is an
-/// approximation of the Matrix V3+ reference hash — it does NOT perform the
-/// full spec-mandated redaction step, so the output may differ from a real
-/// event ID for events with non-allowed content keys.
-/// TODO: Full redaction compliance across room versions.
-#[allow(dead_code)]
-pub fn print_canonical_hash(json_str: &str) {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use sha2::{Digest, Sha256};
-
-    fn sort_keys(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(map) => {
-                let mut sorted = std::collections::BTreeMap::new();
-                for (k, mut v) in core::mem::take(map) {
-                    sort_keys(&mut v);
-                    sorted.insert(k, v);
-                }
-                for (k, v) in sorted {
-                    map.insert(k, v);
-                }
-            }
-            serde_json::Value::Array(arr) => {
-                for v in arr {
-                    sort_keys(v);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut value: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
-    if let Some(obj) = value.as_object_mut() {
-        obj.remove("event_id");
-        obj.remove("unsigned");
-        obj.remove("signatures");
-    }
-
-    sort_keys(&mut value);
-    let canonical = serde_json::to_string(&value).unwrap();
-
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    let hash = hasher.finalize();
-
-    std::println!("=== CANONICAL HASH DEBUG ===");
-    std::println!("Canonical JSON: {canonical}");
-    let encoded_hash = URL_SAFE_NO_PAD.encode(hash);
-    std::println!("Computed Event ID: ${encoded_hash}");
-    std::println!("============================");
 }

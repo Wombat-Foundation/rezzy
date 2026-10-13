@@ -14,33 +14,47 @@
 
 //! Core data types for Matrix state resolution.
 
+use crate::json::Value;
+use crate::{FastSet, HashMap};
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
-use serde::Deserialize;
-use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::basespec::event_types::{MAX_POWER_LEVEL_JSON, MAX_SAFE_JSON_INTEGER, M_ROOM_REDACTION};
 
-/// Trait alias for types that can serve as event identifiers.
+type SyntacticWarnings<Id> = Vec<crate::warnings::Warning<Id>>;
+
+#[derive(Clone, Copy)]
+enum MxidField {
+    Sender,
+    Creator,
+}
+
+impl MxidField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sender => "sender",
+            Self::Creator => "creator",
+        }
+    }
+}
+
+/// Marker trait for types that can serve as event identifiers.
 ///
 /// Any type that is `Clone + Eq + Hash + Ord + Debug + Display` automatically
-/// implements this trait via a blanket impl. In practice, this is either
-/// `String` (for human-readable event IDs like `$abc123:example.com`) or
-/// `u32`/`u64` (for integer-interned short IDs used by homeservers).
-///
-/// # `Display` contract
-///
-/// The [`Display`](core::fmt::Display) implementation **must** output the
-/// canonical wire-format representation of the event ID. This is relied upon
-/// by `LtHash::seed()` in [`crate::state::lthash`] for
-/// content-addressed state hashing — if two implementations produce different
-/// `Display` output for the same logical event ID, state hashes will diverge.
+/// implements this trait via the blanket implementation. Common choices are
+/// `String` for human-readable event IDs and integer IDs for interned storage.
+/// The `Display` implementation must produce the stable canonical event ID;
+/// the core crate uses that representation when computing content-addressed
+/// state hashes.
 pub trait EventId:
     Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display
 {
 }
+
 impl<T: Clone + Eq + core::hash::Hash + Ord + core::fmt::Debug + core::fmt::Display> EventId for T {}
 
 /// Trait alias for types that can serve as the "key" half of a Matrix state
@@ -104,7 +118,6 @@ impl<T: Clone + Eq + core::hash::Hash + Ord + AsRef<str>> StateKey for T {}
 /// **Key invariant:** `users` in `m.room.power_levels` is preserved on redaction
 /// in ALL versions. Redaction alone cannot cause the PL wipeout vulnerability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[allow(non_camel_case_types)]
 pub enum StateResVersion {
     /// State Resolution V1 (room version 1).
@@ -121,6 +134,42 @@ pub enum StateResVersion {
     V3,
 }
 
+#[cfg(feature = "cli")]
+impl clap::ValueEnum for StateResVersion {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            Self::V1,
+            Self::V2,
+            Self::V2_1,
+            Self::V2_1_1,
+            Self::V2_2,
+            Self::V3,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::V1 => clap::builder::PossibleValue::new("v1"),
+            Self::V2 => clap::builder::PossibleValue::new("v2"),
+            Self::V2_1 => clap::builder::PossibleValue::new("v2_1"),
+            Self::V2_1_1 => clap::builder::PossibleValue::new("v2_1_1"),
+            Self::V2_2 => clap::builder::PossibleValue::new("v2_2"),
+            Self::V3 => clap::builder::PossibleValue::new("v3"),
+        })
+    }
+}
+
+impl From<StateResVersion> for crate::json::Value {
+    fn from(value: StateResVersion) -> Self {
+        Self::String(alloc::format!("{value:?}"))
+    }
+}
+impl From<&StateResVersion> for crate::json::Value {
+    fn from(value: &StateResVersion) -> Self {
+        Self::String(alloc::format!("{value:?}"))
+    }
+}
+
 impl StateResVersion {
     /// Map a Matrix room version string (e.g. `"10"`, `"12"`) to the corresponding
     /// state resolution algorithm version.
@@ -134,7 +183,7 @@ impl StateResVersion {
         let format = RoomVersionFormat::parse(ver)?;
         Some(match format {
             RoomVersionFormat::Numeric(1) => Self::V1,
-            RoomVersionFormat::Numeric(2..=11) => Self::V2,
+            RoomVersionFormat::Numeric(2..=11) | RoomVersionFormat::Msc3389 => Self::V2,
             RoomVersionFormat::Numeric(12) if ver == "12.1" => Self::V2_1_1,
             RoomVersionFormat::Numeric(12) => Self::V2_1,
             RoomVersionFormat::Msc4242 => Self::V2_2,
@@ -253,7 +302,7 @@ mod state_res_version_gate_tests {
 /// distinguish v6+ strict-number rules from v2–v5 legacy behavior. This enum
 /// retains either the numeric major version or an explicit named format,
 /// providing a single authoritative capability layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 enum RoomVersionFormat {
     /// A known numeric room version: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     /// or 12 (including the supported "12.1" variant).
@@ -261,6 +310,10 @@ enum RoomVersionFormat {
     /// The MSC4242 experimental room version (`"org.matrix.msc4242.12"`),
     /// which uses State DAGs and has its own event format.
     Msc4242,
+    /// The MSC3389 experimental room version (`"org.matrix.msc3389.10"`):
+    /// room v10 plus relation-preserving redaction (`m.relates_to.rel_type`
+    /// and `m.relates_to.event_id` survive on every event type).
+    Msc3389,
     /// Rezzy's experimental certified-causal-governance room version.
     NutraCdo,
 }
@@ -286,6 +339,7 @@ impl RoomVersionFormat {
             "11" => Some(Self::Numeric(11)),
             "12" | "12.1" => Some(Self::Numeric(12)),
             "org.matrix.msc4242.12" => Some(Self::Msc4242),
+            "org.matrix.msc3389.10" => Some(Self::Msc3389),
             "tk.nutra.cdo.12" => Some(Self::NutraCdo),
             _ => None,
         }
@@ -299,7 +353,8 @@ impl RoomVersionFormat {
     /// (a v12-derived format — see `redaction_preserved_keys`).
     #[must_use]
     const fn requires_strict_canonical_numbers(self) -> bool {
-        matches!(self, Self::Numeric(v) if v >= 6) || matches!(self, Self::Msc4242 | Self::NutraCdo)
+        matches!(self, Self::Numeric(v) if v >= 6)
+            || matches!(self, Self::Msc4242 | Self::Msc3389 | Self::NutraCdo)
     }
 
     /// Returns `true` for room versions that use v11 redaction rules (v11+),
@@ -383,6 +438,7 @@ mod room_version_format_tests {
             ("12", RoomVersionFormat::Numeric(12)),
             ("12.1", RoomVersionFormat::Numeric(12)),
             ("org.matrix.msc4242.12", RoomVersionFormat::Msc4242),
+            ("org.matrix.msc3389.10", RoomVersionFormat::Msc3389),
         ];
         for (input, expected) in cases {
             assert_eq!(
@@ -479,7 +535,7 @@ mod canonicalization_error_tests {
 
     #[test]
     fn validate_rejects_large_u64() {
-        let n = serde_json::Number::from(u64::MAX);
+        let n = crate::json::Number::from(u64::MAX);
         assert!(n.as_i64().is_none(), "u64::MAX must not fit in i64");
         assert_eq!(
             validate_canonical_number(&n),
@@ -516,8 +572,13 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
     let Some(format) = RoomVersionFormat::parse(room_version) else {
         return RedactionRule::None;
     };
+    if format == RoomVersionFormat::Msc3389 {
+        return msc3389_redaction_rule(event_type);
+    }
     let ver_num: u32 = match format {
         RoomVersionFormat::Numeric(n) => n,
+        // Handled by the early return above; v10 is the nearest numeric rule set.
+        RoomVersionFormat::Msc3389 => 10,
         // MSC4242 inherits v11's redaction rules verbatim.
         RoomVersionFormat::Msc4242 | RoomVersionFormat::NutraCdo => 11,
     };
@@ -596,6 +657,54 @@ pub fn redaction_preserved_keys(event_type: &str, room_version: &str) -> Redacti
     }
 }
 
+/// Redaction rules for `org.matrix.msc3389.10`: exactly room v10's per-type
+/// tables, each extended with `m.relates_to.rel_type` and
+/// `m.relates_to.event_id` (MSC3389). Spelled out as static slices because
+/// [`RedactionRule::Keys`] borrows `'static` data.
+fn msc3389_redaction_rule(event_type: &str) -> RedactionRule {
+    use crate::basespec::event_types::{
+        M_ROOM_CREATE, M_ROOM_HISTORY_VISIBILITY, M_ROOM_JOIN_RULES, M_ROOM_MEMBER,
+        M_ROOM_POWER_LEVELS,
+    };
+    match event_type {
+        M_ROOM_CREATE => {
+            RedactionRule::Keys(&["creator", "m.relates_to.rel_type", "m.relates_to.event_id"])
+        }
+        M_ROOM_MEMBER => RedactionRule::Keys(&[
+            "membership",
+            "join_authorised_via_users_server",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        M_ROOM_POWER_LEVELS => RedactionRule::Keys(&[
+            "ban",
+            "events",
+            "events_default",
+            "kick",
+            "redact",
+            "state_default",
+            "users",
+            "users_default",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        M_ROOM_JOIN_RULES => RedactionRule::Keys(&[
+            "join_rule",
+            "allow",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        M_ROOM_HISTORY_VISIBILITY => RedactionRule::Keys(&[
+            "history_visibility",
+            "m.relates_to.rel_type",
+            "m.relates_to.event_id",
+        ]),
+        // Every other type (including aliases and redactions) preserves no
+        // content in v10; the relation keys are the only survivors.
+        _ => RedactionRule::Keys(&["m.relates_to.rel_type", "m.relates_to.event_id"]),
+    }
+}
+
 /// Splits `content` into MSC4511's `redacted_content` (the fields this room
 /// version's redaction algorithm preserves) and `redactable_content` (every
 /// remaining field, i.e. what redaction strips), for the given event type and
@@ -619,19 +728,19 @@ pub fn split_redaction_content(
 /// recursing one level for the `third_party_invite`-shaped nested-path case.
 fn redactable_content_remainder(content: &Value, redacted: &Value) -> Value {
     let Value::Object(content_obj) = content else {
-        return Value::Object(serde_json::Map::default());
+        return Value::Object(crate::json::Object::default());
     };
-    let empty = serde_json::Map::default();
+    let empty = crate::json::Object::default();
     let redacted_obj = match redacted {
         Value::Object(m) => m,
         _ => &empty,
     };
-    let mut out = serde_json::Map::new();
+    let mut out = crate::json::Object::new();
     for (key, value) in content_obj {
         match (redacted_obj.get(key), value) {
             (Some(preserved), _) if preserved == value => {}
             (Some(Value::Object(preserved_inner)), Value::Object(full_inner)) => {
-                let mut remainder = serde_json::Map::new();
+                let mut remainder = crate::json::Object::new();
                 for (inner_key, inner_value) in full_inner {
                     if preserved_inner.get(inner_key) != Some(inner_value) {
                         remainder.insert(inner_key.clone(), inner_value.clone());
@@ -656,12 +765,12 @@ fn redactable_content_remainder(content: &Value, redacted: &Value) -> Value {
 /// an empty object.
 fn redact_content(content: &Value, rule: RedactionRule) -> Value {
     match rule {
-        RedactionRule::None => Value::Object(serde_json::Map::default()),
+        RedactionRule::None => Value::Object(crate::json::Object::default()),
         RedactionRule::All => content.clone(),
         RedactionRule::Keys(paths) => {
-            let mut out = serde_json::Map::new();
+            let mut out = crate::json::Object::new();
             for path in paths {
-                if let Some((top, rest)) = path.split_once('.') {
+                if let Some((top, rest)) = path.rsplit_once('.') {
                     if let Some(Value::Object(inner)) = content.get(top) {
                         if let Some(v) = inner.get(rest) {
                             // Accumulate into the existing parent so paths sharing
@@ -669,13 +778,13 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
                             if let Some(Value::Object(parent)) = out.get_mut(top) {
                                 parent.insert(rest.to_string(), v.clone());
                             } else {
-                                let mut parent = serde_json::Map::new();
+                                let mut parent = crate::json::Object::new();
                                 parent.insert(rest.to_string(), v.clone());
                                 out.insert(top.to_string(), Value::Object(parent));
                             }
                         }
                     }
-                } else if let Some(v) = content.get(*path) {
+                } else if let Some(v) = content.get(path) {
                     out.insert((*path).to_string(), v.clone());
                 }
             }
@@ -692,29 +801,28 @@ fn redact_content(content: &Value, rule: RedactionRule) -> Value {
 /// them. v12+ (MSC4291) drops `room_id` on `m.room.create` (the room ID is
 /// derived from the event ID, so the create carries none).
 ///
-/// The unstable-version deviations are intentionally not modeled — rezzy
-/// handles the stable v1-v12 set, and their redaction identifiers
-/// (`org.matrix.msc3389.10` preserving `m.relates_to.{rel_type,event_id}`)
-/// are unrecognized and fail closed. `org.matrix.msc4242.12`'s swap of
+/// `org.matrix.msc3389.10`'s relation-preserving redaction is a content-level
+/// rule, modeled in [`redaction_preserved_keys`]; it needs no top-level change
+/// beyond v10's. `org.matrix.msc4242.12`'s swap of
 /// `auth_events` for `prev_state_events` is modeled in `redact_top_level`:
 /// the swapped-in field is preserved alongside `auth_events`.
 #[must_use]
-fn redact_top_level(value: &Value, room_version: &str) -> serde_json::Map<String, Value> {
+fn redact_top_level(value: &Value, room_version: &str) -> crate::json::Object {
     use crate::basespec::event_types::{
         FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_HASHES,
         FIELD_ORIGIN_SERVER_TS, FIELD_PREV_EVENTS, FIELD_SENDER, FIELD_SIGNATURES, FIELD_STATE_KEY,
         FIELD_TYPE,
     };
     let Value::Object(obj) = value else {
-        return serde_json::Map::new();
+        return crate::json::Object::new();
     };
     // MSC4291 (room IDs as hashes, room v12+): the create event carries no
     // room_id, so it must not be preserved on redaction.
     let is_v12_create = obj.get(FIELD_TYPE).and_then(Value::as_str)
         == Some(crate::basespec::event_types::M_ROOM_CREATE)
         && room_version_is_v12_or_later(room_version);
-    let mut out = serde_json::Map::new();
-    let take = |key: &str, out: &mut serde_json::Map<String, Value>| {
+    let mut out = crate::json::Object::new();
+    let take = |key: &str, out: &mut crate::json::Object| {
         if let Some(v) = obj.get(key) {
             out.insert(String::from(key), v.clone());
         }
@@ -788,7 +896,7 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
     let content = out
         .get(crate::basespec::event_types::FIELD_CONTENT)
         .map_or_else(
-            || Value::Object(serde_json::Map::default()),
+            || Value::Object(crate::json::Object::default()),
             |c| redact_content(c, rule),
         );
     out.insert(
@@ -798,6 +906,11 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
     Value::Object(out)
 }
 
+/// Returns whether `room_version` is a recognised room version.
+fn is_supported_room_version(room_version: &str) -> bool {
+    RoomVersionFormat::parse(room_version).is_some()
+}
+
 /// Computes the Matrix **reference hash** of a PDU `Value` — the event ID for
 /// room versions 4+: SHA-256 of the canonical JSON of the *redacted* event
 /// (with `signatures`/`unsigned`/legacy `age_ts` removed; `hashes` is
@@ -805,9 +918,9 @@ pub fn redact_json(value: &Value, room_version: &str) -> Value {
 /// v3, URL-safe for v4+; no `$` prefix).
 ///
 /// Canonicalization is tolerant of out-of-range integers (like Synapse's
-/// `relaxed` mode): `serde_json::to_string` serializes whatever numbers are
+/// `relaxed` mode): the JSON writer serializes whatever numbers are
 /// present rather than rejecting them. Keys are already lexicographically
-/// sorted because `serde_json::Map` is a `BTreeMap`.
+/// sorted because `crate::json::Object` is a `BTreeMap`.
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
@@ -818,9 +931,6 @@ pub fn reference_hash(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    use base64::Engine as _;
-    use sha2::{Digest, Sha256};
-
     let major = room_version
         .split('.')
         .next()
@@ -843,7 +953,10 @@ pub fn reference_hash(
         write_redacted_canonical(&mut w, value, room_version)
             .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
     }
-    Ok(hash_base64_engine(room_version).encode(hasher.finalize()))
+    Ok(crate::base64_utils::encode(
+        &hash_base64_engine(room_version),
+        &hasher.finalize(),
+    ))
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
@@ -859,10 +972,7 @@ pub fn compute_content_hash(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    use base64::Engine as _;
-    use sha2::{Digest, Sha256};
-
-    if RoomVersionFormat::parse(room_version).is_none() {
+    if !is_supported_room_version(room_version) {
         return Err(alloc::format!(
             "no content hash for unsupported room version {room_version}: its canonical JSON rules are undefined"
         ));
@@ -875,7 +985,10 @@ pub fn compute_content_hash(
         write_content_hash_canonical(&mut w, value, strict_numbers)
             .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
     }
-    Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(hasher.finalize()))
+    Ok(crate::base64_utils::encode(
+        &base64::engine::general_purpose::STANDARD_NO_PAD,
+        &hasher.finalize(),
+    ))
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
@@ -921,7 +1034,7 @@ pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), allo
 /// # Panics
 /// Panics if strict-number validation fails (fractional numbers in v6+
 /// rooms) or if the canonical JSON cannot be serialized. The latter is
-/// unreachable for a `serde_json::Value` (a safe `Value` cannot hold a
+/// unreachable for a `crate::json::Value` (a safe `Value` cannot hold a
 /// non-finite number); the former is a caller invariant.
 #[must_use]
 pub fn canonical_redacted_json(value: &Value, room_version: &str) -> alloc::string::String {
@@ -944,7 +1057,7 @@ pub fn try_canonical_redacted_json(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
-    if RoomVersionFormat::parse(room_version).is_none() {
+    if !is_supported_room_version(room_version) {
         return Err(alloc::format!(
             "no canonical redacted JSON for unsupported room version {room_version}"
         ));
@@ -958,16 +1071,16 @@ pub fn try_canonical_redacted_json(
 // ---------------------------------------------------------------------------
 // Zero-copy canonical JSON writer.
 //
-// `serde_json::Map` is a `BTreeMap`, so object keys are already sorted. This
+// `crate::json::Object` is a `BTreeMap`, so object keys are already sorted. This
 // writer emits canonical JSON by descending the tree directly into a
 // `core::fmt::Write` sink — skipping the intermediate `Value` clone + re-sort
-// that `redact_json`/`value.clone()` + `serde_json::to_string` would pay, and
+// that `redact_json`/`value.clone()` plus a second serialization pass would pay, and
 // feeding bytes straight into the hasher or a `String`.
 //
-// Byte-parity with `serde_json` is load-bearing (hashes/signatures cover these
+// Byte-parity with the reference JSON implementation is load-bearing (hashes/signatures cover these
 // exact bytes), so it is pinned by `canonical_parity_tests` and every
 // reference-hash vector. Number formatting is delegated to
-// `serde_json::Number::to_string` (identical to what serde_json emits, incl.
+// `crate::json::Number::to_string` (including
 // ryu float formatting), which removes any float/`-0`/exponent divergence risk.
 // ---------------------------------------------------------------------------
 
@@ -982,10 +1095,10 @@ impl core::fmt::Write for ShaWriter<'_> {
     }
 }
 
-/// Writes a JSON string with `serde_json`-identical escaping.
+/// Writes a JSON string with reference-compatible escaping.
 ///
 /// Non-special runs are emitted in bulk (one `write_str` per escaped char
-/// boundary) instead of per character, matching `serde_json`'s fragment
+/// boundary) instead of per character, matching the reference writer's fragment
 /// batching.
 fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Result {
     out.write_str("\"")?;
@@ -1028,7 +1141,7 @@ fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Re
 /// and out-of-range (beyond ±(2^53 − 1)) numbers.
 ///
 /// For legacy room versions (pre-v6) no validation is performed.
-fn validate_canonical_number(n: &serde_json::Number) -> Result<(), CanonicalizationError> {
+fn validate_canonical_number(n: &crate::json::Number) -> Result<(), CanonicalizationError> {
     let s = n.to_string();
     // Fractional or exponent form.
     if s.contains('.') || s.contains('e') || s.contains('E') {
@@ -1036,7 +1149,7 @@ fn validate_canonical_number(n: &serde_json::Number) -> Result<(), Canonicalizat
     }
     // Range check: must fit within ±(2^53 − 1).
     if let Some(v) = n.as_i64() {
-        if !(-(1_i64 << 53) + 1..=(1_i64 << 53) - 1).contains(&v) {
+        if v.unsigned_abs() > (1_u64 << 53) - 1 {
             return Err(CanonicalizationError::OutOfRangeNumber);
         }
     } else if let Some(v) = n.as_u64() {
@@ -1270,9 +1383,9 @@ pub fn apply_redaction<Id: Clone + core::fmt::Display + 'static, K: Clone>(
 ) -> Option<LeanEvent<Id, Value, K>> {
     // Compares against a borrowed wire representation of target.event_id
     // instead of allocating a fresh String via to_string() on every call.
-    if !redaction
+    if redaction
         .get_redacts()
-        .is_some_and(|target_id| target_id == crate::auth::event_id_to_wire_cow(&target.event_id))
+        .is_none_or(|target_id| target_id != crate::auth::event_id_to_wire_cow(&target.event_id))
     {
         return None;
     }
@@ -1324,7 +1437,10 @@ pub fn ingest_events(
 ) -> Result<Vec<LeanEvent<String, Value, String>>, alloc::string::String> {
     let derives_event_ids = RoomVersionFormat::parse(room_version)
         .is_some_and(RoomVersionFormat::uses_reference_hash_event_ids);
+    let shared_room_id = room_id.map(RoomId::new);
+    let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
     for pdu in pdus {
+        validate_raw_pdu_shape(pdu).map_err(|e| alloc::format!("invalid PDU: {e}"))?;
         if derives_event_ids
             && pdu
                 .get(crate::basespec::event_types::FIELD_EVENT_ID)
@@ -1334,78 +1450,44 @@ pub fn ingest_events(
                 "event_id must be omitted from federation PDUs in room versions v3 and later",
             ));
         }
+        let mut event = LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.clone())?;
+        event
+            .validate_syntactic(room_version)
+            .map_err(|e| alloc::format!("invalid PDU: {e}"))?;
         if pdu
             .get(crate::basespec::event_types::FIELD_HASHES)
             .is_some()
         {
             verify_content_hash(pdu, room_version)?;
         }
-    }
-
-    let shared_room_id = room_id.map(RoomId::new);
-    let mut events: Vec<LeanEvent<String, Value, String>> = Vec::with_capacity(pdus.len());
-    for pdu in pdus {
-        // TODO: `?` here is reachable (malformed PDU) — candidate to soften
-        // into a `Warning` + skip rather than abort the whole batch.
-        let mut event =
-            LeanEvent::from_value(pdu, Some(room_version)).map_err(|e| e.to_string())?;
         event.room_id.clone_from(&shared_room_id);
+        // TODO: `?` is reachable above for malformed PDU; callers currently
+        // reject the whole batch rather than softening this to a warning.
         events.push(event);
     }
 
     Ok(events)
 }
 
-impl serde::Serialize for StateResVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let s = match self {
-            StateResVersion::V1 => "V1",
-            StateResVersion::V2 => "V2",
-            StateResVersion::V2_1 => "V2_1",
-            StateResVersion::V2_1_1 => "V2_1_1",
-            StateResVersion::V2_2 => "V2_2",
-            StateResVersion::V3 => "V3",
-        };
-        serializer.serialize_str(s)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for StateResVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct StateResVersionVisitor;
-
-        impl serde::de::Visitor<'_> for StateResVersionVisitor {
-            type Value = StateResVersion;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter.write_str("a StateResVersion string")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                match value {
-                    "V1" => Ok(StateResVersion::V1),
-                    "V2" => Ok(StateResVersion::V2),
-                    "V2_1" => Ok(StateResVersion::V2_1),
-                    "V2_1_1" => Ok(StateResVersion::V2_1_1),
-                    "V2_2" => Ok(StateResVersion::V2_2),
-                    "V3" => Ok(StateResVersion::V3),
-                    _ => Err(E::custom(alloc::format!("unknown variant `{value}`"))),
-                }
-            }
+/// Validates fields required before a raw PDU may be parsed.
+pub(crate) fn validate_raw_pdu_shape(value: &Value) -> Result<(), alloc::string::String> {
+    for field in ["type", "sender", "content", "origin_server_ts"] {
+        if value.get(field).is_none() {
+            return Err(alloc::format!("missing required PDU field: {field}"));
         }
-
-        deserializer.deserialize_str(StateResVersionVisitor)
     }
+    if value.get("type").and_then(Value::as_str).is_none()
+        || value.get("sender").and_then(Value::as_str).is_none()
+    {
+        return Err(alloc::string::String::from(
+            "PDU type and sender must be strings",
+        ));
+    }
+    Ok(())
 }
 
 /// Result of Kahn's topological sort with diagnostic information.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum KahnSortResult<Id = String> {
     /// All events were successfully sorted.
     Ok(Vec<Id>),
@@ -1556,7 +1638,7 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 /// struct MyEvent {
 ///     event_id: String,
 ///     sender: String,
-///     parsed_content: serde_json::Value,
+///     parsed_content: rezzy::JsonValue,
 /// }
 ///
 /// impl DagNode for MyEvent {
@@ -1568,17 +1650,17 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 /// }
 ///
 /// impl EventLike for MyEvent {
-///     type Content = serde_json::Value;
+///     type Content = rezzy::JsonValue;
 ///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
 ///     fn sender(&self) -> &str { &self.sender }
 ///     fn state_key(&self) -> Option<&str> { None }
 ///     fn power_level(&self) -> i64 { 0 }
 ///     fn origin_server_ts(&self) -> u64 { 0 }
-///     fn content(&self) -> &serde_json::Value { &self.parsed_content }
+///     fn content(&self) -> &rezzy::JsonValue { &self.parsed_content }
 /// }
 /// ```
 pub trait EventLike: DagNode {
-    /// The content type (e.g. `serde_json::Value` or a typed struct).
+    /// The content type (e.g. [`crate::json::Value`] or a typed struct).
     type Content: EventContent;
 
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
@@ -1753,7 +1835,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///
 /// Implement this on your native PDU type (~9 one-liner field accessors),
 /// then wrap with [`ParsedEvent`] to get [`DagNode`] + [`EventLike`] for free.
-/// Content is parsed once from raw JSON at [`ParsedEvent::new`] time; all
+/// Content is parsed once from raw JSON at [`ParsedEvent::try_new`] time; all
 /// 20 content accessors (`get_membership`, `get_join_rule`, etc.) are
 /// inherited automatically.
 ///
@@ -1806,7 +1888,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///     rejected: false,
 ///     soft_fail: false,
 /// };
-/// let _event = ParsedEvent::new(&pdu);
+/// let _event = ParsedEvent::try_new(&pdu).expect("content is valid JSON");
 /// ```
 pub trait RawEvent {
     /// The event ID type (e.g. `OwnedEventId`, `String`).
@@ -1858,45 +1940,51 @@ pub trait RawEvent {
 }
 
 /// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
-/// `serde_json::Value` content, providing [`DagNode`] + [`EventLike`]
+/// `crate::json::Value` content, providing [`DagNode`] + [`EventLike`]
 /// for free.
 ///
 /// Content is parsed once at construction from [`RawEvent::raw_content_json`].
+///
+/// # Migration from `ParsedEvent::new`
+///
+/// The infallible `ParsedEvent::new` constructor was removed. It mapped any
+/// content parse failure onto `Value::Null`, which is indistinguishable from a
+/// legitimately empty/absent content object, so malformed content was silently
+/// dropped instead of reported. Replace `ParsedEvent::new(&event)` with
+/// [`ParsedEvent::try_new`] and handle the error:
+///
+/// ```rust,no_run
+/// use rezzy::{ParsedEvent, RawEvent};
+///
+/// fn wrap(event: &impl RawEvent) -> Result<(), String> {
+///     let parsed = ParsedEvent::try_new(event)?;
+///     let _ = parsed;
+///     Ok(())
+/// }
+/// ```
 pub struct ParsedEvent<'a, T: RawEvent> {
     raw: &'a T,
-    content: serde_json::Value,
+    content: crate::json::Value,
 }
 
 impl<'a, T: RawEvent> ParsedEvent<'a, T> {
     /// Create a new `ParsedEvent`, parsing the raw JSON content once.
     ///
-    /// Returns an error if `raw_content_json()` is not valid JSON.
-    /// Prefer this over [`new`](Self::new) when you want to surface
-    /// parse failures instead of silently falling back to empty content.
+    /// This is the only constructor: malformed content is reported as an
+    /// error rather than silently degrading to [`Value::Null`]. That keeps
+    /// a legitimate empty object (`{}`) distinct from a parse failure, which
+    /// otherwise silently drops content and corrupts state resolution.
     ///
     /// # Errors
     ///
-    /// Returns [`serde_json::Error`] if the raw content string is not valid JSON.
-    pub fn try_new(event: &'a T) -> Result<Self, serde_json::Error> {
-        let content = serde_json::from_str(event.raw_content_json())?;
+    /// Returns a description of the [`crate::json::Error`] if the raw content
+    /// string is not valid JSON.
+    pub fn try_new(event: &'a T) -> Result<Self, alloc::string::String> {
+        let content = Value::parse(event.raw_content_json()).map_err(|e| e.to_string())?;
         Ok(Self {
             raw: event,
             content,
         })
-    }
-
-    /// Create a new `ParsedEvent`, parsing the raw JSON content once.
-    ///
-    /// If the content JSON is malformed, falls back to `Value::Null`
-    /// (all content accessors will return `None`/defaults).
-    /// Use [`try_new`](Self::try_new) for strict error handling.
-    #[must_use]
-    pub fn new(event: &'a T) -> Self {
-        let content = serde_json::from_str(event.raw_content_json()).unwrap_or_default();
-        Self {
-            raw: event,
-            content,
-        }
     }
 }
 
@@ -1925,7 +2013,7 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
 }
 
 impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
-    type Content = serde_json::Value;
+    type Content = crate::json::Value;
 
     fn event_type(&self) -> alloc::borrow::Cow<'_, str> {
         self.raw.raw_event_type()
@@ -1947,7 +2035,7 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
         self.raw.raw_origin_server_ts()
     }
 
-    fn content(&self) -> &serde_json::Value {
+    fn content(&self) -> &crate::json::Value {
         &self.content
     }
 
@@ -2058,6 +2146,19 @@ pub struct LeanEvent<Id = String, C = Value, K = String> {
     /// too, from context it separately trusts (or those citations are
     /// rejected).
     pub room_id: Option<RoomId>,
+}
+
+impl<Id, C, K> LeanEvent<Id, C, K> {
+    /// The event's own state key, if this is an accepted state event that should
+    /// contribute its `(type, state_key) -> id` mapping to the resolved state.
+    ///
+    /// Rejected events never contribute state (see the `rejected` field docs),
+    /// and non-state events have no state key. Centralising this predicate keeps
+    /// the plain and optimized streaming pipelines from drifting.
+    #[must_use]
+    pub fn accepted_state_key(&self) -> Option<&K> {
+        self.state_key.as_ref().filter(|_| !self.rejected)
+    }
 }
 
 /// A room identifier, cheaply shared across every [`LeanEvent`] from the same
@@ -2220,12 +2321,75 @@ impl<Id, C> LeanEvent<Id, C, String> {
     }
 }
 
+/// Converts plain-`String` events into the fast representation
+/// (`Id = Arc<str>`, `K = InternedKey`), preserving sharing *within this
+/// batch* (there is no cross-call or global intern table).
+///
+/// Each distinct event id is allocated exactly once and that single `Arc` is
+/// reused for the event's own `event_id`, the map key, and every
+/// `prev_events` / `auth_events` reference to it across the whole batch;
+/// likewise each distinct `state_key` becomes one shared [`InternedKey`].
+/// Resolved state maps cloned from these events then share the same
+/// allocations, so path-copy clones are refcount bumps.
+///
+/// Ids referenced by `prev_events` / `auth_events` but absent from the batch
+/// are still interned, so the returned map can be handed straight to
+/// `compute_state_at` / `compute_state_at_batch`.
+///
+/// `String` stays the default everywhere else in the crate; this is the
+/// opt-in ingest boundary for the faster configuration
+/// ([`FastSharedState`](crate::state::at::FastSharedState)).
+#[must_use]
+pub fn intern_events<C>(
+    events: impl IntoIterator<Item = LeanEvent<String, C, String>>,
+) -> HashMap<Arc<str>, LeanEvent<Arc<str>, C, InternedKey>> {
+    fn share(table: &mut FastSet<Arc<str>>, s: &str) -> Arc<str> {
+        if let Some(existing) = table.get(s) {
+            return Arc::clone(existing);
+        }
+        let arc: Arc<str> = Arc::from(s);
+        table.insert(Arc::clone(&arc));
+        arc
+    }
+    let mut ids: FastSet<Arc<str>> = FastSet::default();
+    let mut keys: FastSet<Arc<str>> = FastSet::default();
+    let mut out = HashMap::default();
+    for ev in events {
+        let event_id = share(&mut ids, &ev.event_id);
+        let prev_events = ev.prev_events.iter().map(|e| share(&mut ids, e)).collect();
+        let auth_events = ev.auth_events.iter().map(|e| share(&mut ids, e)).collect();
+        let state_key = ev
+            .state_key
+            .as_deref()
+            .map(|k| InternedKey(share(&mut keys, k)));
+        out.insert(
+            Arc::clone(&event_id),
+            LeanEvent {
+                event_id,
+                event_type: ev.event_type,
+                state_key,
+                power_level: ev.power_level,
+                origin_server_ts: ev.origin_server_ts,
+                sender: ev.sender,
+                content: ev.content,
+                prev_events,
+                auth_events,
+                depth: ev.depth,
+                rejected: ev.rejected,
+                soft_fail: ev.soft_fail,
+                room_id: ev.room_id,
+            },
+        );
+    }
+    out
+}
+
 /// Borrowed view over a [`LeanEvent`] that avoids cloning event envelopes.
 ///
 /// This is useful for host adapters that already own native event storage and
 /// want to expose event data to rezzy without materializing a fresh owned
 /// `LeanEvent` up front.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LeanEventRef<'a, Id = String, C = Value, K = String> {
     pub event_id: &'a Id,
     pub event_type: &'a str,
@@ -2344,46 +2508,9 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_,
     }
 }
 
-impl<Id: serde::Serialize, C: serde::Serialize, K: AsRef<str>> serde::Serialize
-    for LeanEvent<Id, C, K>
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use crate::basespec::event_types::{
-            FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
-            FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_REJECTED, FIELD_SENDER, FIELD_SOFT_FAIL,
-            FIELD_STATE_KEY, FIELD_TYPE,
-        };
-        use serde::ser::SerializeStruct;
-        // TODO: trait forces `Result` here, so `?` shows as dead coverage; see
-        // docs/tech_debt.md for the refactor investigation.
-        let mut state = serializer.serialize_struct("LeanEvent", 12)?;
-        state.serialize_field(FIELD_EVENT_ID, &self.event_id)?;
-        state.serialize_field(FIELD_TYPE, &self.event_type)?;
-        if let Some(ref sk) = self.state_key {
-            state.serialize_field(FIELD_STATE_KEY, sk.as_ref())?;
-        }
-        state.serialize_field(FIELD_POWER_LEVEL, &self.power_level)?;
-        state.serialize_field(FIELD_ORIGIN_SERVER_TS, &self.origin_server_ts)?;
-        state.serialize_field(FIELD_SENDER, &self.sender)?;
-        state.serialize_field(FIELD_CONTENT, &self.content)?;
-        state.serialize_field(FIELD_PREV_EVENTS, &self.prev_events)?;
-        state.serialize_field(FIELD_AUTH_EVENTS, &self.auth_events)?;
-        // NOTE: `prev_state_events` is MSC4242-only (room v11+/v12). It must
-        // NOT be emitted here — the generic serializer is room-version-neutral.
-        // Room-version-specific serialization handles this field when needed.
-        state.serialize_field(FIELD_DEPTH, &self.depth)?;
-        state.serialize_field(FIELD_REJECTED, &self.rejected)?;
-        state.serialize_field(FIELD_SOFT_FAIL, &self.soft_fail)?;
-        state.end()
-    }
-}
-
 /// Trait abstracting event content access for state resolution.
 ///
-/// Implement this for custom content types to avoid `serde_json::Value` overhead.
+/// Implement this for custom content types to avoid `crate::json::Value` overhead.
 /// The default `Value` implementation preserves full backwards compatibility.
 pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn get_membership(&self) -> Option<&str>;
@@ -2469,7 +2596,7 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     ///
     /// Returning an empty vec means "no entries exist" — the Rule 10 diff sees
     /// no changes and no escalation, so validation passes without bypassing
-    /// anything.  The only production impl (`serde_json::Value`) overrides this.
+    /// anything.  The only production impl (`crate::json::Value`) overrides this.
     /// Custom implementations **must** override this for PL map validation to
     /// detect escalation in the `events` map.
     /// Visit `(event_type, power_level)` entries in the `events` map.
@@ -2593,6 +2720,22 @@ pub trait EventVerifier<Id> {
     }
 }
 
+/// Applies `visitor` to each entry of a power-level JSON object, clamping
+/// every value into the JSON-safe PL range. Shared by the three
+/// `visit_*_power_levels` methods on [`Value`].
+fn visit_power_level_object<'a>(
+    obj: Option<&'a crate::json::Object>,
+    visitor: &mut dyn FnMut(&'a str, i64),
+) {
+    if let Some(obj) = obj {
+        for (k, v) in obj {
+            if let Some(pl) = coerce_json_to_i64(v) {
+                visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
+            }
+        }
+    }
+}
+
 impl EventContent for Value {
     fn get_membership(&self) -> Option<&str> {
         self.get(crate::basespec::event_types::FIELD_MEMBERSHIP)?
@@ -2691,7 +2834,7 @@ impl EventContent for Value {
             None => true,
             Some(v) => v.as_array().is_some_and(|arr| {
                 arr.iter()
-                    .all(|entry| entry.as_str().is_some_and(is_valid_mxid))
+                    .all(|entry| entry.as_str().is_some_and(is_acceptable_historical_mxid))
             }),
         }
     }
@@ -2729,42 +2872,27 @@ impl EventContent for Value {
     }
 
     fn visit_event_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
-        if let Some(obj) = self
-            .get(crate::basespec::event_types::FIELD_EVENTS)
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(pl) = coerce_json_to_i64(v) {
-                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
-                }
-            }
-        }
+        visit_power_level_object(
+            self.get(crate::basespec::event_types::FIELD_EVENTS)
+                .and_then(|v| v.as_object()),
+            visitor,
+        );
     }
 
     fn visit_user_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
-        if let Some(obj) = self
-            .get(crate::basespec::event_types::FIELD_USERS)
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(pl) = coerce_json_to_i64(v) {
-                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
-                }
-            }
-        }
+        visit_power_level_object(
+            self.get(crate::basespec::event_types::FIELD_USERS)
+                .and_then(|v| v.as_object()),
+            visitor,
+        );
     }
 
     fn visit_notification_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
-        if let Some(obj) = self
-            .get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
-            .and_then(|v| v.as_object())
-        {
-            for (k, v) in obj {
-                if let Some(pl) = coerce_json_to_i64(v) {
-                    visitor(k.as_str(), pl.min(MAX_POWER_LEVEL_JSON));
-                }
-            }
-        }
+        visit_power_level_object(
+            self.get(crate::basespec::event_types::FIELD_NOTIFICATIONS)
+                .and_then(|v| v.as_object()),
+            visitor,
+        );
     }
 
     fn find_non_integer_scalar_pl(&self) -> Option<&'static str> {
@@ -2904,14 +3032,18 @@ fn room_version_is_v12_or_later(room_version: &str) -> bool {
     RoomVersionFormat::parse(room_version).is_some_and(RoomVersionFormat::uses_v12_create_rules)
 }
 
-/// Returns `true` if `id` is a syntactically valid Matrix user ID: `@` prefix,
-/// a `:` separating localpart from domain, a non-empty localpart drawn from
-/// the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`, `+`), and a
-/// non-empty domain.
+/// Returns `true` if `id` is a strictly valid *current* Matrix user ID: `@`
+/// prefix, a `:` separating localpart from domain, a non-empty localpart
+/// drawn from the restricted charset (`a-z`, `0-9`, `.`, `_`, `=`, `-`, `/`,
+/// `+`), and a non-empty domain.
 ///
-/// Shared by the `sender` check and, for V12+ rooms, `additional_creators`
-/// entries — both are held to the same grammar per MSC4289.
-pub(crate) fn is_valid_mxid(id: &str) -> bool {
+/// This is the no-warning path for IDs found in room events; IDs which fail
+/// this but satisfy [`is_acceptable_historical_mxid`] are accepted with a
+/// [`crate::warnings::Warning::CompatibilityMxid`] instead of being rejected.
+/// It remains suitable for callers which create a new user ID. Exposed so
+/// downstream adapters can enforce the identical grammar without copying it.
+#[must_use]
+pub fn is_valid_mxid(id: &str) -> bool {
     let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
     else {
         return false;
@@ -2921,6 +3053,24 @@ pub(crate) fn is_valid_mxid(id: &str) -> bool {
         && localpart.bytes().all(
             |b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'=' | b'-' | b'/' | b'+'),
         )
+}
+
+/// Returns `true` if `id` can be accepted as a historical Matrix user ID in a
+/// room event.
+///
+/// The Matrix specification requires clients and servers to accept historical
+/// localparts containing any non-surrogate Unicode scalar value other than
+/// `:` and NUL. Rust strings cannot contain surrogate code points, so the
+/// localpart check only needs to exclude NUL. Unlike the current grammar, an
+/// empty localpart is accepted. The domain retains the basic non-empty
+/// structural check used by the strict grammar.
+#[must_use]
+pub fn is_acceptable_historical_mxid(id: &str) -> bool {
+    let Some((localpart, domain)) = id.strip_prefix('@').and_then(|rest| rest.split_once(':'))
+    else {
+        return false;
+    };
+    !domain.is_empty() && !localpart.contains('\0')
 }
 
 /// Extracts the domain (server name) portion of a Matrix identifier (e.g. `@user:example.com` -> `example.com`,
@@ -3005,20 +3155,31 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         K: AsRef<str>,
     {
         let mut warnings = alloc::vec::Vec::new();
-        if StateResVersion::from_room_version(room_version).is_none() {
-            return Err("unsupported room_version");
+        self.validate_structure(room_version)?;
+        let id_str = alloc::format!("{}", self.event_id);
+        self.validate_identifiers(room_version, &mut warnings)?;
+        if self.depth > MAX_SAFE_JSON_INTEGER {
+            return Err("depth exceeds maximum allowed value");
         }
+        self.validate_field_lengths(&id_str, room_version, &mut warnings)?;
+
+        Ok(crate::warnings::Outcome::with_warnings((), warnings))
+    }
+
+    fn validate_structure(&self, room_version: &str) -> Result<(), &'static str>
+    where
+        C: EventContent,
+    {
+        let Some(version) = StateResVersion::from_room_version(room_version) else {
+            return Err("unsupported room_version");
+        };
         if self.prev_events.len() > 20 {
             return Err("prev_events exceeds maximum allowed length of 20");
         }
-        let is_msc4242 = matches!(
-            StateResVersion::from_room_version(room_version),
-            Some(StateResVersion::V2_2)
-        );
-        if !is_msc4242 && self.auth_events.len() > 10 {
+        if version != StateResVersion::V2_2 && self.auth_events.len() > 10 {
             return Err("auth_events exceeds maximum allowed length of 10");
         }
-        if is_msc4242
+        if version == StateResVersion::V2_2
             && self.auth_events.len() > crate::basespec::event_types::MAX_PREV_STATE_EVENTS
         {
             return Err("prev_state_events exceeds maximum allowed length of 20");
@@ -3026,84 +3187,143 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
         if self.event_type.is_empty() {
             return Err("event_type cannot be empty");
         }
-        // Rule 1.3: an `m.room.create` event must not declare an unrecognised
-        // `content.room_version`. Absent room_version defaults to "1" per spec,
-        // so only a *present but unrecognised* value is rejected here.
-        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE {
-            if let Some(v) = self.content.get_room_version() {
-                if StateResVersion::from_room_version(v).is_none() {
-                    return Err(
-                        "m.room.create content.room_version is not a recognised room version",
-                    );
-                }
-            }
+        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE
+            && self
+                .content
+                .get_room_version()
+                .is_some_and(|v| StateResVersion::from_room_version(v).is_none())
+        {
+            return Err("m.room.create content.room_version is not a recognised room version");
         }
-        let id_str = alloc::format!("{}", self.event_id);
-        if id_str.is_empty() || !id_str.starts_with('$') {
+        Ok(())
+    }
+
+    fn validate_identifiers(
+        &self,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: core::fmt::Display + Clone,
+        C: EventContent,
+    {
+        let event_id = alloc::format!("{}", self.event_id);
+        if event_id.is_empty() || !event_id.starts_with('$') {
             return Err("event_id must start with '$'");
         }
-        if !is_valid_mxid(&self.sender) {
-            return Err(
+        self.validate_mxid(&self.sender, MxidField::Sender, warnings)?;
+        self.validate_create_identifiers(room_version, warnings)
+    }
+
+    fn validate_mxid(
+        &self,
+        mxid: &str,
+        field: MxidField,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+    {
+        if is_valid_mxid(mxid) {
+            return Ok(());
+        }
+        if is_acceptable_historical_mxid(mxid) {
+            warnings.push(crate::warnings::Warning::CompatibilityMxid {
+                event_id: self.event_id.clone(),
+                field: field.as_str(),
+                mxid: mxid.to_string(),
+            });
+            return Ok(());
+        }
+        match field {
+            MxidField::Sender => Err(
                 "sender must be a valid MXID: '@' prefix, ':' separator, non-empty domain, and a localpart of only a-z, 0-9, '.', '_', '=', '-', '/', '+'",
+            ),
+            MxidField::Creator => Err("m.room.create content.creator must be a valid MXID string"),
+        }
+    }
+
+    fn validate_create_identifiers(
+        &self,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+        C: EventContent,
+    {
+        if self.event_type != crate::basespec::event_types::M_ROOM_CREATE {
+            return Ok(());
+        }
+        if StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus()) {
+            return self
+                .content
+                .additional_creators_are_valid()
+                .then_some(())
+                .ok_or(
+                "m.room.create content.additional_creators must be an array of valid MXID strings",
             );
         }
-        // Rule 1.4: pre-v12 m.room.create must declare a `creator`; v12+
-        // instead derives creators from `sender` + `additional_creators`,
-        // and validates any `additional_creators` entries against the same
-        // MXID grammar as `sender`.
-        if self.event_type == crate::basespec::event_types::M_ROOM_CREATE {
-            let is_v12_plus =
-                StateResVersion::from_room_version(room_version).is_some_and(|v| v.is_v2_1_plus());
-            if is_v12_plus {
-                if !self.content.additional_creators_are_valid() {
-                    return Err(
-                        "m.room.create content.additional_creators must be an array of valid MXID strings",
-                    );
-                }
-            } else {
-                let Some(creator) = self.content.get_creator() else {
-                    return Err("m.room.create content must have a 'creator' property");
-                };
-                if !is_valid_mxid(creator) {
-                    return Err("m.room.create content.creator must be a valid MXID string");
-                }
-            }
-        }
-        if self.depth > MAX_SAFE_JSON_INTEGER {
-            return Err("depth exceeds maximum allowed value");
-        }
+        let Some(creator) = self.content.get_creator() else {
+            return Err("m.room.create content must have a 'creator' property");
+        };
+        self.validate_mxid(creator, MxidField::Creator, warnings)
+    }
 
-        let strict_length_limits = room_version_is_v11_or_later(room_version);
-        macro_rules! check_length {
-            ($field:expr, $name:literal) => {
-                let len = $field.len();
-                if len > 255 {
-                    if strict_length_limits {
-                        return Err(concat!(
-                            $name,
-                            " exceeds maximum allowed length of 255 bytes"
-                        ));
-                    }
-                    warnings.push(crate::warnings::Warning::OversizedFieldPreV11 {
-                        event_id: self.event_id.clone(),
-                        field: $name,
-                        len,
-                        limit: 255,
-                    });
-                }
+    fn validate_field_lengths(
+        &self,
+        event_id: &str,
+        room_version: &str,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+        K: AsRef<str>,
+    {
+        let strict = room_version_is_v11_or_later(room_version);
+        for (field, name) in [
+            (event_id, "event_id"),
+            (&self.sender, "sender"),
+            (&self.event_type, "event_type"),
+        ] {
+            self.validate_field_length(field, name, strict, warnings)?;
+        }
+        if let Some(state_key) = &self.state_key {
+            self.validate_field_length(state_key.as_ref(), "state_key", strict, warnings)?;
+        }
+        Ok(())
+    }
+
+    fn validate_field_length(
+        &self,
+        value: &str,
+        field: &'static str,
+        strict: bool,
+        warnings: &mut SyntacticWarnings<Id>,
+    ) -> Result<(), &'static str>
+    where
+        Id: Clone,
+    {
+        let len = value.len();
+        if len <= 255 {
+            return Ok(());
+        }
+        if strict {
+            return match field {
+                "event_id" => Err("event_id exceeds maximum allowed length of 255 bytes"),
+                "sender" => Err("sender exceeds maximum allowed length of 255 bytes"),
+                "event_type" => Err("event_type exceeds maximum allowed length of 255 bytes"),
+                "state_key" => Err("state_key exceeds maximum allowed length of 255 bytes"),
+                _ => unreachable!("only fixed PDU fields are length-checked"),
             };
         }
-        check_length!(id_str, "event_id");
-        check_length!(self.sender, "sender");
-        check_length!(self.event_type, "event_type");
-        // NOTE: For Synapse parity, v11+ hard-enforces this the same as the other
-        // fields above; state_key is optional (only present on state events), so
-        // this branch is skipped entirely for non-state events.
-        if let Some(ref state_key) = self.state_key {
-            check_length!(state_key.as_ref(), "state_key");
-        }
-
-        Ok(crate::warnings::Outcome::with_warnings((), warnings))
+        warnings.push(crate::warnings::Warning::OversizedFieldPreV11 {
+            event_id: self.event_id.clone(),
+            field,
+            len,
+            limit: 255,
+        });
+        Ok(())
     }
 
     // --- Typed Content Accessors (delegate to EventContent) ---
@@ -3269,7 +3489,7 @@ impl LeanEvent<String, Value, String> {
     pub fn from_value(
         value: &Value,
         room_version: Option<&str>,
-    ) -> Result<LeanEvent<String, Value, String>, serde_json::Error> {
+    ) -> Result<LeanEvent<String, Value, String>, String> {
         use crate::basespec::event_types::{
             FIELD_AUTH_EVENTS, FIELD_CONTENT, FIELD_DEPTH, FIELD_EVENT_ID, FIELD_ORIGIN_SERVER_TS,
             FIELD_POWER_LEVEL, FIELD_PREV_EVENTS, FIELD_PREV_STATE_EVENTS, FIELD_REDACTS,
@@ -3279,7 +3499,7 @@ impl LeanEvent<String, Value, String> {
 
         let is_msc4242 = room_version.is_some_and(is_msc4242_room_version);
         if is_msc4242 && value.get(FIELD_AUTH_EVENTS).is_some() {
-            return Err(serde::de::Error::custom(
+            return Err(String::from(
                 "auth_events is not permitted in MSC4242 events; use prev_state_events",
             ));
         }
@@ -3287,10 +3507,10 @@ impl LeanEvent<String, Value, String> {
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else if let Some(ver) = room_version {
-            let rh = reference_hash(value, ver).map_err(serde::de::Error::custom)?;
+            let rh = reference_hash(value, ver)?;
             alloc::format!("${rh}")
         } else {
-            return Err(serde::de::Error::custom(
+            return Err(String::from(
                 "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
             ));
         };
@@ -3302,9 +3522,7 @@ impl LeanEvent<String, Value, String> {
             .into();
 
         if event_type.is_empty() {
-            return Err(serde::de::Error::custom(
-                "event_type cannot be missing or empty",
-            ));
+            return Err(String::from("event_type cannot be missing or empty"));
         }
         let state_key = value
             .get(FIELD_STATE_KEY)
@@ -3325,7 +3543,7 @@ impl LeanEvent<String, Value, String> {
                         0
                     }
                 } else {
-                    return Err(serde::de::Error::custom("invalid power_level type"));
+                    return Err(String::from("invalid power_level type"));
                 }
             }
             None => 0,
@@ -3344,24 +3562,23 @@ impl LeanEvent<String, Value, String> {
         let mut content = value.get(FIELD_CONTENT).cloned().unwrap_or(Value::Null);
 
         if event_type == M_ROOM_REDACTION {
-            let top_level_redacts = match value.get(FIELD_REDACTS) {
-                Some(redacts) => Some(redacts.as_str().ok_or_else(|| {
-                    serde::de::Error::custom("m.room.redaction redacts must be a string")
-                })?),
-                None => None,
-            };
+            let top_level_redacts =
+                match value.get(FIELD_REDACTS) {
+                    Some(redacts) => Some(redacts.as_str().ok_or_else(|| {
+                        String::from("m.room.redaction redacts must be a string")
+                    })?),
+                    None => None,
+                };
 
             match &mut content {
                 Value::Object(obj) => {
                     if let Some(existing_redacts) = obj.get(FIELD_REDACTS) {
                         let existing_redacts = existing_redacts.as_str().ok_or_else(|| {
-                            serde::de::Error::custom(
-                                "m.room.redaction content.redacts must be a string",
-                            )
+                            String::from("m.room.redaction content.redacts must be a string")
                         })?;
                         if let Some(top_level_redacts) = top_level_redacts {
                             if existing_redacts != top_level_redacts {
-                                return Err(serde::de::Error::custom(
+                                return Err(String::from(
                                     "m.room.redaction redacts mismatch between top-level field and content",
                                 ));
                             }
@@ -3375,7 +3592,7 @@ impl LeanEvent<String, Value, String> {
                 }
                 Value::Null => {
                     if let Some(top_level_redacts) = top_level_redacts {
-                        let mut obj = serde_json::Map::new();
+                        let mut obj = crate::json::Object::new();
                         obj.insert(
                             String::from(FIELD_REDACTS),
                             Value::String(String::from(top_level_redacts)),
@@ -3384,7 +3601,7 @@ impl LeanEvent<String, Value, String> {
                     }
                 }
                 _ => {
-                    return Err(serde::de::Error::custom(
+                    return Err(String::from(
                         "m.room.redaction content must be an object or null",
                     ));
                 }
@@ -3412,20 +3629,20 @@ impl LeanEvent<String, Value, String> {
         let depth = match value.get(FIELD_DEPTH) {
             Some(depth) => depth
                 .as_u64()
-                .ok_or_else(|| serde::de::Error::custom("invalid depth value"))?,
+                .ok_or_else(|| String::from("invalid depth value"))?,
             None => 0,
         };
 
         let rejected = value
             .get(FIELD_REJECTED)
             .or_else(|| value.get("rejected"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(crate::json::Value::as_bool)
             .unwrap_or(false);
 
         let soft_fail = value
             .get(FIELD_SOFT_FAIL)
             .or_else(|| value.get("soft_fail"))
-            .and_then(serde_json::Value::as_bool)
+            .and_then(crate::json::Value::as_bool)
             .unwrap_or(false);
 
         Ok(LeanEvent {
@@ -3450,16 +3667,6 @@ impl LeanEvent<String, Value, String> {
             // `ingest_events`), after this deserialize step.
             room_id: None,
         })
-    }
-}
-
-impl<'de> Deserialize<'de> for LeanEvent<String, Value, String> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        LeanEvent::from_value(&value, None).map_err(serde::de::Error::custom)
     }
 }
 
@@ -3702,24 +3909,38 @@ impl<E: EventLike> PartialOrd for SortPriority<'_, E> {
 /// and strings in the JSON, which is why `rezzy` has this `coerce_json_to_i64`
 /// function in the first place!
 #[must_use]
-// Truncating a legacy float power level toward zero is intentional, and Rust's
-// `f64 as i64` is saturating (no UB out of range), so the casts are deliberate.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn coerce_json_to_i64(pl: &Value) -> Option<i64> {
-    let val = pl
-        .as_i64()
-        .or_else(|| pl.as_u64().map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
+    coerce_json_integer_parts(pl.as_i64(), pl.as_u64(), pl.as_f64(), pl.as_str())
+}
+
+/// Apply Rezzy's power-level integer coercion to primitive JSON accessor results.
+///
+/// This lets adapters for other JSON value types share the exact integer,
+/// unsigned, float, and string coercion rules without converting an entire
+/// value tree into [`Value`]: call it with the adapter's own
+/// `as_i64`/`as_u64`/`as_f64`/`as_str` results for the one scalar being read.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub fn coerce_json_integer_parts(
+    signed: Option<i64>,
+    unsigned: Option<u64>,
+    float: Option<f64>,
+    string: Option<&str>,
+) -> Option<i64> {
+    let val = signed
+        .or_else(|| unsigned.map(|u| i64::try_from(u).unwrap_or(i64::MAX)))
         // Legacy float power levels (e.g. 50.0) — truncate toward zero.
         .or_else(|| {
-            pl.as_f64().and_then(|f| {
-                // `Number::from_f64(...).as_i64()` can't be used here: serde_json
+            float.and_then(|f| {
+                // `Number::from_f64(...).as_i64()` can't be used here: the JSON
                 // returns `None` for float-backed numbers. Truncate the f64 and
                 // range-check before casting instead.
                 let t = f.trunc();
                 (t >= i64::MIN as f64 && t <= i64::MAX as f64).then_some(t as i64)
             })
         })
-        .or_else(|| pl.as_str().and_then(|s| s.parse::<i64>().ok()));
+        .or_else(|| string.and_then(|s| s.parse::<i64>().ok()));
     // Matrix Spec (Client-Server API) — m.room.power_levels:
     // "The power level ... must be an integer between -2^53 + 1 and 2^53 - 1."
     val.map(|v| v.clamp(-MAX_POWER_LEVEL_JSON, MAX_POWER_LEVEL_JSON))
@@ -3796,7 +4017,7 @@ mod redaction_preserved_keys_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod redact_content_tests {
     use super::{redact_content, RedactionRule};
-    use serde_json::json;
+    use crate::json;
 
     /// Coverage for `redact_content`'s "existing parent" accumulation branch
     /// (a second dotted-path key merging into a parent object already
@@ -3828,7 +4049,7 @@ mod redact_content_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod redact_top_level_tests {
     use super::redact_top_level;
-    use serde_json::json;
+    use crate::json;
 
     /// MSC4242's unstable `org.matrix.msc4242.12` room version swaps
     /// `auth_events` for `prev_state_events`. Redaction must preserve the
@@ -3848,7 +4069,7 @@ mod redact_top_level_tests {
         let redacted = redact_top_level(&ev, "org.matrix.msc4242.12");
         assert_eq!(redacted.get("prev_state_events"), Some(&json!(["$B"])));
         assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
-        assert!(redacted.get("foo").is_none());
+        assert!(!redacted.contains_key("foo"));
     }
 
     #[test]
@@ -3861,8 +4082,8 @@ mod redact_top_level_tests {
         });
         let redacted = redact_top_level(&ev, "12");
         assert_eq!(redacted.get("auth_events"), Some(&json!(["$A"])));
-        assert!(redacted.get("prev_state_events").is_none());
-        assert!(redacted.get("foo").is_none());
+        assert!(!redacted.contains_key("prev_state_events"));
+        assert!(!redacted.contains_key("foo"));
     }
 }
 
@@ -3871,24 +4092,18 @@ mod redact_top_level_tests {
 mod index_by_event_id_tests {
     use super::*;
 
+    fn ev(id: &str) -> LeanEvent {
+        LeanEvent {
+            event_id: id.into(),
+            ..Default::default()
+        }
+    }
+
     /// `index_by_event_id` assigns indices in iteration order, keyed by each
     /// event's `event_id`.
     #[test]
     fn test_index_by_event_id_assigns_indices_in_iteration_order() {
-        let events = [
-            LeanEvent {
-                event_id: "$c:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$a:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$b:example".into(),
-                ..Default::default()
-            },
-        ];
+        let events = [ev("$c:example"), ev("$a:example"), ev("$b:example")];
         let index = index_by_event_id(events.iter());
         assert_eq!(index.len(), 3);
         assert_eq!(index.get("$c:example"), Some(&0));
@@ -3900,20 +4115,7 @@ mod index_by_event_id_tests {
     /// the insert-based build the formatter and stress test rely on.
     #[test]
     fn test_index_by_event_id_keeps_last_duplicate_index() {
-        let events = [
-            LeanEvent {
-                event_id: "$a:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$a:example".into(),
-                ..Default::default()
-            },
-            LeanEvent {
-                event_id: "$b:example".into(),
-                ..Default::default()
-            },
-        ];
+        let events = [ev("$a:example"), ev("$a:example"), ev("$b:example")];
         let index = index_by_event_id(events.iter());
         assert_eq!(index.len(), 2);
         assert_eq!(index.get("$a:example"), Some(&1));
@@ -3970,10 +4172,7 @@ mod dag_node_tests {
             &["$prev1:example", "$prev2:example"]
         );
         // V2_2: must return empty — callers must not walk these as auth-chain edges.
-        assert_eq!(
-            ev.auth_chain_events(StateResVersion::V2_2),
-            &[] as &[String]
-        );
+        assert_eq!(ev.auth_chain_events(StateResVersion::V2_2).len(), 0);
     }
 
     /// `dag_edges` returns `prev_state_events` for `V2_2` and `auth_events`
@@ -3997,8 +4196,8 @@ mod dag_node_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod canonical_parity_tests {
     use super::*;
+    use crate::json;
     use alloc::string::String;
-    use serde_json::json;
 
     fn content_hash_writer(v: &Value) -> String {
         let mut out = String::new();
@@ -4006,14 +4205,21 @@ mod canonical_parity_tests {
         out
     }
 
-    fn content_hash_serde(v: &Value) -> String {
+    /// Reference form: the DOM writer over a parse round trip of the tree.
+    fn dom_string(v: &Value) -> String {
+        let text = crate::json::write_string_value(v).expect("infallible");
+        let parsed = Value::parse(&text).expect("valid JSON");
+        crate::json::write_string_value(&parsed).expect("infallible")
+    }
+
+    fn content_hash_reference(v: &Value) -> String {
         let mut c = v.clone();
         if let Some(o) = c.as_object_mut() {
             o.remove("unsigned");
             o.remove("signatures");
             o.remove("hashes");
         }
-        serde_json::to_string(&c).expect("infallible")
+        dom_string(&c)
     }
 
     fn redacted_writer(v: &Value, rv: &str) -> String {
@@ -4022,20 +4228,20 @@ mod canonical_parity_tests {
         out
     }
 
-    fn redacted_serde(v: &Value, rv: &str) -> String {
+    fn redacted_reference(v: &Value, rv: &str) -> String {
         let mut r = redact_json(v, rv);
         if let Some(o) = r.as_object_mut() {
             o.remove("unsigned");
             o.remove("signatures");
         }
-        serde_json::to_string(&r).expect("infallible")
+        dom_string(&r)
     }
 
-    /// The zero-copy writers must be byte-identical to what `serde_json` emits
+    /// The zero-copy writers must be byte-identical to what the DOM writer emits
     /// for the same logical canonical form — hashes/signatures cover these exact
     /// bytes, so any divergence is a federation-breaking bug.
     #[test]
-    fn content_hash_writer_is_byte_identical_to_serde() {
+    fn content_hash_writer_is_byte_identical_to_dom_writer() {
         let cases = [
             json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}} }),
             json!({ "a":1,"b":{"c":[1,2,3],"d":"x\ny\tz\u{0001}\u{000c}\u{000d}"},"e":1.5,"f":null,"g":true }),
@@ -4043,7 +4249,11 @@ mod canonical_parity_tests {
             json!({ "negative":-42,"big":9_007_199_254_740_993_u64,"float":-0.0,"arr":[true,false,null,1] }),
         ];
         for c in cases {
-            assert_eq!(content_hash_writer(&c), content_hash_serde(&c), "case: {c}");
+            assert_eq!(
+                content_hash_writer(&c),
+                content_hash_reference(&c),
+                "case: {c:?}"
+            );
         }
 
         let mut output = String::new();
@@ -4074,7 +4284,43 @@ mod canonical_parity_tests {
     }
 
     #[test]
-    fn redacted_writer_is_byte_identical_to_serde() {
+    fn parsed_number_spellings_are_pinned() {
+        // Integers keep their spelling; floats are re-rendered through `ryu`
+        // with an explicit exponent sign; `-0` keeps its protocol spelling.
+        for (number, expected) in [
+            ("-0", "-0.0"),
+            ("1.0", "1.0"),
+            ("1e3", "1000.0"),
+            ("1E+3", "1000.0"),
+            ("1e-7", "1e-7"),
+            ("1e20", "1e+20"),
+        ] {
+            let value = crate::json::Value::parse(number).unwrap();
+            let ours = crate::json::write_string_value(&value).unwrap();
+            assert_eq!(ours, expected, "number spelling {number}");
+        }
+    }
+
+    /// Integers wider than `u64` round-trip byte-exactly.
+    ///
+    /// `rezzy-json` keeps the source spelling, so the value survives and the
+    /// canonical bytes that get signed are the ones the event actually
+    /// contained. Rewriting such a value through `f64` would change both the
+    /// value and the hash (`simd-json` rejects them outright for that reason).
+    #[test]
+    fn wide_integers_are_preserved() {
+        for number in ["18446744073709551616", "1267650600228229401496703205376"] {
+            let value = crate::json::Value::parse(number).unwrap();
+            assert_eq!(
+                crate::json::write_string_value(&value).unwrap(),
+                number,
+                "wide integer must round-trip byte-exactly: {number}"
+            );
+        }
+    }
+
+    #[test]
+    fn redacted_writer_is_byte_identical_to_dom_writer() {
         let cases = [
             (
                 json!({ "type":"m.room.message","room_id":"!r:x","sender":"@a:x","origin_server_ts":1,"content":{"body":"hi","extra":"x"},"hashes":{"sha256":"abc"},"unsigned":{"age_ts":5},"signatures":{"x":{"ed25519:0":"sig"}},"unknown_key":9 }),
@@ -4116,8 +4362,8 @@ mod canonical_parity_tests {
         for (c, rv) in cases {
             assert_eq!(
                 redacted_writer(&c, rv),
-                redacted_serde(&c, rv),
-                "case: {c} rv={rv}"
+                redacted_reference(&c, rv),
+                "case: {c:?} rv={rv}"
             );
         }
     }
@@ -4148,7 +4394,7 @@ mod canonical_parity_tests {
         assert!(out.contains("-1"), "negative int should pass: {out}");
     }
 
-    /// Non-strict mode must accept fractional numbers (parity with `serde_json`).
+    /// Non-strict mode must accept fractional numbers.
     #[test]
     fn non_strict_version_accepts_fractional() {
         let fractional = json!({"n": 1.5});
@@ -4161,12 +4407,12 @@ mod canonical_parity_tests {
     }
 
     /// Negative zero (-0.0) is caught by the fractional-number check:
-    /// `serde_json` serialises it as "-0.0" which contains '.', so the
+    /// The writer serialises it as "-0.0" which contains '.', so the
     /// fractional branch rejects it.
     #[test]
     fn validate_canonical_number_rejects_negative_zero_f64() {
         use super::validate_canonical_number;
-        let neg_zero = serde_json::Number::from_f64(-0.0).expect("from_f64");
+        let neg_zero = crate::json::Number::from_f64(-0.0).expect("from_f64");
         assert!(
             neg_zero.to_string().contains('.'),
             "from_f64(-0.0) should produce a string with '.'"
@@ -4325,7 +4571,7 @@ mod canonical_parity_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod canonical_redacted_json_tests {
     use super::{canonical_redacted_json, redactable_content_remainder, split_redaction_content};
-    use serde_json::json;
+    use crate::json;
 
     #[test]
     fn canonical_redacted_json_returns_redacted_canonical_bytes() {
@@ -4367,7 +4613,7 @@ mod canonical_redacted_json_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod cdo_content_tests {
     use super::EventContent;
-    use serde_json::json;
+    use crate::json;
 
     #[test]
     fn cdo_active_member_is_optional_and_string_typed() {
@@ -4380,5 +4626,76 @@ mod cdo_content_tests {
             json!({"tk.nutra.cdo": {"active_member": ["$join"]}}).get_cdo_active_member(),
             None
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod msc3389_redaction_tests {
+    use super::{redact_json, redaction_preserved_keys, split_redaction_content, StateResVersion};
+    use crate::json::json;
+
+    const V: &str = "org.matrix.msc3389.10";
+
+    #[test]
+    fn preserves_only_relation_rel_type_and_event_id() {
+        let content = json!({
+            "body": "hi",
+            "m.relates_to": {"rel_type": "m.annotation", "event_id": "$t", "key": "x"}
+        });
+        let (kept, rest) = split_redaction_content(&content, "m.room.message", V);
+        assert_eq!(
+            kept,
+            json!({"m.relates_to": {"rel_type": "m.annotation", "event_id": "$t"}})
+        );
+        assert_eq!(rest, json!({"body": "hi", "m.relates_to": {"key": "x"}}));
+    }
+
+    #[test]
+    fn plain_event_without_relation_redacts_to_empty() {
+        let (kept, _) = split_redaction_content(&json!({"body": "hi"}), "m.room.message", V);
+        assert_eq!(kept, json!({}));
+    }
+
+    #[test]
+    fn keeps_v10_state_keys_not_v11() {
+        let content = json!({
+            "membership": "join",
+            "third_party_invite": {"signed": {"a": 1}},
+            "m.relates_to": {"rel_type": "r", "event_id": "$e"}
+        });
+        let (kept, _) = split_redaction_content(&content, "m.room.member", V);
+        assert_eq!(
+            kept,
+            json!({"membership": "join", "m.relates_to": {"rel_type": "r", "event_id": "$e"}})
+        );
+    }
+
+    #[test]
+    fn older_versions_do_not_preserve_relations() {
+        let content = json!({"m.relates_to": {"rel_type": "r", "event_id": "$e"}});
+        for v in ["10", "11"] {
+            assert_eq!(
+                redaction_preserved_keys("m.room.message", v),
+                super::RedactionRule::None
+            );
+            assert_eq!(
+                redact_json(
+                    &json!({"type":"m.room.message","content":content.clone()}),
+                    v
+                )["content"],
+                json!({})
+            );
+        }
+    }
+
+    #[test]
+    fn uses_v2_state_res_and_v10_top_level() {
+        assert_eq!(
+            StateResVersion::from_room_version(V),
+            Some(StateResVersion::V2)
+        );
+        let ev = json!({"type":"m.room.message","origin":"o","content":{}});
+        assert!(redact_json(&ev, V).get("origin").is_some());
     }
 }

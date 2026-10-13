@@ -3,35 +3,50 @@ use rezzy::{
     resolve_iterative_sort, resolve_iterative_sort_with_cache, LeanEvent, LocalAuthCache,
     StateResVersion,
 };
-use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
 
-/// Helper to parse a JSONL file into a list of `LeanEvents`
-fn parse_jsonl_dag<P: AsRef<Path>>(path: P) -> Vec<LeanEvent> {
-    let file = File::open(path.as_ref())
-        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.as_ref().display()));
-    let reader = BufReader::new(file);
-    let mut events = Vec::new();
+/// Resolves the standard fixture for `version` with fresh caches.
+fn resolve_v(
+    auth_context: &HashMap<String, LeanEvent>,
+    conflicted_events: &HashMap<String, LeanEvent>,
+    version: StateResVersion,
+) -> rezzy::SharedState<String, String> {
+    let mut pl_cache = HashMap::new();
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
+        &utils::build_unconflicted_state_test_helper(auth_context),
+        conflicted_events,
+        auth_context,
+        version,
+        &mut pl_cache,
+        &String::new(),
+    ))
+}
 
-    for line in reader.lines() {
-        let line = line.unwrap();
-        if line.trim().is_empty() {
-            continue;
-        }
-        let val: Value = serde_json::from_str(&line).expect("Failed to parse JSON line");
-        let ev = serde_json::from_value::<LeanEvent>(val).expect("Failed to convert to LeanEvent");
-        events.push(ev);
-    }
-    events
+/// Like [`resolve_v`], but threads a caller-owned local-auth `cache`.
+fn resolve_v_with_cache(
+    auth_context: &HashMap<String, LeanEvent>,
+    conflicted_events: &HashMap<String, LeanEvent>,
+    version: StateResVersion,
+    cache: &mut LocalAuthCache,
+) -> rezzy::SharedState<String, String> {
+    let mut pl_cache = HashMap::new();
+    resolve_iterative_sort_with_cache(
+        rezzy::IterativeInputs::new(
+            &utils::build_unconflicted_state_test_helper(auth_context),
+            conflicted_events,
+            auth_context,
+            version,
+            &mut pl_cache,
+            &String::new(),
+        ),
+        rezzy::ResolveOptions::new(Some(cache), None),
+    )
 }
 
 #[test]
 fn test_pathology_duplicate_auth_poisoning() {
     let path = "tests/fixtures/pathology_data/03-duplicate-auth-poisoning.jsonl";
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
@@ -55,27 +70,19 @@ fn test_pathology_duplicate_auth_poisoning() {
     // not end up larger than V2.1's for the same DAG, and resolution must
     // still converge cleanly (both versions produce the same resolved state).
     let mut cache_v21 = LocalAuthCache::new(StateResVersion::V2_1);
-    let resolved_v21 = resolve_iterative_sort_with_cache(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
-        &conflicted_events,
+    let resolved_v21 = resolve_v_with_cache(
         &auth_context,
-        Some(&mut cache_v21),
+        &conflicted_events,
         StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-        None,
-        &String::new(),
+        &mut cache_v21,
     );
 
     let mut cache_v211 = LocalAuthCache::new(StateResVersion::V2_1_1);
-    let resolved_v211 = resolve_iterative_sort_with_cache(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
-        &conflicted_events,
+    let resolved_v211 = resolve_v_with_cache(
         &auth_context,
-        Some(&mut cache_v211),
+        &conflicted_events,
         StateResVersion::V2_1_1,
-        &mut std::collections::HashMap::new(),
-        None,
-        &String::new(),
+        &mut cache_v211,
     );
 
     // The poisoned event doesn't ruin resolution: both versions converge to
@@ -106,7 +113,7 @@ fn test_pathology_duplicate_auth_poisoning() {
 #[test]
 fn test_pathology_invite_lock() {
     let path = "tests/fixtures/pathology_data/02-invite-lock-regression.jsonl";
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mut auth_context = HashMap::new();
     let mut conflicted_events = HashMap::new();
@@ -136,14 +143,7 @@ fn test_pathology_invite_lock() {
 
     let expected_join_id = "$g9ncvyzCxY7U+znAlCxynnqcyZfM7jkJy140WWkxrbo";
 
-    let resolved_v21 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
-        &conflicted_events,
-        &auth_context,
-        StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved_v21 = resolve_v(&auth_context, &conflicted_events, StateResVersion::V2_1);
     let winning_v21 = resolved_v21.get(&user_key).expect(
         "V2.1 must keep @nexy:B joined: the later public join_rules wins over the invite lock",
     );
@@ -154,14 +154,7 @@ fn test_pathology_invite_lock() {
         .expect("winning event must exist");
     assert_eq!(event_v21.get_membership(), Some("join"));
 
-    let resolved_v211 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&auth_context),
-        &conflicted_events,
-        &auth_context,
-        StateResVersion::V2_1_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved_v211 = resolve_v(&auth_context, &conflicted_events, StateResVersion::V2_1_1);
     let winning_v211 = resolved_v211
         .get(&user_key)
         .expect("V2.1.1 must also keep @nexy:B joined (no hallucinated missing join)");
@@ -222,7 +215,7 @@ fn simulate_federation_lag(
 fn test_pathology_fruitless_search_bounded() {
     // Note: The python script outputs hyphens, and we need to point to the python folder if we didn't move it properly
     let path = "tests/fixtures/pathology_data/pathology_06-fruitless-search-small.jsonl";
-    let events = parse_jsonl_dag(path);
+    let events = utils::parse_jsonl_dag(path);
 
     let mut full_graph = HashMap::new();
     let mut conflicted_event_ids = Vec::new();

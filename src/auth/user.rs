@@ -76,6 +76,17 @@ pub fn get_sender_power_level<Id, C: EventContent, E: EventLike<Id = Id, Content
     DEFAULT_PL_USER // Default power level if no power_levels event exists
 }
 
+/// Whether `user`'s effective power level meets `threshold`. Shared by the
+/// `user_can_*` threshold queries below.
+fn meets_threshold<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
+    user: &str,
+    state: &impl StateProvider<Id, C, E>,
+    version: StateResVersion,
+    threshold: i64,
+) -> bool {
+    get_sender_power_level(user, state, version) >= threshold
+}
+
 /// Whether a user's power level meets the invite threshold.
 ///
 /// **Threshold-only** — does not check target membership, sender≠target, or
@@ -86,7 +97,7 @@ pub fn user_can_invite<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
-    get_sender_power_level(user, state, version) >= super::get_invite_power_level(state)
+    meets_threshold(user, state, version, super::get_invite_power_level(state))
 }
 
 /// Whether a user's power level meets the ban threshold.
@@ -99,7 +110,7 @@ pub fn user_can_ban<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
-    get_sender_power_level(user, state, version) >= super::get_ban_power_level(state)
+    meets_threshold(user, state, version, super::get_ban_power_level(state))
 }
 
 /// Whether a user's power level meets the kick threshold.
@@ -112,7 +123,7 @@ pub fn user_can_kick<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
-    get_sender_power_level(user, state, version) >= super::get_kick_power_level(state)
+    meets_threshold(user, state, version, super::get_kick_power_level(state))
 }
 
 /// Whether a user's power level meets the redact threshold.
@@ -125,7 +136,7 @@ pub fn user_can_redact<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
     state: &impl StateProvider<Id, C, E>,
     version: StateResVersion,
 ) -> bool {
-    get_sender_power_level(user, state, version) >= super::get_redact_power_level(state)
+    meets_threshold(user, state, version, super::get_redact_power_level(state))
 }
 
 #[cfg(test)]
@@ -133,13 +144,13 @@ pub fn user_can_redact<Id, C: EventContent, E: EventLike<Id = Id, Content = C>>(
 mod tests {
     use super::*;
     use crate::basespec::rezzy_types::LeanEvent;
+    use crate::json;
     use alloc::collections::BTreeMap;
     use alloc::string::String;
-    use serde_json::json;
 
     type State = BTreeMap<(String, String), LeanEvent>;
 
-    fn state_with_pl(pl: serde_json::Value) -> State {
+    fn state_with_pl(pl: crate::json::Value) -> State {
         let mut s = State::new();
         s.insert(
             ("m.room.power_levels".into(), String::new()),

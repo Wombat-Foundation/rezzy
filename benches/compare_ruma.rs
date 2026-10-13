@@ -448,6 +448,10 @@ fn run_shootout(
         .sum();
 
     println!("================================================================================");
+    // Section header so `scripts/compare_bench.py` keys these metrics by
+    // scenario; the raw timing labels repeat once per scenario.
+    println!(" [state] BENCHMARK: ruma_vs_rezzy/{scenario_name}");
+    println!("================================================================================");
     println!("  SCENARIO: {scenario_name}");
     println!(
         "  DAG PDUs: {} | Members: {} | Forks: {} | Conflicted Keys: {}",

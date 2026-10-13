@@ -30,26 +30,22 @@ use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Deterministic xorshift64* — reproducible across runs (fixed seed).
-struct Rng(u64);
+#[path = "../support/deterministic_rng.rs"]
+mod deterministic_rng;
+use deterministic_rng::Rng;
 
 impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed | 1)
-    }
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
     fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        let bound = u64::try_from(n).expect("usize fits in u64 on supported targets");
+        let value = self
+            .next()
+            .checked_rem(bound)
+            .expect("no call site passes a zero bound");
+        usize::try_from(value).expect("value is below a usize bound")
     }
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len())]
+
+    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        &items[self.below(items.len())]
     }
 }
 
@@ -63,7 +59,7 @@ fn iteration_rng(base_seed: u64, iter: u64) -> Rng {
 }
 
 type SKey = (rezzy::basespec::event_types::EventType, String);
-type SharedState = imbl::OrdMap<SKey, String>;
+type SharedState = rezzy::PersistentOrdMap<SKey, String>;
 
 /// A generated resolution problem: base unconflicted state + conflicted
 /// candidates + the full auth context (all events).
@@ -71,6 +67,95 @@ struct Problem {
     unconflicted: SharedState,
     conflicted: HashMap<String, LeanEvent>,
     auth_context: HashMap<String, LeanEvent>,
+}
+
+fn base_create(ts: u64) -> LeanEvent {
+    crate::test_lib::admin_create_12_1(ts)
+}
+
+fn base_admin_join(ts: u64) -> LeanEvent {
+    crate::test_lib::admin_join(ts)
+}
+
+fn pl_event(ts: u64, event_id: &str, content: rezzy::JsonValue) -> LeanEvent {
+    LeanEvent {
+        event_id: event_id.to_string(),
+        event_type: "m.room.power_levels".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content,
+        auth_events: vec!["$create".into(), "$admin_join".into()],
+        prev_events: vec!["$admin_join".into()],
+        depth: 3,
+        ..Default::default()
+    }
+}
+
+fn jr_event(ts: u64, event_id: &str, join_rule: &str, pl_id: &str) -> LeanEvent {
+    LeanEvent {
+        event_id: event_id.to_string(),
+        event_type: "m.room.join_rules".into(),
+        state_key: Some(String::new()),
+        sender: "@admin:x".into(),
+        origin_server_ts: ts,
+        content: rezzy::json!({ "join_rule": join_rule }),
+        auth_events: vec!["$create".into(), "$admin_join".into(), pl_id.into()],
+        prev_events: vec![pl_id.into()],
+        depth: 4,
+        ..Default::default()
+    }
+}
+
+/// The standard `$pl`: admin=100, `state_default` 50, `ban` 50.
+fn base_pl(ts: u64) -> LeanEvent {
+    pl_event(
+        ts,
+        "$pl",
+        rezzy::json!({ "users": { "@admin:x": 100 }, "users_default": 0, "state_default": 50, "ban": 50 }),
+    )
+}
+
+fn auth_context_of(events: &[&LeanEvent]) -> HashMap<String, LeanEvent> {
+    let mut auth_context = HashMap::new();
+    for ev in events {
+        auth_context.insert(ev.event_id.clone(), (*ev).clone());
+    }
+    auth_context
+}
+
+fn unconflicted_of(events: &[&LeanEvent]) -> SharedState {
+    let mut unconflicted = SharedState::new();
+    for ev in events {
+        let sk = ev.state_key.clone().unwrap_or_default();
+        unconflicted.insert(
+            (
+                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
+                sk,
+            ),
+            ev.event_id.clone(),
+        );
+    }
+    unconflicted
+}
+
+/// Runs `body` for `iter` in `0..iter_count`, striped across all available
+/// threads. Each iteration is independent (seeded by `iteration_rng`).
+fn run_parallel(iter_count: u64, body: impl Fn(u64) + Sync) {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let body = &body;
+    std::thread::scope(|s| {
+        for t in 0..threads {
+            s.spawn(move || {
+                let mut iter = u64::try_from(t).unwrap_or(0);
+                let stride = u64::try_from(threads).unwrap_or(1);
+                while iter < iter_count {
+                    body(iter);
+                    iter += stride;
+                }
+            });
+        }
+    });
 }
 
 fn mem_event(
@@ -89,11 +174,19 @@ fn mem_event(
     for _ in 0..n {
         prev_events.push(pool[rng.below(pool.len())].clone());
     }
-    // auth: always create; plus a subset of the pool (which includes earlier
-    // candidates, so a candidate can transitively cite a prior candidate).
+    // auth: always create and power_levels (real auth selection always cites
+    // the room's PL; omitting it makes the mainline position `len()`); plus a
+    // subset of the pool (which includes earlier candidates, so a candidate
+    // can transitively cite a prior candidate).
     auth_events.push("$create".to_string());
+    // The bootstrap creator join predates `$pl` (which cites it), so it is
+    // the one legitimate exception: key off whether `$pl` is in the pool.
+    let has_pl = pool.iter().any(|b| b == "$pl");
+    if has_pl {
+        auth_events.push("$pl".to_string());
+    }
     for b in pool {
-        if rng.below(3) == 0 {
+        if rng.below(3) == 0 && b != "$pl" && b != "$create" {
             auth_events.push(b.clone());
         }
     }
@@ -103,7 +196,7 @@ fn mem_event(
         state_key: Some(target.to_string()),
         sender: sender.to_string(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "membership": membership }),
+        content: rezzy::json!({ "membership": membership }),
         prev_events,
         auth_events,
         depth,
@@ -123,15 +216,7 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     let users = ["@u0:x", "@u1:x", "@u2:x", "@u3:x", "@u4:x", "@u5:x"];
     let mut ts = seed_base_ts;
 
-    let create: LeanEvent = LeanEvent {
-        event_id: "$create".to_string(),
-        event_type: "m.room.create".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
-        ..Default::default()
-    };
+    let create = base_create(ts);
     ts += 1;
     let admin_join = mem_event(
         rng,
@@ -145,42 +230,20 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     );
     ts += 1;
 
-    let mut pl_users = serde_json::Map::new();
-    pl_users.insert("@admin:x".to_string(), serde_json::json!(100));
+    let mut pl_users = rezzy::JsonObject::new();
+    pl_users.insert("@admin:x".to_string(), rezzy::json!(100));
     for u in users {
         if rng.below(3) == 0 {
-            pl_users.insert(u.to_string(), serde_json::json!(50));
+            pl_users.insert(u.to_string(), rezzy::json!(50));
         }
     }
-    let pl: LeanEvent = LeanEvent {
-        event_id: "$pl".to_string(),
-        event_type: "m.room.power_levels".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "users": pl_users, "state_default": 50, "ban": 50 }),
-        auth_events: vec!["$create".to_string(), "$admin_join".to_string()],
-        prev_events: vec!["$admin_join".to_string()],
-        depth: 3,
-        ..Default::default()
-    };
+    let pl = pl_event(
+        ts,
+        "$pl",
+        rezzy::json!({ "users": pl_users, "state_default": 50, "ban": 50 }),
+    );
     ts += 1;
-    let jr: LeanEvent = LeanEvent {
-        event_id: "$jr".to_string(),
-        event_type: "m.room.join_rules".to_string(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".to_string(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec![
-            "$create".to_string(),
-            "$admin_join".to_string(),
-            "$pl".to_string(),
-        ],
-        prev_events: vec!["$pl".to_string()],
-        depth: 4,
-        ..Default::default()
-    };
+    let jr = jr_event(ts, "$jr", "public", "$pl");
     ts += 1;
 
     let base: Vec<String> = vec![
@@ -189,22 +252,8 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         "$jr".to_string(),
     ];
 
-    let mut auth_context = HashMap::new();
-    for ev in [&create, &admin_join, &pl, &jr] {
-        auth_context.insert(ev.event_id.clone(), ev.clone());
-    }
-
-    let mut unconflicted = SharedState::new();
-    for ev in [&create, &admin_join, &pl, &jr] {
-        let sk = ev.state_key.clone().unwrap_or_default();
-        unconflicted.insert(
-            (
-                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                sk,
-            ),
-            ev.event_id.clone(),
-        );
-    }
+    let mut auth_context = auth_context_of(&[&create, &admin_join, &pl, &jr]);
+    let unconflicted = unconflicted_of(&[&create, &admin_join, &pl, &jr]);
 
     let mut conflicted = HashMap::new();
 
@@ -256,41 +305,15 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     // Occasionally a conflicted join_rules or power_levels candidate.
     match rng.below(3) {
         0 => {
-            let jr2 = LeanEvent {
-                event_id: format!("$jr_conf_{seed_base_ts}"),
-                event_type: "m.room.join_rules".to_string(),
-                state_key: Some(String::new()),
-                sender: "@admin:x".to_string(),
-                origin_server_ts: ts,
-                content: serde_json::json!({ "join_rule": "invite" }),
-                auth_events: vec![
-                    "$create".to_string(),
-                    "$admin_join".to_string(),
-                    "$pl".to_string(),
-                ],
-                prev_events: vec!["$pl".to_string()],
-                depth: 4,
-                ..Default::default()
-            };
+            let jr2 = jr_event(ts, &format!("$jr_conf_{seed_base_ts}"), "invite", "$pl");
             conflicted.insert(format!("$jr_conf_{seed_base_ts}"), jr2);
         }
         1 => {
-            let pl2 = LeanEvent {
-                event_id: format!("$pl_conf_{seed_base_ts}"),
-                event_type: "m.room.power_levels".to_string(),
-                state_key: Some(String::new()),
-                sender: "@admin:x".to_string(),
-                origin_server_ts: ts,
-                content: serde_json::json!({ "users": { "@admin:x": 100 }, "state_default": 0 }),
-                auth_events: vec![
-                    "$create".to_string(),
-                    "$admin_join".to_string(),
-                    "$pl".to_string(),
-                ],
-                prev_events: vec!["$pl".to_string()],
-                depth: 4,
-                ..Default::default()
-            };
+            let pl2 = pl_event(
+                ts,
+                &format!("$pl_conf_{seed_base_ts}"),
+                rezzy::json!({ "users": { "@admin:x": 100 }, "state_default": 0 }),
+            );
             conflicted.insert(format!("$pl_conf_{seed_base_ts}"), pl2);
         }
         _ => {}
@@ -309,14 +332,14 @@ fn gen_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
 }
 
 fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
-    resolve_iterative_sort(
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
         &p.unconflicted,
         &p.conflicted,
         &p.auth_context,
         version,
         &mut HashMap::new(),
         &String::new(),
-    )
+    ))
 }
 
 /// Differential coverage over the multi-level random DAG generator.
@@ -345,27 +368,17 @@ fn resolve(p: &Problem, version: StateResVersion) -> SharedState {
 fn differential_v21_equals_v211() {
     const ITER_COUNT: u64 = 2000;
     const BASE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
 
-    std::thread::scope(|s| {
-        for t in 0..threads {
-            s.spawn(move || {
-                let mut iter = u64::try_from(t).unwrap_or(0);
-                let stride = u64::try_from(threads).unwrap_or(1);
-                while iter < ITER_COUNT {
-                    let mut rng = iteration_rng(BASE_SEED, iter);
-                    let problem = gen_problem(&mut rng, 1000 + iter * 13);
-                    let r21 = resolve(&problem, StateResVersion::V2_1);
-                    let r211 = resolve(&problem, StateResVersion::V2_1_1);
-                    assert_eq!(
-                        r21, r211,
-                        "V2.1 and V2.1.1 diverged on DAG iteration {iter}: \
-                         the CDO likely dropped a candidate full resolution would keep"
-                    );
-                    iter += stride;
-                }
-            });
-        }
+    run_parallel(ITER_COUNT, |iter| {
+        let mut rng = iteration_rng(BASE_SEED, iter);
+        let problem = gen_problem(&mut rng, 1000 + iter * 13);
+        let r21 = resolve(&problem, StateResVersion::V2_1);
+        let r211 = resolve(&problem, StateResVersion::V2_1_1);
+        assert_eq!(
+            r21, r211,
+            "V2.1 and V2.1.1 diverged on DAG iteration {iter}: \
+             the CDO likely dropped a candidate full resolution would keep"
+        );
     });
 }
 
@@ -479,74 +492,16 @@ fn cdo_drop_rate_measured() {
 #[allow(clippy::too_many_lines)]
 fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     let mut ts = seed_base_ts;
-    let create: LeanEvent = LeanEvent {
-        event_id: "$create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
-        ..Default::default()
-    };
+    let create = base_create(ts);
     ts += 1;
-    let admin_join: LeanEvent = LeanEvent {
-        event_id: "$admin_join".into(),
-        event_type: "m.room.member".into(),
-        state_key: Some("@admin:x".into()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        prev_events: vec!["$create".into()],
-        auth_events: vec!["$create".into()],
-        depth: 2,
-        ..Default::default()
-    };
+    let admin_join = base_admin_join(ts);
     ts += 1;
-    let pl: LeanEvent = LeanEvent {
-        event_id: "$pl".into(),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({
-            "users": { "@admin:x": 100 },
-            "users_default": 0,
-            "state_default": 50,
-            "ban": 50
-        }),
-        auth_events: vec!["$create".into(), "$admin_join".into()],
-        prev_events: vec!["$admin_join".into()],
-        depth: 3,
-        ..Default::default()
-    };
+    let pl = base_pl(ts);
     ts += 1;
-    let jr: LeanEvent = LeanEvent {
-        event_id: "$jr".into(),
-        event_type: "m.room.join_rules".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
-        prev_events: vec!["$pl".into()],
-        depth: 4,
-        ..Default::default()
-    };
+    let jr = jr_event(ts, "$jr", "public", "$pl");
 
-    let mut auth_context = HashMap::new();
-    for ev in [&create, &admin_join, &pl, &jr] {
-        auth_context.insert(ev.event_id.clone(), ev.clone());
-    }
-    let mut unconflicted = SharedState::new();
-    for ev in [&create, &admin_join, &pl, &jr] {
-        let sk = ev.state_key.clone().unwrap_or_default();
-        unconflicted.insert(
-            (
-                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                sk,
-            ),
-            ev.event_id.clone(),
-        );
-    }
+    let unconflicted = unconflicted_of(&[&create, &admin_join, &pl, &jr]);
+    let auth_context = auth_context_of(&[&create, &admin_join, &pl, &jr]);
 
     // A low-power user issues a structural ban/kick at @victim (auth-invalid).
     let attacker = ["@mallory:x", "@eve:x", "@dave:x"][rng.below(3)];
@@ -558,7 +513,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         sender: attacker.to_string(),
         origin_server_ts: seed_base_ts + 1000,
         power_level: 0, // no forged priority: earlier ts breaks the tie vs the join
-        content: serde_json::json!({ "membership": atk_membership }),
+        content: rezzy::json!({ "membership": *atk_membership }),
         auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
         prev_events: vec!["$jr".into()],
         depth: 5,
@@ -571,7 +526,7 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
         sender: "@victim:x".into(),
         origin_server_ts: seed_base_ts + 1100,
         power_level: 0,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rezzy::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -611,84 +566,37 @@ fn gen_dominated_winner_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
 #[allow(clippy::too_many_lines)]
 fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem {
     let mut ts = seed_base_ts;
-    let create: LeanEvent = LeanEvent {
-        event_id: "$create".into(),
-        event_type: "m.room.create".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
-        ..Default::default()
-    };
+    let create = base_create(ts);
     ts += 1;
-    let admin_join: LeanEvent = LeanEvent {
-        event_id: "$admin_join".into(),
-        event_type: "m.room.member".into(),
-        state_key: Some("@admin:x".into()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        prev_events: vec!["$create".into()],
-        auth_events: vec!["$create".into()],
-        depth: 2,
-        ..Default::default()
-    };
+    let admin_join = base_admin_join(ts);
     ts += 1;
     // Two conflicting power_levels candidates on the same (type, "") slot --
     // both cite the same prev/auth chain, so neither dominates the other and
     // both stay in `conflicted` for the power phase to arbitrate.
     let u2_power = 30 + u64::try_from(rng.below(40)).unwrap_or(30); // 30..70
-    let pl_a: LeanEvent = LeanEvent {
-        event_id: format!("$pl_a_{seed_base_ts}"),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({
+    let pl_a = pl_event(
+        ts,
+        &format!("$pl_a_{seed_base_ts}"),
+        rezzy::json!({
             "users": { "@admin:x": 100, "@u2:x": u2_power },
             "users_default": 0,
             "state_default": 50,
             "events_default": 0
         }),
-        auth_events: vec!["$create".into(), "$admin_join".into()],
-        prev_events: vec!["$admin_join".into()],
-        depth: 3,
-        ..Default::default()
-    };
+    );
     ts += 1;
-    let pl_b: LeanEvent = LeanEvent {
-        event_id: format!("$pl_b_{seed_base_ts}"),
-        event_type: "m.room.power_levels".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({
+    let pl_b = pl_event(
+        ts,
+        &format!("$pl_b_{seed_base_ts}"),
+        rezzy::json!({
             "users": { "@admin:x": 100, "@u2:x": u2_power.saturating_sub(20) },
             "users_default": 0,
             "state_default": 50,
             "events_default": 0
         }),
-        auth_events: vec!["$create".into(), "$admin_join".into()],
-        prev_events: vec!["$admin_join".into()],
-        depth: 3,
-        ..Default::default()
-    };
+    );
     ts += 1;
-    let jr: LeanEvent = LeanEvent {
-        event_id: "$jr".into(),
-        event_type: "m.room.join_rules".into(),
-        state_key: Some(String::new()),
-        sender: "@admin:x".into(),
-        origin_server_ts: ts,
-        content: serde_json::json!({ "join_rule": "public" }),
-        auth_events: vec![
-            "$create".into(),
-            "$admin_join".into(),
-            pl_a.event_id.clone(),
-        ],
-        prev_events: vec![pl_a.event_id.clone()],
-        depth: 4,
-        ..Default::default()
-    };
+    let jr = jr_event(ts, "$jr", "public", &pl_a.event_id);
     ts += 1;
     let u2_join: LeanEvent = LeanEvent {
         event_id: "$u2_join".into(),
@@ -696,7 +604,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: Some("@u2:x".into()),
         sender: "@u2:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "membership": "join" }),
+        content: rezzy::json!({ "membership": "join" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -709,21 +617,8 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
     };
     ts += 1;
 
-    let mut auth_context = HashMap::new();
-    for ev in [&create, &admin_join, &pl_a, &pl_b, &jr, &u2_join] {
-        auth_context.insert(ev.event_id.clone(), ev.clone());
-    }
-    let mut unconflicted = SharedState::new();
-    for ev in [&create, &admin_join, &jr, &u2_join] {
-        let sk = ev.state_key.clone().unwrap_or_default();
-        unconflicted.insert(
-            (
-                rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                sk,
-            ),
-            ev.event_id.clone(),
-        );
-    }
+    let auth_context = auth_context_of(&[&create, &admin_join, &pl_a, &pl_b, &jr, &u2_join]);
+    let unconflicted = unconflicted_of(&[&create, &admin_join, &jr, &u2_join]);
 
     // The non-power candidate: a plain message from @u2, mid-power-phase,
     // citing the still-conflicted `$pl_a` in its auth_events. Authing it
@@ -734,7 +629,7 @@ fn gen_power_phase_fallback_problem(rng: &mut Rng, seed_base_ts: u64) -> Problem
         state_key: None,
         sender: "@u2:x".into(),
         origin_server_ts: ts,
-        content: serde_json::json!({ "body": "hi" }),
+        content: rezzy::json!({ "body": "hi" }),
         auth_events: vec![
             "$create".into(),
             "$admin_join".into(),
@@ -842,52 +737,42 @@ fn power_phase_fallback_generator() {
 fn determinism_same_input_same_output() {
     const ITER_COUNT: u64 = 1000;
     const BASE_SEED: u64 = 0x243F_6A88_85A3_08D3;
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
 
-    std::thread::scope(|s| {
-        for t in 0..threads {
-            s.spawn(move || {
-                let mut iter = u64::try_from(t).unwrap_or(0);
-                let stride = u64::try_from(threads).unwrap_or(1);
-                while iter < ITER_COUNT {
-                    let mut rng = iteration_rng(BASE_SEED, iter);
-                    let problem = gen_problem(&mut rng, 7000 + iter * 17);
-                    // Build an equivalent problem with reversed map insertion orders
-                    let mut rev_conflicted = HashMap::default();
-                    let mut conflicted_vec: Vec<_> = problem
-                        .conflicted
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    conflicted_vec.reverse();
-                    for (k, v) in conflicted_vec {
-                        rev_conflicted.insert(k, v);
-                    }
-                    let mut rev_auth = HashMap::default();
-                    let mut auth_vec: Vec<_> = problem
-                        .auth_context
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    auth_vec.reverse();
-                    for (k, v) in auth_vec {
-                        rev_auth.insert(k, v);
-                    }
-                    let problem_b = Problem {
-                        unconflicted: problem.unconflicted.clone(),
-                        conflicted: rev_conflicted,
-                        auth_context: rev_auth,
-                    };
-                    let a = resolve(&problem, StateResVersion::V2_1_1);
-                    let b = resolve(&problem_b, StateResVersion::V2_1_1);
-                    assert_eq!(
-                        a, b,
-                        "resolution not deterministic under different map insertion orders on iteration {iter}"
-                    );
-                    iter += stride;
-                }
-            });
+    run_parallel(ITER_COUNT, |iter| {
+        let mut rng = iteration_rng(BASE_SEED, iter);
+        let problem = gen_problem(&mut rng, 7000 + iter * 17);
+        // Build an equivalent problem with reversed map insertion orders
+        let mut rev_conflicted = HashMap::default();
+        let mut conflicted_vec: Vec<_> = problem
+            .conflicted
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        conflicted_vec.reverse();
+        for (k, v) in conflicted_vec {
+            rev_conflicted.insert(k, v);
         }
+        let mut rev_auth = HashMap::default();
+        let mut auth_vec: Vec<_> = problem
+            .auth_context
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        auth_vec.reverse();
+        for (k, v) in auth_vec {
+            rev_auth.insert(k, v);
+        }
+        let problem_b = Problem {
+            unconflicted: problem.unconflicted.clone(),
+            conflicted: rev_conflicted,
+            auth_context: rev_auth,
+        };
+        let a = resolve(&problem, StateResVersion::V2_1_1);
+        let b = resolve(&problem_b, StateResVersion::V2_1_1);
+        assert_eq!(
+            a, b,
+            "resolution not deterministic under different map insertion orders on iteration {iter}"
+        );
     });
 }
 
@@ -917,7 +802,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             sender: "@admin:x".into(),
             origin_server_ts: ts,
             depth: 1,
-            content: serde_json::json!({ "room_version": "12.1", "creator": "@admin:x" }),
+            content: rezzy::json!({ "room_version": "12.1", "creator": "@admin:x" }),
             ..Default::default()
         };
         ts += 1;
@@ -930,47 +815,15 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             depth: 2,
             prev_events: vec!["$create".into()],
             auth_events: vec!["$create".into()],
-            content: serde_json::json!({ "membership": "join" }),
+            content: rezzy::json!({ "membership": "join" }),
             ..Default::default()
         };
         ts += 1;
-        let pl: LeanEvent = LeanEvent {
-            event_id: "$pl".into(),
-            event_type: "m.room.power_levels".into(),
-            state_key: Some(String::new()),
-            sender: "@admin:x".into(),
-            origin_server_ts: ts,
-            depth: 3,
-            content: serde_json::json!({ "users": { "@admin:x": 100 }, "users_default": 0, "state_default": 50, "ban": 50 }),
-            auth_events: vec!["$create".into(), "$admin_join".into()],
-            prev_events: vec!["$admin_join".into()],
-            ..Default::default()
-        };
+        let pl = base_pl(ts);
         ts += 1;
-        let jr: LeanEvent = LeanEvent {
-            event_id: "$jr".into(),
-            event_type: "m.room.join_rules".into(),
-            state_key: Some(String::new()),
-            sender: "@admin:x".into(),
-            origin_server_ts: ts,
-            depth: 4,
-            content: serde_json::json!({ "join_rule": "public" }),
-            auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
-            prev_events: vec!["$pl".into()],
-            ..Default::default()
-        };
-        let mut auth_context = HashMap::new();
-        let mut unconflicted = SharedState::new();
-        for ev in [&create, &admin_join, &pl, &jr] {
-            auth_context.insert(ev.event_id.clone(), ev.clone());
-            unconflicted.insert(
-                (
-                    rezzy::basespec::event_types::EventType::from(ev.event_type.as_str()),
-                    ev.state_key.clone().unwrap_or_default(),
-                ),
-                ev.event_id.clone(),
-            );
-        }
+        let jr = jr_event(ts, "$jr", "public", "$pl");
+        let auth_context = auth_context_of(&[&create, &admin_join, &pl, &jr]);
+        let unconflicted = unconflicted_of(&[&create, &admin_join, &pl, &jr]);
         (vec![create, admin_join, pl, jr], auth_context, unconflicted)
     }
 
@@ -994,7 +847,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6000,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "membership": "ban" }),
+            content: rezzy::json!({ "membership": "ban" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()
@@ -1008,7 +861,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6000,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "join_rule": "invite" }),
+            content: rezzy::json!({ "join_rule": "invite" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()
@@ -1022,7 +875,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6000,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "users": { "@admin:x": 100, "@victim:x": 0 }, "users_default": 0 }),
+            content: rezzy::json!({ "users": { "@admin:x": 100, "@victim:x": 0 }, "users_default": 0 }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()
@@ -1038,7 +891,7 @@ fn cdo_dominator_validity_gap_scope_inverted() {
             origin_server_ts: 6100,
             depth: 5,
             power_level: 0,
-            content: serde_json::json!({ "membership": "join" }),
+            content: rezzy::json!({ "membership": "join" }),
             auth_events: vec!["$create".into(), "$admin_join".into(), "$pl".into()],
             prev_events: vec!["$jr".into()],
             ..Default::default()

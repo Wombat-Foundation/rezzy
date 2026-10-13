@@ -24,7 +24,7 @@
 //! `O(r·k·P)`, and summing that over `m = T/P` audits by elapsed time `T`
 //! gives `Θ(n²)` in the eventual size `n = r·T` — not `O(n)` per call as a
 //! "cheaper index" framing might suggest. This is true regardless of which
-//! structure backs a periodic audit (exact `HashSet`, `RoaringBitmap`, a
+//! structure backs a periodic audit (exact `HashSet`, a bitmap, a
 //! probabilistic filter); the problem is the fixed-cadence-while-growing
 //! architecture, not the index type. A `RefcountTable` sidesteps this
 //! entirely by never re-deriving anything: each transition's cost is bounded
@@ -108,7 +108,6 @@ use super::StructuralHash;
 /// let zeroed = chain.advance(&delta_b, root_b_hash)?;
 /// // `zeroed` contains hashes safe to delete (subject to branching check).
 /// ```
-#[derive(Debug, Clone)]
 pub struct LinearRootChain {
     table: RefcountTable,
     /// The currently live root's hash. `None` before bootstrap.
@@ -276,7 +275,7 @@ impl LinearRootChain {
 /// Never performs a full-universe scan — every operation's cost is
 /// proportional to the number of hashes passed to it, not to the table's
 /// total size. See the module docs for the full timing contract.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct RefcountTable {
     counts: HashMap<StructuralHash, u64>,
 }
@@ -475,6 +474,14 @@ mod tests {
         }
     }
 
+    fn assert_contracted_to(chain: &LinearRootChain, zeroed: &[StructuralHash]) {
+        assert_eq!(chain.current_root(), Some(h(10)));
+        assert!(!chain.has_pending_retirement());
+        assert_eq!(chain.count(&h(1)), 0);
+        assert_eq!(chain.count(&h(2)), 1);
+        assert!(zeroed.contains(&h(1)));
+    }
+
     #[test]
     fn bootstrap_sets_current_root() {
         let chain = LinearRootChain::bootstrap(vec![h(1), h(2)], h(0));
@@ -490,11 +497,7 @@ mod tests {
         // Root A has hash 1. Transition to root B: new=2, superseded=1.
         let d = delta(&[2], &[1]);
         let zeroed = chain.advance(&d, h(10)).unwrap();
-        assert_eq!(chain.current_root(), Some(h(10)));
-        assert!(!chain.has_pending_retirement());
-        assert_eq!(chain.count(&h(1)), 0);
-        assert_eq!(chain.count(&h(2)), 1);
-        assert!(zeroed.contains(&h(1)));
+        assert_contracted_to(&chain, &zeroed);
     }
 
     #[test]
@@ -506,10 +509,7 @@ mod tests {
         assert!(chain.has_pending_retirement());
 
         let zeroed = chain.retire_previous().unwrap();
-        assert!(!chain.has_pending_retirement());
-        assert_eq!(chain.count(&h(1)), 0);
-        assert_eq!(chain.count(&h(2)), 1);
-        assert!(zeroed.contains(&h(1)));
+        assert_contracted_to(&chain, &zeroed);
     }
 
     #[test]

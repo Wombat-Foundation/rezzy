@@ -267,11 +267,11 @@ would flake rather than reliably exercise the path. `benches/reconcile.rs`'s
 without assertions (it's a timing harness, not a correctness gate). The strata
 estimator now has a shared work budget (`MAX_STRATA_FACTOR_WORK`) preventing the
 32× amplification path; the residual gap is the bucket-split retry path's
-end-to-end determinism, not the estimator's cost model. Circle back
-with a construction that provably lands a chosen delta in exactly one prefix
-range at a chosen depth (rather than approximating it via hash clustering) so
-the round count is an exact, assertable function of the inputs instead of an
-empirical one.
+end-to-end determinism, not the estimator's cost model. Circle back with a
+construction that provably lands a chosen delta in exactly one prefix range at a
+chosen depth (rather than approximating it via hash clustering) so the round
+count is an exact, assertable function of the inputs instead of an empirical
+one.
 
 ### Dead CDO module (`src/resolve/cdo.rs`)
 

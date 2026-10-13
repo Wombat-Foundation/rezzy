@@ -1,0 +1,49 @@
+[package]
+name = "rezzy-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+description = "CLI binary for the rezzy Matrix state resolution engine."
+keywords = ["matrix", "state-resolution", "federation", "cli"]
+categories = ["command-line-utilities"]
+autobins = false
+
+[[bin]]
+name = "rezzy"
+path = "src/main.rs"
+
+[features]
+default = ["std", "tls"]
+std = ["rezzy/std", "clap/std"]
+mimalloc = ["dep:mimalloc"]
+tls = [
+    "ureq/rustls",
+    "dep:ed25519-zebra",
+    "ed25519-zebra/std",
+    "dep:argon2",
+    "dep:chacha20poly1305",
+    "dep:rpassword",
+    "dep:getrandom",
+    "getrandom/std",
+]
+
+[dependencies]
+argon2 = { workspace = true, optional = true }
+base64 = { workspace = true, features = ["alloc"] }
+chacha20poly1305 = { workspace = true, optional = true }
+clap.workspace = true
+clap_complete.workspace = true
+ed25519-zebra = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+mimalloc = { workspace = true, optional = true }
+rezzy = { workspace = true, default-features = false, features = ["cli"] }
+rpassword = { workspace = true, optional = true }
+sha2.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

@@ -192,3 +192,64 @@ a separate crate (`serde_canonical_json` already exists).
 | N-way fork resolution        | `resolve::multi::resolve_state_maps`   |
 | State-at computation         | `state::at::compute_state_at`          |
 | Auth types enumeration       | `auth::auth_types_for_event`           |
+
+## Signed federation CLI utilities
+
+The CLI can issue generic signed server-server requests and crawl a remote
+room's event DAG:
+
+```sh
+MATRIX_ORIGIN=example.org \
+MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
+rezzy federation request --destination remote.example --path /_matrix/federation/v1/version
+
+MATRIX_ORIGIN=example.org \
+MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
+rezzy federation get-remote-dag --origin example.org \
+  --destination remote.example --room '!room:example.org' \
+  --from '$event:example.org' --output remote.jsonl
+```
+
+Signing keys are read from a passphrase-encrypted file (Argon2id +
+XChaCha20-Poly1305). Plaintext key files are rejected. Point at the file with
+`--signing-key`,
+`MATRIX_SERVER_SIGNING_KEY_<DOMAIN_WITH_DOTS_AND_HYPHENS_AS_UNDERSCORES>`, or
+`MATRIX_SERVER_SIGNING_KEY`.
+
+For legacy v3+ JSONL exports that omitted `event_id`, repair them using the
+room-version reference hash before aggregating:
+
+```sh
+rezzy repair-ids \
+  --input remote-dag-room-v6-old.jsonl \
+  --output remote-dag-room-v6-old-repaired.jsonl
+```
+
+The `-v6` token is inferred from the filename. The command only fills missing
+IDs; it does not overwrite the source file. `aggregate --repair-missing-ids`
+uses the same inference for every input file.
+
+Build the CLI with the `tls` feature; federation/keyring support is
+intentionally not present in the default CLI build:
+
+```sh
+cargo build -p rezzy-cli --features tls
+```
+
+Create the encrypted file from a plaintext `ed25519:<id> <seed>` line, then
+delete the plaintext:
+
+```sh
+rezzy federation encrypt-key --input plain.key --output your.server.key && \
+  shred -u plain.key
+
+rezzy federation request --origin your.server \
+  --signing-key your.server.key \
+  --destination remote.example \
+  --path /_matrix/federation/v1/version
+```
+
+The CLI prompts for the passphrase on the terminal. For unattended runs set
+`REZZY_KEY_PASSPHRASE` (weaker: visible to anything that can read the process
+environment). Each (origin, key file) is decrypted once per process; restart the
+CLI after rotating a key.

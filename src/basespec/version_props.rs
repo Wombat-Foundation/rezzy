@@ -18,7 +18,9 @@
 //   - V4+:   same as V3 but with `$` prefix only (no domain)
 // Authoritative: `RoomVersionFormat::uses_reference_hash_event_ids` (v1/v2
 // vs. v3+) in `rezzy_types.rs`; the v3-vs-v4+ base64 padding/charset split
-// is `reconcile::algebraic::EventIdFormat` (`Legacy`/`V3`/`V4Plus`).
+// is `rezzy_recon::EventIdFormat` (`V3`/`V4Plus`). Map
+// `uses_reference_hash_event_ids` onto `rezzy_recon::RoomEventIdKind` when
+// building a frame; v1/v2 are rejected there (out of scope for MSC4521).
 
 // Room ID format
 //   - V1-V11: server-assigned (`!localpart:domain`)
@@ -47,6 +49,8 @@
 // Redaction algorithm
 //   - V1-V10: original redaction rules
 //   - V11:    clarified redaction algorithm
+//   - org.matrix.msc3389.10: V10 rules plus `m.relates_to.{rel_type,event_id}`
+//             preserved on every event type (`msc3389_redaction_rule`)
 //   - V12:    `m.room.redaction` events are subject to auth rules via
 //             `events` / `events_default` in `m.room.power_levels`
 // Authoritative: `RoomVersionFormat::uses_v11_redaction_rules`;

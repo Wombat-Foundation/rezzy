@@ -3,12 +3,34 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{fmt, hash::Hash};
 
-use crate::state::LtHash;
+use crate::incremental::LtHash;
 
-use super::{map_index, HamtNode, NodeRef, StructuralHash, HAMT_MAX_DEPTH};
+use super::{map_index, NodePtr, NodeRef, NodeResolver, StructuralHash, HAMT_MAX_DEPTH};
 
 pub type Delta<K, V> = Vec<(K, V)>;
 pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
+
+/// `Hash + Eq + Clone` bounds shared by the HAMT diff key and value types.
+///
+/// Blanket-implemented, so callers never implement it directly.
+pub trait DeltaElem: Hash + Clone + Eq {}
+impl<T: Hash + Clone + Eq> DeltaElem for T {}
+
+/// Walks both roots and returns the accumulated added/removed leaves.
+fn collect_delta<K, V, E>(
+    root_a: &NodePtr<K, V>,
+    root_b: &NodePtr<K, V>,
+    resolver: &mut impl FnMut(&StructuralHash) -> Result<NodePtr<K, V>, E>,
+) -> DeltaResult<K, V, HamtTraversalError<E>>
+where
+    K: DeltaElem,
+    V: DeltaElem,
+{
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
+    Ok((added, removed))
+}
 
 /// Isolates the delta (added/removed items) between two HAMT tries in O(|Delta|
 /// * log32 N) time. Uses the `LtHash` lattice to quickly short-circuit if the
@@ -19,16 +41,16 @@ pub type DeltaResult<K, V, E> = Result<(Delta<K, V>, Delta<K, V>), E>;
 /// [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses past the deepest depth a
 /// legitimately-built HAMT can have.
 pub fn isolate_delta<K, V, F, E>(
-    root_a: &Arc<HamtNode<K, V>>,
+    root_a: &NodePtr<K, V>,
     lattice_a: &LtHash,
-    root_b: &Arc<HamtNode<K, V>>,
+    root_b: &NodePtr<K, V>,
     lattice_b: &LtHash,
     resolver: &mut F,
 ) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    K: DeltaElem,
+    V: DeltaElem,
+    F: NodeResolver<K, V, E>,
 {
     // Short-circuit only when both the lattice and the root structural hashes
     // match. A lattice collision alone must not suppress a real structural
@@ -37,13 +59,7 @@ where
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let mut added = Vec::new();
-    let mut removed = Vec::new();
-
-    // Begin recursive diffing
-    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
-
-    Ok((added, removed))
+    collect_delta(root_a, root_b, resolver)
 }
 
 /// Isolates the delta (added/removed items) between two HAMT root nodes directly,
@@ -54,25 +70,27 @@ where
 /// [`HamtTraversalError::MaxDepthExceeded`] if the diff recurses past the deepest depth a
 /// legitimately-built HAMT can have.
 pub fn diff_hamt_nodes<K, V, F, E>(
-    root_a: &Arc<HamtNode<K, V>>,
-    root_b: &Arc<HamtNode<K, V>>,
+    root_a: &NodePtr<K, V>,
+    root_b: &NodePtr<K, V>,
     resolver: &mut F,
 ) -> DeltaResult<K, V, HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    K: DeltaElem,
+    V: DeltaElem,
+    F: NodeResolver<K, V, E>,
 {
     if root_a.structural_hash == root_b.structural_hash {
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let mut added = Vec::new();
-    let mut removed = Vec::new();
+    collect_delta(root_a, root_b, resolver)
+}
 
-    diff_nodes(root_a, root_b, &mut added, &mut removed, resolver, 0)?;
-
-    Ok((added, removed))
+pub(super) fn check_depth<E>(depth: usize) -> Result<(), HamtTraversalError<E>> {
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    Ok(())
 }
 
 /// Helper to iterate over the indices of set bits in a 32-bit integer.
@@ -88,32 +106,51 @@ fn set_bits(mut bits: u32) -> impl Iterator<Item = usize> {
     })
 }
 
+/// Iterates the union of two nodemaps, yielding each set slot with whether the
+/// bit is present in `n_a` and/or `n_b`.
+fn union_nodemaps(n_a: u32, n_b: u32) -> impl Iterator<Item = (usize, bool, bool)> {
+    set_bits(n_a | n_b).map(move |slot| {
+        let bit = 1 << slot;
+        (slot, (n_a & bit) != 0, (n_b & bit) != 0)
+    })
+}
+
+/// Returns `true` when two nodes are known equivalent (identical pointer or
+/// structural hash) and the diff can skip them, or an error when `depth` has
+/// reached the routing limit.
+fn diff_short_circuit<K, V, E>(
+    node_a: &NodePtr<K, V>,
+    node_b: &NodePtr<K, V>,
+    depth: usize,
+) -> Result<bool, HamtTraversalError<E>> {
+    if Arc::ptr_eq(node_a, node_b) {
+        return Ok(true);
+    }
+    if node_a.structural_hash == node_b.structural_hash {
+        return Ok(true);
+    }
+    if depth >= HAMT_MAX_DEPTH {
+        return Err(HamtTraversalError::MaxDepthExceeded { depth });
+    }
+    Ok(false)
+}
+
 /// Recursively compute the structural diff between two HAMT nodes.
 fn diff_nodes<K, V, F, E>(
-    node_a: &Arc<HamtNode<K, V>>,
-    node_b: &Arc<HamtNode<K, V>>,
+    node_a: &NodePtr<K, V>,
+    node_b: &NodePtr<K, V>,
     added: &mut Vec<(K, V)>,
     removed: &mut Vec<(K, V)>,
     resolver: &mut F,
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    K: DeltaElem,
+    V: DeltaElem,
+    F: NodeResolver<K, V, E>,
 {
-    // Pointer equality check (fastest path for structurally shared nodes)
-    if Arc::ptr_eq(node_a, node_b) {
+    if diff_short_circuit(node_a, node_b, depth)? {
         return Ok(());
-    }
-
-    // Structural hash check (fast path across process/storage boundaries)
-    if node_a.structural_hash == node_b.structural_hash {
-        return Ok(());
-    }
-
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
     }
     let next_depth = depth.saturating_add(1);
 
@@ -157,55 +194,109 @@ where
     let n_a = node_a.nodemap;
     let n_b = node_b.nodemap;
 
-    let union = n_a | n_b;
-    for slot in set_bits(union) {
-        let bit = 1 << slot;
-        let in_a = (n_a & bit) != 0;
-        let in_b = (n_b & bit) != 0;
-
+    for (slot, in_a, in_b) in union_nodemaps(n_a, n_b) {
         if in_a && in_b {
-            let cidx_a = map_index(n_a, slot);
-            let cidx_b = map_index(n_b, slot);
-            let child_a = &node_a.children[cidx_a];
-            let child_b = &node_b.children[cidx_b];
-
-            if child_a.structural_hash() != child_b.structural_hash() {
-                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                diff_nodes(&res_a, &res_b, added, removed, resolver, next_depth)?;
+            if let Some(children) = resolve_changed_pair(node_a, node_b, n_a, n_b, slot, resolver)?
+            {
+                diff_nodes(
+                    &children.left,
+                    &children.right,
+                    added,
+                    removed,
+                    resolver,
+                    next_depth,
+                )?;
             }
             continue;
         }
         if in_a {
-            let cidx_a = map_index(n_a, slot);
-            let child_a = &node_a.children[cidx_a];
-            let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-            collect_all_leaves(&res_a, removed, resolver, next_depth)?;
+            let res_a = resolve_only_child(node_a, n_a, slot, resolver)?;
+            walk_subtree(&res_a, resolver, next_depth, &mut |n| {
+                removed.extend(n.leaves.iter().cloned());
+            })?;
             continue;
         }
         // `bit` is in `union`, and reaching here means it was neither the
         // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
         // guaranteed true -- no need to re-test it.
-        let cidx_b = map_index(n_b, slot);
-        let child_b = &node_b.children[cidx_b];
-        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-        collect_all_leaves(&res_b, added, resolver, next_depth)?;
+        let res_b = resolve_only_child(node_b, n_b, slot, resolver)?;
+        walk_subtree(&res_b, resolver, next_depth, &mut |n| {
+            added.extend(n.leaves.iter().cloned());
+        })?;
     }
 
     Ok(())
 }
 
-fn resolve_node<K, V, F, E>(
+pub(super) fn resolve_node<K, V, F, E>(
     node_ref: &NodeRef<K, V>,
     resolver: &mut F,
-) -> Result<Arc<HamtNode<K, V>>, E>
+) -> Result<NodePtr<K, V>, E>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
 {
     match node_ref {
         NodeRef::Resolved(arc) => Ok(arc.clone()),
         NodeRef::Lazy(hash) => resolver(hash),
     }
+}
+
+/// [`resolve_node`] lifted into [`HamtTraversalError`], the error type every
+/// node-walking helper in this module (and `mod.rs`'s entry traversal) reports.
+pub(super) fn resolve_node_checked<K, V, F, E>(
+    node_ref: &NodeRef<K, V>,
+    resolver: &mut F,
+) -> Result<NodePtr<K, V>, HamtTraversalError<E>>
+where
+    F: NodeResolver<K, V, E>,
+{
+    resolve_node(node_ref, resolver).map_err(HamtTraversalError::Resolve)
+}
+
+/// The resolved children on the two sides of a diff that need recursive
+/// comparison.
+struct ChangedChildPair<K, V> {
+    left: NodePtr<K, V>,
+    right: NodePtr<K, V>,
+}
+
+/// For a nodemap slot occupied on both sides of a diff, returns the resolved
+/// child pair when their structural hashes differ (so the caller must recurse),
+/// or `None` when they are identical (nothing changed below this slot).
+fn resolve_changed_pair<K, V, F, E>(
+    node_a: &NodePtr<K, V>,
+    node_b: &NodePtr<K, V>,
+    nodemap_a: u32,
+    nodemap_b: u32,
+    slot: usize,
+    resolver: &mut F,
+) -> Result<Option<ChangedChildPair<K, V>>, HamtTraversalError<E>>
+where
+    F: NodeResolver<K, V, E>,
+{
+    let child_a = &node_a.children[map_index(nodemap_a, slot)];
+    let child_b = &node_b.children[map_index(nodemap_b, slot)];
+    if child_a.structural_hash() == child_b.structural_hash() {
+        return Ok(None);
+    }
+    Ok(Some(ChangedChildPair {
+        left: resolve_node_checked(child_a, resolver)?,
+        right: resolve_node_checked(child_b, resolver)?,
+    }))
+}
+
+/// Resolves the single child occupying a nodemap `slot` on only one side of a
+/// diff.
+fn resolve_only_child<K, V, F, E>(
+    node: &NodePtr<K, V>,
+    nodemap: u32,
+    slot: usize,
+    resolver: &mut F,
+) -> Result<NodePtr<K, V>, HamtTraversalError<E>>
+where
+    F: NodeResolver<K, V, E>,
+{
+    resolve_node_checked(&node.children[map_index(nodemap, slot)], resolver)
 }
 
 /// Error returned by the node-hash traversal helpers
@@ -220,7 +311,7 @@ where
 /// a cycle). Recursing on that without a bound risks exhausting the call
 /// stack and aborting the whole process; `MaxDepthExceeded` turns that into
 /// an ordinary `Result::Err` instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HamtTraversalError<E> {
     /// The resolver failed to load a lazy child the walk needed to descend
     /// into.
@@ -265,7 +356,7 @@ where
 /// swapping them at a call site would type-check silently while inverting
 /// refcount increments and decrements. See [`diff_node_hashes`] for the
 /// full timing contract these two lists are meant to be used under.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct NodeHashDelta {
     /// Node hashes present in `root_a` but not `root_b`. GC candidates once
     /// `root_a` is retired — never delete these while `root_a` is still
@@ -293,12 +384,12 @@ pub struct NodeHashDelta {
 /// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
 /// deepest depth a legitimately-built HAMT can have.
 pub fn diff_node_hashes<K, V, F, E>(
-    root_a: &Arc<HamtNode<K, V>>,
-    root_b: &Arc<HamtNode<K, V>>,
+    root_a: &NodePtr<K, V>,
+    root_b: &NodePtr<K, V>,
     resolver: &mut F,
 ) -> Result<NodeHashDelta, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut superseded_node_hashes = Vec::new();
     let mut new_node_hashes = Vec::new();
@@ -318,28 +409,18 @@ where
 
 /// Recursively compute the hash differences between two HAMT nodes.
 fn diff_node_hashes_rec<K, V, F, E>(
-    node_a: &Arc<HamtNode<K, V>>,
-    node_b: &Arc<HamtNode<K, V>>,
+    node_a: &NodePtr<K, V>,
+    node_b: &NodePtr<K, V>,
     superseded: &mut Vec<StructuralHash>,
     new: &mut Vec<StructuralHash>,
     resolver: &mut F,
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
 {
-    // Pointer equality check (fastest path for structurally shared nodes)
-    if Arc::ptr_eq(node_a, node_b) {
+    if diff_short_circuit(node_a, node_b, depth)? {
         return Ok(());
-    }
-
-    // Structural hash check (fast path across process/storage boundaries)
-    if node_a.structural_hash == node_b.structural_hash {
-        return Ok(());
-    }
-
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
     }
 
     superseded.push(node_a.structural_hash);
@@ -350,38 +431,30 @@ where
 
     let next_depth = depth.saturating_add(1);
 
-    let union = n_a | n_b;
-    for slot in set_bits(union) {
-        let bit = 1 << slot;
-        let in_a = (n_a & bit) != 0;
-        let in_b = (n_b & bit) != 0;
-
+    for (slot, in_a, in_b) in union_nodemaps(n_a, n_b) {
         if in_a && in_b {
-            let cidx_a = map_index(n_a, slot);
-            let cidx_b = map_index(n_b, slot);
-            let child_a = &node_a.children[cidx_a];
-            let child_b = &node_b.children[cidx_b];
-
-            if child_a.structural_hash() != child_b.structural_hash() {
-                let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
-                let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
-                diff_node_hashes_rec(&res_a, &res_b, superseded, new, resolver, next_depth)?;
+            if let Some(children) = resolve_changed_pair(node_a, node_b, n_a, n_b, slot, resolver)?
+            {
+                diff_node_hashes_rec(
+                    &children.left,
+                    &children.right,
+                    superseded,
+                    new,
+                    resolver,
+                    next_depth,
+                )?;
             }
             continue;
         }
         if in_a {
-            let cidx_a = map_index(n_a, slot);
-            let child_a = &node_a.children[cidx_a];
-            let res_a = resolve_node(child_a, resolver).map_err(HamtTraversalError::Resolve)?;
+            let res_a = resolve_only_child(node_a, n_a, slot, resolver)?;
             append_reachable_node_hashes(&res_a, superseded, resolver, next_depth)?;
             continue;
         }
         // `bit` is in `union`, and reaching here means it was neither the
         // `in_a && in_b` nor the `in_a`-only case above, so `in_b` is
         // guaranteed true -- no need to re-test it.
-        let cidx_b = map_index(n_b, slot);
-        let child_b = &node_b.children[cidx_b];
-        let res_b = resolve_node(child_b, resolver).map_err(HamtTraversalError::Resolve)?;
+        let res_b = resolve_only_child(node_b, n_b, slot, resolver)?;
         append_reachable_node_hashes(&res_b, new, resolver, next_depth)?;
     }
 
@@ -405,11 +478,11 @@ where
 /// [`HamtTraversalError::MaxDepthExceeded`] if the walk recurses past the
 /// deepest depth a legitimately-built HAMT can have.
 pub fn reachable_node_hashes<K, V, F, E>(
-    root: &Arc<HamtNode<K, V>>,
+    root: &NodePtr<K, V>,
     resolver: &mut F,
 ) -> Result<Vec<StructuralHash>, HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
 {
     let mut hashes = Vec::new();
     append_reachable_node_hashes(root, &mut hashes, resolver, 0)?;
@@ -429,12 +502,12 @@ where
 /// Do not reuse the mark set after an error: it may contain an unresolved
 /// node whose descendants were never visited.
 pub fn walk_reachable_node_hashes<K, V, F, E, M>(
-    root: &Arc<HamtNode<K, V>>,
+    root: &NodePtr<K, V>,
     resolver: &mut F,
     mark: &mut M,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
     M: FnMut(StructuralHash) -> bool,
 {
     if !mark(root.structural_hash) {
@@ -452,24 +525,22 @@ where
 /// need would fail the whole walk for no reason — checking first makes
 /// that impossible.
 fn walk_reachable_children<K, V, F, E, M>(
-    node: &Arc<HamtNode<K, V>>,
+    node: &NodePtr<K, V>,
     resolver: &mut F,
     mark: &mut M,
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
     M: FnMut(StructuralHash) -> bool,
 {
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
-    }
+    check_depth(depth)?;
     let next_depth = depth.saturating_add(1);
     for child in &node.children {
         if !mark(child.structural_hash()) {
             continue;
         }
-        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
+        let child_node = resolve_node_checked(child, resolver)?;
         walk_reachable_children(&child_node, resolver, mark, next_depth)?;
     }
     Ok(())
@@ -480,47 +551,37 @@ where
 /// [`diff_node_hashes`] (to enumerate a whole subtree that only exists on
 /// one side of a diff).
 fn append_reachable_node_hashes<K, V, F, E>(
-    node: &Arc<HamtNode<K, V>>,
+    node: &NodePtr<K, V>,
     collection: &mut Vec<StructuralHash>,
     resolver: &mut F,
     depth: usize,
 ) -> Result<(), HamtTraversalError<E>>
 where
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
 {
-    collection.push(node.structural_hash);
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
-    }
-    let next_depth = depth.saturating_add(1);
-    for child in &node.children {
-        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
-        append_reachable_node_hashes(&child_node, collection, resolver, next_depth)?;
-    }
-    Ok(())
+    walk_subtree(node, resolver, depth, &mut |node| {
+        collection.push(node.structural_hash);
+    })
 }
 
-fn collect_all_leaves<K, V, F, E>(
-    node: &Arc<HamtNode<K, V>>,
-    collection: &mut Vec<(K, V)>,
+/// Traverses a subtree in pre-order, resolving every child through the shared
+/// resolver and applying the HAMT depth guard at each node. Collection-specific
+/// callers provide only the item they want from each node.
+fn walk_subtree<K, V, F, E>(
+    node: &NodePtr<K, V>,
     resolver: &mut F,
     depth: usize,
+    visit: &mut impl FnMut(&NodePtr<K, V>),
 ) -> Result<(), HamtTraversalError<E>>
 where
-    K: Hash + Clone + Eq,
-    V: Hash + Clone + Eq,
-    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, E>,
+    F: NodeResolver<K, V, E>,
 {
-    if depth >= HAMT_MAX_DEPTH {
-        return Err(HamtTraversalError::MaxDepthExceeded { depth });
-    }
+    check_depth(depth)?;
+    visit(node);
     let next_depth = depth.saturating_add(1);
-    for (k, v) in &node.leaves {
-        collection.push((k.clone(), v.clone()));
-    }
     for child in &node.children {
-        let child_node = resolve_node(child, resolver).map_err(HamtTraversalError::Resolve)?;
-        collect_all_leaves(&child_node, collection, resolver, next_depth)?;
+        let child_node = resolve_node_checked(child, resolver)?;
+        walk_subtree(&child_node, resolver, next_depth, visit)?;
     }
     Ok(())
 }

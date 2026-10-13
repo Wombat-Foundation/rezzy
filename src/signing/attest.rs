@@ -19,10 +19,10 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use serde_json::json;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ed25519_zebra::{Signature, SigningKey, VerificationKey};
 
+use crate::json::json;
 use crate::merkle::UnsignedRoot;
 
 /// A [`UnsignedRoot`] signed by a single responder, plus enough context to
@@ -31,7 +31,6 @@ use crate::merkle::UnsignedRoot;
 ///
 /// The signed envelope is `{"algorithm", "count", "root", "signer"}` as
 /// Matrix Canonical JSON -- see [`sign_attestation`].
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedAttestation {
     /// The attested root.
     pub root: UnsignedRoot,
@@ -58,7 +57,7 @@ fn envelope_bytes(
     let value = json!({
         "algorithm": algorithm,
         "count": count,
-        "root": URL_SAFE_NO_PAD.encode(root.into_inner()),
+        "root": crate::base64_utils::encode(&URL_SAFE_NO_PAD, &root.into_inner()),
         "signer": signer,
     });
     // `algorithm`/`root`/`signer` are always strings, and `count` fits
@@ -74,7 +73,7 @@ fn envelope_bytes(
 }
 
 /// Signs `root` with `key`, producing a [`SignedAttestation`] a holder of
-/// the corresponding [`VerifyingKey`] can check with [`verify_attestation`].
+/// the corresponding [`VerificationKey`] can check with [`verify_attestation`].
 ///
 /// This is the tool (or whichever process holds `key`) vouching for `root`
 /// as a responder -- see the module docs for what that guarantees and, more
@@ -109,7 +108,7 @@ pub fn sign_attestation(
 }
 
 /// Verifies a [`SignedAttestation`] against the claimed signer's
-/// [`VerifyingKey`].
+/// [`VerificationKey`].
 ///
 /// This only checks the signature is valid over the envelope; it does not
 /// (and cannot) check that `attestation.root` is actually correct for
@@ -123,7 +122,7 @@ pub fn sign_attestation(
 /// envelope.
 pub fn verify_attestation(
     attestation: &SignedAttestation,
-    key: &VerifyingKey,
+    key: &VerificationKey,
 ) -> Result<(), String> {
     let message = envelope_bytes(
         attestation.root,
@@ -132,9 +131,9 @@ pub fn verify_attestation(
         &attestation.signer,
     )
     .map_err(|e| alloc::format!("attestation envelope cannot be canonicalized: {e}"))?;
-    let signature = Signature::from_bytes(&attestation.signature);
-    key.verify_strict(&message, &signature)
-        .map_err(|e| alloc::format!("attestation signature verification failed: {e}"))
+    let signature = Signature::from(attestation.signature);
+    key.verify(&signature, &message)
+        .map_err(|e| alloc::format!("attestation signature verification failed: {e:?}"))
 }
 
 #[cfg(test)]
@@ -142,52 +141,57 @@ pub fn verify_attestation(
 mod tests {
     use super::*;
 
+    const TEST_ROOT: UnsignedRoot = UnsignedRoot([7_u8; 32]);
+
+    fn test_key() -> SigningKey {
+        SigningKey::from([42_u8; 32])
+    }
+
+    fn signed_test_attestation(sk: &SigningKey) -> SignedAttestation {
+        sign_attestation(TEST_ROOT, "msc4511c-causal-trie", 100, "rezzy-cli", sk)
+    }
+
     #[test]
     fn round_trips() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let vk = sk.verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
-        let att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
-        assert_eq!(att.root, root);
+        let sk = test_key();
+        let vk = sk.verification_key();
+        let att = signed_test_attestation(&sk);
+        assert_eq!(att.root, TEST_ROOT);
         verify_attestation(&att, &vk).expect("valid attestation must verify");
     }
 
     #[test]
     fn rejects_tampered_root() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let vk = sk.verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
-        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        let sk = test_key();
+        let vk = sk.verification_key();
+        let mut att = signed_test_attestation(&sk);
         att.root = UnsignedRoot([8_u8; 32]);
         verify_attestation(&att, &vk).expect_err("tampered root must not verify");
     }
 
     #[test]
     fn rejects_tampered_count() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let vk = sk.verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
-        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        let sk = test_key();
+        let vk = sk.verification_key();
+        let mut att = signed_test_attestation(&sk);
         att.count = 101;
         verify_attestation(&att, &vk).expect_err("tampered count must not verify");
     }
 
     #[test]
     fn rejects_tampered_algorithm() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let vk = sk.verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
-        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        let sk = test_key();
+        let vk = sk.verification_key();
+        let mut att = signed_test_attestation(&sk);
         att.algorithm = "msc4511c-state-root".to_string();
         verify_attestation(&att, &vk).expect_err("tampered algorithm must not verify");
     }
 
     #[test]
     fn rejects_tampered_signer() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let vk = sk.verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
-        let mut att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        let sk = test_key();
+        let vk = sk.verification_key();
+        let mut att = signed_test_attestation(&sk);
         att.signer = "someone-else".to_string();
         verify_attestation(&att, &vk).expect_err("tampered signer must not verify");
     }
@@ -202,9 +206,9 @@ mod tests {
         // Matrix's canonical-integer bound (2^53 - 1) -- the largest count
         // envelope_bytes can actually canonicalize.
         let max_canonical: u64 = (1_u64 << 53) - 1;
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let vk = sk.verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
+        let sk = test_key();
+        let vk = sk.verification_key();
+        let root = TEST_ROOT;
         let att = sign_attestation(
             root,
             "msc4511c-causal-trie",
@@ -237,17 +241,21 @@ mod tests {
     #[test]
     #[should_panic(expected = "attestation envelope is fixed-shape")]
     fn out_of_range_count_panics_instead_of_forging() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let root = UnsignedRoot([7_u8; 32]);
-        let _ = sign_attestation(root, "msc4511c-causal-trie", u64::MAX, "rezzy-cli", &sk);
+        let sk = test_key();
+        let _ = sign_attestation(
+            TEST_ROOT,
+            "msc4511c-causal-trie",
+            u64::MAX,
+            "rezzy-cli",
+            &sk,
+        );
     }
 
     #[test]
     fn rejects_wrong_key() {
-        let sk = SigningKey::from_bytes(&[42_u8; 32]);
-        let other_vk = SigningKey::from_bytes(&[43_u8; 32]).verifying_key();
-        let root = UnsignedRoot([7_u8; 32]);
-        let att = sign_attestation(root, "msc4511c-causal-trie", 100, "rezzy-cli", &sk);
+        let sk = test_key();
+        let other_vk = SigningKey::from([43_u8; 32]).verification_key();
+        let att = signed_test_attestation(&sk);
         verify_attestation(&att, &other_vk).expect_err("wrong key must not verify");
     }
 }

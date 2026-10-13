@@ -1,7 +1,7 @@
 //! A first-seen-order dense index over a set of items.
 //!
 //! The "assign a compact integer index to every distinct item in a set, both
-//! directions, so a `RoaringBitmap` (or a plain array) can address it" pattern
+//! directions, so a [`Bitmap`](crate::bitmap::Bitmap) (or a plain array) can address it" pattern
 //! was previously reimplemented independently across the crate (see
 //! `docs/tech_debt.md`, "dense-index" section). [`DenseIndex`] is the shared
 //! primitive that replaces those hand-rolled copies: one engine, parameterized
@@ -11,7 +11,7 @@
 //!
 //! `T` is generic so the same primitive serves `StructuralHash`, `String`
 //! event IDs, or any other `Hash + Eq` item. `Idx` defaults to `u32` (the
-//! width the roaring-based call sites need) but can be widened to `usize` for
+//! width the bitmap-based call sites need) but can be widened to `usize` for
 //! callers whose sets are too large to fit in 32 bits (or that want the
 //! overflow-free `usize` indexing).
 
@@ -62,7 +62,7 @@ impl DenseIndexWidth for usize {
 /// [`DenseIndex::try_build`]/[`DenseIndex::try_build_bounded`] was given more
 /// distinct items than the index width can address, so no dense index could be
 /// assigned to all of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct IndexTooLarge {
     /// The number of distinct items counted before construction stopped.
     /// When `allocation_failed` is false, this is the true total when the
@@ -96,7 +96,7 @@ impl core::error::Error for IndexTooLarge {}
 /// through [`Self::item_at`]/[`Self::items`] to the full item — the dense
 /// index is a local, single-call addressing scheme, not an identifier of its
 /// own.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DenseIndex<T, Idx = u32> {
     /// `items[i]` is the `T` assigned to dense index `i`.
     items: Vec<T>,
@@ -129,13 +129,10 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
         // universe of exactly that many distinct items on its last one, even
         // though its highest assigned index (`Idx::MAX`) fits.
         //
-        // Cast to `usize` before adding 1: `Idx::MAX.saturating_add(1)` would
-        // saturate for fixed-width types (e.g. `u32::MAX + 1` wraps to
-        // `u32::MAX`), silently losing one addressable slot. For `Idx = usize`,
-        // the cast is a no-op and `usize::MAX + 1` overflows; saturating keeps
-        // the bound at `usize::MAX`, which no real universe reaches.
-        #[allow(clippy::unnecessary_cast)]
-        let bound = (Idx::MAX as usize).saturating_add(1);
+        // `Idx::MAX` is a `usize` for every width, so `saturating_add(1)` gives the
+        // exact slot count (`Idx::MAX + 1`) for `u8`/`u32` indices. Only the `usize`
+        // impl saturates, at `usize::MAX`, which no real universe reaches.
+        let bound = Idx::MAX.saturating_add(1);
         Self::try_build_bounded(universe, bound)
     }
 

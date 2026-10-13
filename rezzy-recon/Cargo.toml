@@ -1,0 +1,24 @@
+[package]
+name = "rezzy-recon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+description = "MSC4521 minisketch reconciliation: GF(64) arithmetic, strata estimation, and bucket sketches."
+keywords = ["matrix", "reconciliation", "minisketch", "federation"]
+categories = ["algorithms", "mathematics"]
+build = "build.rs"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+base64.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

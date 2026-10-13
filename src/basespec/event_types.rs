@@ -117,11 +117,12 @@ impl EventType {
             Self::Custom(s) => s,
         }
     }
-}
 
-impl From<&str> for EventType {
-    fn from(s: &str) -> Self {
-        match s {
+    /// Maps a known wire event type to its interned variant, or `None` for a
+    /// custom/vendor type. Shared by the `From<&str>`/`From<String>` impls so
+    /// the known-type table lives in exactly one place.
+    fn from_known_str(s: &str) -> Option<Self> {
+        Some(match s {
             M_ROOM_CREATE => Self::RoomCreate,
             M_ROOM_MEMBER => Self::RoomMember,
             M_ROOM_POWER_LEVELS => Self::RoomPowerLevels,
@@ -142,35 +143,22 @@ impl From<&str> for EventType {
             M_ROOM_ALIASES => Self::RoomAliases,
             M_SPACE_CHILD => Self::SpaceChild,
             M_SPACE_PARENT => Self::SpaceParent,
-            other => Self::Custom(Arc::from(other)),
-        }
+            _ => return None,
+        })
+    }
+}
+
+impl From<&str> for EventType {
+    fn from(s: &str) -> Self {
+        Self::from_known_str(s).unwrap_or_else(|| Self::Custom(Arc::from(s)))
     }
 }
 
 impl From<String> for EventType {
     fn from(s: String) -> Self {
-        match s.as_str() {
-            M_ROOM_CREATE => Self::RoomCreate,
-            M_ROOM_MEMBER => Self::RoomMember,
-            M_ROOM_POWER_LEVELS => Self::RoomPowerLevels,
-            M_ROOM_JOIN_RULES => Self::RoomJoinRules,
-            M_ROOM_THIRD_PARTY_INVITE => Self::RoomThirdPartyInvite,
-            M_ROOM_NAME => Self::RoomName,
-            M_ROOM_TOPIC => Self::RoomTopic,
-            M_ROOM_AVATAR => Self::RoomAvatar,
-            M_ROOM_CANONICAL_ALIAS => Self::RoomCanonicalAlias,
-            M_ROOM_HISTORY_VISIBILITY => Self::RoomHistoryVisibility,
-            M_ROOM_GUEST_ACCESS => Self::RoomGuestAccess,
-            M_ROOM_SERVER_ACL => Self::RoomServerAcl,
-            M_ROOM_TOMBSTONE => Self::RoomTombstone,
-            M_ROOM_ENCRYPTION => Self::RoomEncryption,
-            M_ROOM_PINNED_EVENTS => Self::RoomPinnedEvents,
-            M_ROOM_MESSAGE => Self::RoomMessage,
-            M_ROOM_REDACTION => Self::RoomRedaction,
-            M_ROOM_ALIASES => Self::RoomAliases,
-            M_SPACE_CHILD => Self::SpaceChild,
-            M_SPACE_PARENT => Self::SpaceParent,
-            _ => Self::Custom(Arc::from(s)),
+        match Self::from_known_str(&s) {
+            Some(known) => known,
+            None => Self::Custom(Arc::from(s)),
         }
     }
 }
@@ -184,6 +172,17 @@ impl fmt::Display for EventType {
 impl AsRef<str> for EventType {
     fn as_ref(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl From<EventType> for crate::json::Value {
+    fn from(value: EventType) -> Self {
+        Self::String(alloc::string::String::from(value.as_str()))
+    }
+}
+impl From<&EventType> for crate::json::Value {
+    fn from(value: &EventType) -> Self {
+        Self::String(alloc::string::String::from(value.as_str()))
     }
 }
 
@@ -210,18 +209,6 @@ impl Ord for EventType {
 impl core::hash::Hash for EventType {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.as_str().hash(state);
-    }
-}
-
-impl serde::Serialize for EventType {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for EventType {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(Self::from)
     }
 }
 
@@ -442,7 +429,7 @@ mod event_type_tests {
         // seed — `DefaultHashBuilder::default()` is randomized per
         // instance, so two separate builders would legitimately disagree
         // even for equal inputs.
-        fn hash_of(builder: DefaultHashBuilder, ev: &EventType) -> u64 {
+        fn hash_of(builder: &DefaultHashBuilder, ev: &EventType) -> u64 {
             builder.hash_one(ev)
         }
 
@@ -450,25 +437,27 @@ mod event_type_tests {
 
         let a = EventType::from(M_ROOM_MEMBER);
         let b = EventType::RoomMember;
-        assert_eq!(hash_of(builder, &a), hash_of(builder, &b));
+        assert_eq!(hash_of(&builder, &a), hash_of(&builder, &b));
 
         let c = EventType::from("org.example.foo");
         let d = EventType::from(String::from("org.example.foo"));
-        assert_eq!(hash_of(builder, &c), hash_of(builder, &d));
+        assert_eq!(hash_of(&builder, &c), hash_of(&builder, &d));
     }
 
     #[test]
-    fn serde_round_trips_known_and_custom_variants() {
+    fn wire_strings_round_trip_known_and_custom_variants() {
         let known = EventType::RoomPowerLevels;
-        let json = serde_json::to_string(&known).unwrap();
+        let json =
+            crate::json::write_string_value(&crate::json::Value::from(known.as_str())).unwrap();
         assert_eq!(json, "\"m.room.power_levels\"");
-        let back: EventType = serde_json::from_str(&json).unwrap();
+        let back = EventType::from(crate::json::Value::parse(&json).unwrap().as_str().unwrap());
         assert_eq!(back, known);
 
         let custom = EventType::from("org.example.custom");
-        let json = serde_json::to_string(&custom).unwrap();
+        let json =
+            crate::json::write_string_value(&crate::json::Value::from(custom.as_str())).unwrap();
         assert_eq!(json, "\"org.example.custom\"");
-        let back: EventType = serde_json::from_str(&json).unwrap();
+        let back = EventType::from(crate::json::Value::parse(&json).unwrap().as_str().unwrap());
         assert_eq!(back, custom);
     }
 

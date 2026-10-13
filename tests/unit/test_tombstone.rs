@@ -1,7 +1,7 @@
 // Quick scratch test - run from ruma-lean root
 use rezzy::auth::{check_auth, RoomState};
+use rezzy::json;
 use rezzy::{LeanEvent, StateResVersion};
-use serde_json::json;
 
 #[test]
 fn test_tombstone_auth() {

@@ -5,11 +5,11 @@
 //! non-String event IDs. Previously these were hardcoded to `String`.
 
 use rezzy::auth::roaring::AuthGraph;
+use rezzy::json;
 use rezzy::resolve::subgraph::{
     compute_v2_1_conflicted_subgraph, compute_v2_1_conflicted_subgraph_bounded,
 };
 use rezzy::{HashMap, LeanEvent};
-use serde_json::json;
 
 /// Helper: build a `LeanEvent<u32>` with integer event ID.
 fn make_u32_event(id: u32, event_type: &str, auth_events: Vec<u32>) -> LeanEvent<u32> {
@@ -92,7 +92,7 @@ fn test_subgraph_bounded_u32() {
         full.subgraph.contains_key(&4),
         "conflicted event 4 must be in unbounded subgraph"
     );
-    assert_eq!(full.missing_auth_events, [] as [u32; 0]);
+    assert_eq!(full.missing_auth_events.len(), 0);
 
     // Bounded to depth 1 — should still include conflicted events
     let bounded = compute_v2_1_conflicted_subgraph_bounded(&graph, &conflicted_set, Some(1));

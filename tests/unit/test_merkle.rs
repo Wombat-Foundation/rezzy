@@ -2,7 +2,7 @@ use rezzy::merkle::{
     self, AuthEventsHash, ContentHash, Field, Header, MerkleError, OtherSignedFieldsHash,
     PrevEventsHash, Side,
 };
-use serde_json::{json, Value};
+use rezzy::{json, JsonNumber as Number, JsonValue as Value};
 use std::fmt::Write;
 
 fn sample_fields() -> Vec<Field> {
@@ -12,6 +12,19 @@ fn sample_fields() -> Vec<Field> {
         Field::new("rejected", json!(false)),
         Field::new("prev_events_hash", json!("sha256:abc")),
     ]
+}
+
+fn sample_header() -> Header {
+    Header {
+        room_id: "!room:example.org".into(),
+        sender_localpart: "alice".into(),
+        sender_domain: "example.org".into(),
+        event_type: "m.room.message".into(),
+        state_key: None,
+        redacts: None,
+        depth: 42,
+        origin_server_ts: 123_456_789,
+    }
 }
 
 fn hex(hash: merkle::Hash) -> String {
@@ -71,7 +84,7 @@ fn canonical_json_rejects_out_of_range_integers_and_floats() {
 
 #[test]
 fn canonical_json_covers_unsigned_number_branch() {
-    let too_large = serde_json::Number::from(u64::MAX);
+    let too_large = Number::from(u64::MAX);
     assert_eq!(
         merkle::canonical_json(&Value::Number(too_large)).unwrap_err(),
         MerkleError::IntegerRange
@@ -80,7 +93,7 @@ fn canonical_json_covers_unsigned_number_branch() {
 
 #[test]
 fn canonical_json_accepts_small_u64_number() {
-    let in_range = serde_json::Number::from(7_u64);
+    let in_range = Number::from(7_u64);
     assert_eq!(
         String::from_utf8(merkle::canonical_json(&Value::Number(in_range)).unwrap()).unwrap(),
         "7"
@@ -142,27 +155,17 @@ fn root_stable_vector() {
 
     assert_eq!(
         hex(root),
-        "08e7c748acbe75a855a5c1420ea3d5948a765509f27d132796bfbaecbe8c3fae"
+        "36547e87f8a84f9178583715802a8f6d7bb1b930f8578148ef47a65de297dd7e"
     );
 }
 
 #[test]
 fn header_root_uses_null_for_missing_optional_fields() {
-    let root = merkle::header_root(&Header {
-        room_id: "!room:example.org".into(),
-        sender_localpart: "alice".into(),
-        sender_domain: "example.org".into(),
-        event_type: "m.room.message".into(),
-        state_key: None,
-        redacts: None,
-        depth: 42,
-        origin_server_ts: 123_456_789,
-    })
-    .unwrap();
+    let root = merkle::header_root(&sample_header()).unwrap();
 
     assert_eq!(
         hex(root.0),
-        "db91cc8e8d3eb0d13885c32f28dbd4215a111081383e25263749c65d9bf8bc37"
+        "4758fe3d99fa12997c28b5074f2a4e5dad211ff5e7eb2018559ff81f7904bbde"
     );
 }
 
@@ -170,17 +173,7 @@ fn header_root_uses_null_for_missing_optional_fields() {
 fn event_root_and_id_stable_vector() {
     let prev = merkle::component_hash("prev_events", &json!(["$a:example.org"])).unwrap();
     let auth = merkle::component_hash("auth_events", &json!(["$auth:example.org"])).unwrap();
-    let header = merkle::header_root(&Header {
-        room_id: "!room:example.org".into(),
-        sender_localpart: "alice".into(),
-        sender_domain: "example.org".into(),
-        event_type: "m.room.message".into(),
-        state_key: None,
-        redacts: None,
-        depth: 42,
-        origin_server_ts: 123_456_789,
-    })
-    .unwrap();
+    let header = merkle::header_root(&sample_header()).unwrap();
     let content =
         merkle::component_hash("content", &json!({"body": "hello", "msgtype": "m.text"})).unwrap();
     let other =
@@ -196,11 +189,11 @@ fn event_root_and_id_stable_vector() {
 
     assert_eq!(
         hex(root),
-        "4ccc880527fe5f97d27a04105bb55e6c6e75d87928e54a6cd2973c224802ce91"
+        "4864138b8e8b9d48cf2151433a6463aac7b88d68ce10a2adbffdcfabcb8d9b06"
     );
     assert_eq!(
         merkle::event_id(root),
-        "$TMyIBSf-X5fSegQQW7VebG512Hko5Ups0pc8IkgCzpE"
+        "$SGQTi46LnUjPIVFDOmRjqse4jWjOEKKtv_3Pq8uNmwY"
     );
 }
 

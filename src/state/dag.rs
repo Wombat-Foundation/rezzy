@@ -34,16 +34,20 @@ use crate::basespec::event_types::{EventType, MAX_PREV_STATE_EVENTS, M_ROOM_CREA
 use crate::basespec::rezzy_types::{
     DagNode, EventContent, EventId, LeanEvent, StateKey, StateResVersion,
 };
-use crate::state::at::{resolve_merge_fast_path, LocalAuthCache, SharedState};
+use crate::state::at::{
+    record_own_state, resolve_merged_parent_states, retain_state_for_children,
+    take_finalized_parent, MergeContext, SharedState,
+};
 use crate::{DenseIndex, FastMap, FastSet, HashMap};
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 use core::fmt;
+use core::hash::BuildHasher;
 
 /// Status of a State DAG traversal starting from one or more events.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateDagCompleteness<Id> {
     /// The state DAG is fully connected back to `m.room.create` along all paths.
     Complete {
@@ -57,7 +61,7 @@ pub enum StateDagCompleteness<Id> {
         /// Event IDs that are referenced in the selected state-predecessor
         /// relation (`prev_state_events` for MSC4242 rooms, `prev_events`
         /// as a fallback for earlier room versions -- see
-        /// [`state_predecessors`](crate::basespec::rezzy_types::LeanEvent::state_predecessors))
+        /// [`state_predecessors`](LeanEvent::state_predecessors))
         /// but missing from the local store/map.
         missing_event_ids: Vec<Id>,
         /// Non-create event IDs present in the store that have an empty
@@ -69,7 +73,7 @@ pub enum StateDagCompleteness<Id> {
 }
 
 /// Traversal options for State DAG queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct StateDagWalkOptions {
     /// Maximum number of events to visit before halting (defense-in-depth against runaway graphs).
     pub max_steps: Option<usize>,
@@ -87,7 +91,7 @@ impl Default for StateDagWalkOptions {
 }
 
 /// Validation error for MSC4242 State DAG rules.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StateDagValidationError<Id = String> {
     /// `prev_state_events` exceeds the maximum allowed fanout limit (20).
     FanoutExceeded { count: usize, limit: usize },
@@ -278,7 +282,7 @@ mod validation_error_display_tests {
 }
 
 /// Error during State DAG computation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum StateDagError<Id = String> {
     /// Validation of `prev_state_events` failed.
     Validation(StateDagValidationError<Id>),
@@ -344,8 +348,8 @@ mod state_dag_error_display_tests {
 mod state_dag_branch_coverage_tests {
     use super::*;
     use crate::basespec::rezzy_types::RoomId;
+    use crate::json::Value;
     use alloc::{format, string::String};
-    use serde_json::Value;
 
     type TestEvent = LeanEvent<String, Value, String>;
     type TestMap = crate::HashMap<String, TestEvent>;
@@ -572,7 +576,12 @@ mod state_dag_branch_coverage_tests {
         create.auth_events.push("$parent".into());
         let events = crate::HashMap::<String, LeanEvent<String, Value, String>>::default();
         assert!(matches!(
-            compute_state_before_from_dag(&create, &events, StateResVersion::V2_2, &empty_key),
+            compute_state_before_from_dag(&DagInputs::new(
+                &create,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithPrevStateEvents
             ))
@@ -583,12 +592,12 @@ mod state_dag_branch_coverage_tests {
         valid_create.event_type = M_ROOM_CREATE.into();
         valid_create.state_key = Some(String::new());
         assert_eq!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &valid_create,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            )
+            ))
             .unwrap(),
             SharedState::new()
         );
@@ -598,12 +607,12 @@ mod state_dag_branch_coverage_tests {
         no_state_key.event_type = M_ROOM_CREATE.into();
         no_state_key.state_key = None;
         assert!(matches!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &no_state_key,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            ),
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithMissingStateKey
             ))
@@ -613,12 +622,12 @@ mod state_dag_branch_coverage_tests {
         let mut non_empty_sk = event("$non-empty-sk", Some("not-empty"));
         non_empty_sk.event_type = M_ROOM_CREATE.into();
         assert!(matches!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &non_empty_sk,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            ),
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::CreateWithNonEmptyStateKey { .. }
             ))
@@ -626,7 +635,12 @@ mod state_dag_branch_coverage_tests {
 
         let non_create = event("$event", Some(""));
         assert!(matches!(
-            compute_state_before_from_dag(&non_create, &events, StateResVersion::V2_2, &empty_key),
+            compute_state_before_from_dag(&DagInputs::new(
+                &non_create,
+                &events,
+                StateResVersion::V2_2,
+                &empty_key
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::NonCreateWithoutPrevStateEvents { .. }
             ))
@@ -635,12 +649,12 @@ mod state_dag_branch_coverage_tests {
         let mut missing_parent = event("$event", Some(""));
         missing_parent.auth_events.push("$missing".into());
         assert!(matches!(
-            compute_state_before_from_dag(
+            compute_state_before_from_dag(&DagInputs::new(
                 &missing_parent,
                 &events,
                 StateResVersion::V2_2,
                 &empty_key
-            ),
+            )),
             Err(StateDagError::Validation(
                 StateDagValidationError::MissingReferencedEvent { .. }
             ))
@@ -667,13 +681,21 @@ mod state_dag_branch_coverage_tests {
         for value in [create, left, right, target.clone()] {
             events.insert(value.event_id.clone(), value);
         }
-        assert!(
-            compute_state_before_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
-                .is_ok()
-        );
-        assert!(
-            compute_state_after_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
-                .is_ok()
+        let state_before = compute_state_before_from_dag(&DagInputs::new(
+            &target,
+            &events,
+            StateResVersion::V2_2,
+            &empty_key,
+        ))
+        .expect("state before is valid");
+        let mut state_after = state_before;
+        apply_event_to_state(&mut state_after, &target);
+        assert_eq!(
+            state_after.get(&(
+                EventType::from("m.room.message"),
+                "@target:example.org".to_string()
+            )),
+            Some(&"$target".to_string())
         );
 
         let mut merge_create = event("$merge-create", Some(""));
@@ -698,12 +720,12 @@ mod state_dag_branch_coverage_tests {
         ] {
             merge_events.insert(value.event_id.clone(), value);
         }
-        assert!(compute_state_before_from_dag(
+        assert!(compute_state_before_from_dag(&DagInputs::new(
             &merge_target,
             &merge_events,
             StateResVersion::V2_2,
-            &empty_key,
-        )
+            &empty_key
+        ))
         .is_ok());
 
         let mut cycle = event("$cycle", Some("@cycle:example.org"));
@@ -711,7 +733,12 @@ mod state_dag_branch_coverage_tests {
         let mut cyclic: TestMap = crate::HashMap::default();
         cyclic.insert(cycle.event_id.clone(), cycle.clone());
         assert!(matches!(
-            compute_state_before_from_dag(&cycle, &cyclic, StateResVersion::V2_2, &empty_key),
+            compute_state_before_from_dag(&DagInputs::new(
+                &cycle,
+                &cyclic,
+                StateResVersion::V2_2,
+                &empty_key
+            )),
             Err(StateDagError::CycleDetected)
         ));
     }
@@ -730,9 +757,14 @@ mod state_dag_branch_coverage_tests {
             events.insert(value.event_id.clone(), value);
         }
 
-        let state =
-            compute_state_after_from_dag(&target, &events, StateResVersion::V2_2, &empty_key)
-                .unwrap();
+        let mut state = compute_state_before_from_dag(&DagInputs::new(
+            &target,
+            &events,
+            StateResVersion::V2_2,
+            &empty_key,
+        ))
+        .unwrap();
+        apply_event_to_state(&mut state, &target);
         assert!(state.contains_key(&(EventType::from("m.room.message"), "target".to_string())));
     }
 
@@ -745,18 +777,21 @@ mod state_dag_branch_coverage_tests {
         let empty_events: TestMap = crate::HashMap::default();
         let empty_index: DenseIndex<&String, usize> = DenseIndex::try_build([]).unwrap();
         let empty_states: Vec<Option<SharedState<String, String>>> = Vec::new();
-        let mut auth_cache = LocalAuthCache::new(StateResVersion::V2_2);
+        let mut auth_cache = crate::state::at::LocalAuthCache::new(StateResVersion::V2_2);
         let mut mainline_cache = FastMap::default();
+        let mut merge_ctx = MergeContext::new(
+            &empty_events,
+            &mut auth_cache,
+            &mut mainline_cache,
+            StateResVersion::V2_2,
+            &empty_key,
+        );
         assert!(matches!(
             finish_state_after_from_dag(
                 &missing,
-                &empty_events,
                 &empty_index,
                 &empty_states,
-                &mut auth_cache,
-                &mut mainline_cache,
-                StateResVersion::V2_2,
-                &empty_key,
+                &mut merge_ctx,
             ),
             Err(StateDagError::IncompleteDag { missing_event_ids })
                 if missing_event_ids == vec![missing_id]
@@ -764,17 +799,8 @@ mod state_dag_branch_coverage_tests {
 
         let empty = event("$empty-final-target", Some("target"));
         assert_eq!(
-            finish_state_after_from_dag(
-                &empty,
-                &empty_events,
-                &empty_index,
-                &empty_states,
-                &mut auth_cache,
-                &mut mainline_cache,
-                StateResVersion::V2_2,
-                &empty_key,
-            )
-            .unwrap(),
+            finish_state_after_from_dag(&empty, &empty_index, &empty_states, &mut merge_ctx,)
+                .unwrap(),
             SharedState::new()
         );
     }
@@ -825,7 +851,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     if event.event_type == M_ROOM_CREATE {
         if !event.prev_state_events().is_empty() {
@@ -926,7 +952,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let mut visited: FastSet<Id> = FastSet::default();
     let mut reachable: Vec<Id> = Vec::new();
@@ -1067,7 +1093,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     if latest_events.is_empty() || limit == 0 {
         return Vec::new();
@@ -1126,7 +1152,7 @@ fn collect_state_dag_ancestor_short_ids_batch<'a, Id, C, S, K>(
 ) -> Result<DenseIndex<&'a Id, usize>, AncestorCollectError<Id>>
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let mut index_to_id: Vec<&'a Id> = Vec::new();
     let mut seen: FastSet<&'a Id> = FastSet::default();
@@ -1177,7 +1203,7 @@ fn topological_sort_state_dag_short_ids<'a, Id, C, S, K>(
 ) -> (Vec<usize>, Vec<usize>)
 where
     Id: EventId,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     let n = index.len();
     let mut in_degree = vec![0_usize; n];
@@ -1217,6 +1243,36 @@ where
     (sorted, out_degree)
 }
 
+/// Borrowed inputs shared by the State-DAG resolution entry points.
+pub struct DagInputs<'a, Id, C, S, K> {
+    /// Event whose before/after state is being resolved.
+    pub event: &'a LeanEvent<Id, C, K>,
+    /// Event map containing the reachable state DAG.
+    pub events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
+    /// State resolution version; only V2.2 is supported.
+    pub version: StateResVersion,
+    /// Empty-key sentinel used for `(EventType, K)` lookups.
+    pub empty_key: &'a K,
+}
+
+impl<'a, Id, C, S, K> DagInputs<'a, Id, C, S, K> {
+    /// Bundles the inputs accepted by the State-DAG entry points.
+    #[must_use]
+    pub fn new(
+        event: &'a LeanEvent<Id, C, K>,
+        events_map: &'a HashMap<Id, LeanEvent<Id, C, K>, S>,
+        version: StateResVersion,
+        empty_key: &'a K,
+    ) -> Self {
+        Self {
+            event,
+            events_map,
+            version,
+            empty_key,
+        }
+    }
+}
+
 /// Computes the resolved room state before an event using its `prev_state_events` State DAG.
 ///
 /// - For `m.room.create`: returns an empty state map.
@@ -1227,18 +1283,20 @@ where
 /// Returns [`StateDagError`] if validation fails, ancestor events are missing, or a cycle is detected.
 #[allow(clippy::too_many_lines, clippy::missing_panics_doc)]
 pub fn compute_state_before_from_dag<Id, C, S, K>(
-    event: &LeanEvent<Id, C, K>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
-    version: StateResVersion,
-    empty_key: &K,
+    inputs: &DagInputs<'_, Id, C, S, K>,
 ) -> Result<SharedState<Id, K>, StateDagError<Id>>
 where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
+    let event = inputs.event;
+    let events_map = inputs.events_map;
+    let version = inputs.version;
+    let empty_key = inputs.empty_key;
+
     // State-DAG traversal (prev_state_events edges) is only defined for
     // room versions that use MSC4242 (V2.2). Earlier versions use auth-
     // chain state resolution and must not call this function.
@@ -1301,11 +1359,18 @@ where
         }
     }
 
-    let mut global_auth_cache = LocalAuthCache::new(version);
-    let mut mainline_cache: FastMap<Id, Option<Id>> = FastMap::default();
-
-    let mut state_after_map: Vec<Option<SharedState<Id, K>>> =
-        core::iter::repeat_with(|| None).take(index.len()).collect();
+    let crate::state::at::PipelineBookkeeping {
+        mut global_auth_cache,
+        mut mainline_cache,
+        mut state_after_map,
+    } = crate::state::at::pipeline_bookkeeping(index.len(), version);
+    let mut merge_ctx = MergeContext::new(
+        events_map,
+        &mut global_auth_cache,
+        &mut mainline_cache,
+        version,
+        empty_key,
+    );
 
     for idx in sorted_ancestors {
         let id_val = index.items()[idx];
@@ -1319,60 +1384,22 @@ where
                 .index_of(&pe)
                 .expect("state DAG ancestor index contains every referenced parent");
             debug_assert!(out_degree[pe_idx] > 0);
-            out_degree[pe_idx] = out_degree[pe_idx].saturating_sub(1);
-            if out_degree[pe_idx] == 0 {
-                if let Some(pe_state) = state_after_map[pe_idx].take() {
-                    prev_states.push(pe_state);
-                }
-            } else if let Some(ref pe_state) = state_after_map[pe_idx] {
-                prev_states.push(pe_state.clone());
-            }
-        }
-
-        let mut state_before: SharedState<Id, K> = if prev_states.is_empty() {
-            SharedState::new()
-        } else if prev_states.len() == 1 {
-            // `prev_states` only ever holds `Some` parent states, so the sole
-            // element is guaranteed present (index 0 is valid for len == 1).
-            prev_states.remove(0)
-        } else {
-            resolve_merge_fast_path(
-                &prev_states,
-                events_map,
-                &mut global_auth_cache,
-                &mut mainline_cache,
-                version,
-                empty_key,
-            )
-        };
-
-        if ev.state_key.is_some() && !ev.rejected {
-            state_before.insert(
-                (
-                    EventType::from(ev.event_type.as_str()),
-                    ev.state_key
-                        .clone()
-                        .expect("state_key was checked to be present"),
-                ),
-                ev.event_id.clone(),
+            take_finalized_parent(
+                pe_idx,
+                &mut out_degree,
+                &mut state_after_map,
+                &mut prev_states,
             );
         }
 
-        if out_degree[idx] > 0 {
-            state_after_map[idx] = Some(state_before);
-        }
+        let mut state_before: SharedState<Id, K> =
+            resolve_merged_parent_states(&prev_states, &mut merge_ctx);
+        record_own_state(&mut state_before, ev);
+
+        retain_state_for_children(&mut state_after_map, &out_degree, idx, state_before);
     }
 
-    finish_state_after_from_dag(
-        event,
-        events_map,
-        &index,
-        &state_after_map,
-        &mut global_auth_cache,
-        &mut mainline_cache,
-        version,
-        empty_key,
-    )
+    finish_state_after_from_dag(event, &index, &state_after_map, &mut merge_ctx)
 }
 
 /// Validates the complete `prev_state_events` closure reachable from `event`.
@@ -1388,7 +1415,7 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
+    S: BuildHasher,
 {
     // Validate the complete reachable graph, not only the target's immediate
     // parents. Otherwise a malformed indirect ancestor can influence state.
@@ -1412,23 +1439,18 @@ where
 
 /// Finalizes `compute_state_before_from_dag` by gathering the target's parent
 /// states and resolving the fork if necessary.
-#[allow(clippy::too_many_arguments)]
 fn finish_state_after_from_dag<Id, C, S, K>(
     event: &LeanEvent<Id, C, K>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
     index: &DenseIndex<&Id, usize>,
     state_after_map: &[Option<SharedState<Id, K>>],
-    global_auth_cache: &mut LocalAuthCache<Id, C, K>,
-    mainline_cache: &mut FastMap<Id, Option<Id>>,
-    version: StateResVersion,
-    empty_key: &K,
+    ctx: &mut MergeContext<'_, Id, C, S, K>,
 ) -> Result<SharedState<Id, K>, StateDagError<Id>>
 where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     let mut parent_states = Vec::with_capacity(event.prev_state_events().len());
     for pe in event.prev_state_events() {
@@ -1442,64 +1464,23 @@ where
         }
     }
 
-    if parent_states.is_empty() {
-        Ok(SharedState::new())
-    } else if parent_states.len() == 1 {
-        // `parent_states` only ever holds `Some` states (see the loop above), so
-        // the sole element is guaranteed present (index 0 is valid for len == 1).
-        Ok(parent_states.remove(0))
-    } else {
-        Ok(resolve_merge_fast_path(
-            &parent_states,
-            events_map,
-            global_auth_cache,
-            mainline_cache,
-            version,
-            empty_key,
-        ))
-    }
+    Ok(resolve_merged_parent_states(&parent_states, ctx))
 }
 
-/// Computes the resolved room state *after* an event using State DAG semantics.
+/// Applies an event's own state to `state` in place, yielding the state *after*
+/// it.
 ///
-/// If `event` is a state event (`state_key.is_some()`) and is not rejected,
-/// inserts `(event.event_type, event.state_key) -> event.event_id` into the state.
-///
-/// # Errors
-/// Returns [`StateDagError`] if state resolution fails.
-///
-/// # Panics
-/// Panics only if the event's `state_key` changes between the presence check
-/// and insertion, which cannot occur through this shared-reference API.
-pub fn compute_state_after_from_dag<Id, C, S, K>(
-    event: &LeanEvent<Id, C, K>,
-    events_map: &HashMap<Id, LeanEvent<Id, C, K>, S>,
-    version: StateResVersion,
-    empty_key: &K,
-) -> Result<SharedState<Id, K>, StateDagError<Id>>
+/// If `event` is an accepted state event, records
+/// `(event.event_type, event.state_key) -> event.event_id`; otherwise it is a
+/// no-op. Compose with [`compute_state_before_from_dag`] to obtain the state
+/// after an event without a second DAG traversal.
+pub fn apply_event_to_state<Id, C, K>(state: &mut SharedState<Id, K>, event: &LeanEvent<Id, C, K>)
 where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
 {
-    let mut state = compute_state_before_from_dag(event, events_map, version, empty_key)?;
-
-    if event.state_key.is_some() && !event.rejected {
-        state.insert(
-            (
-                EventType::from(event.event_type.as_str()),
-                event
-                    .state_key
-                    .clone()
-                    .expect("state_key was checked to be present"),
-            ),
-            event.event_id.clone(),
-        );
-    }
-
-    Ok(state)
+    record_own_state(state, event);
 }
 
 /// Derives the required `auth_events` for an event from the room state computed via its State DAG.
@@ -1518,8 +1499,8 @@ where
     Id: EventId,
     C: EventContent,
     K: StateKey,
-    S: core::hash::BuildHasher,
-    for<'q> (EventType, K): core::borrow::Borrow<dyn StateKeyDyn + 'q>,
+    S: BuildHasher,
+    for<'q> (EventType, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     if event.event_type == M_ROOM_CREATE {
         return Ok(Vec::new());
@@ -1554,7 +1535,7 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod targeted_coverage_tests {
     use super::*;
-    use serde_json::Value;
+    use crate::json::Value;
 
     fn event(
         id: &str,
@@ -1601,9 +1582,14 @@ mod targeted_coverage_tests {
         let create = event("$create", M_ROOM_CREATE, Some(""));
         let mut events: HashMap<String, LeanEvent<String, Value, String>> = HashMap::default();
         events.insert(create.event_id.clone(), create.clone());
-        let state =
-            compute_state_after_from_dag(&create, &events, StateResVersion::V2_2, &String::new())
-                .expect("create state is valid");
+        let mut state = compute_state_before_from_dag(&DagInputs::new(
+            &create,
+            &events,
+            StateResVersion::V2_2,
+            &String::new(),
+        ))
+        .expect("create state is valid");
+        apply_event_to_state(&mut state, &create);
 
         assert_eq!(
             state.get(&(EventType::from(M_ROOM_CREATE), String::new())),
@@ -1611,7 +1597,7 @@ mod targeted_coverage_tests {
         );
         assert_eq!(
             derive_auth_events_from_state_dag(&create, &state, &events, "12").unwrap(),
-            [] as [std::string::String; 0]
+            Vec::<String>::new()
         );
     }
 }

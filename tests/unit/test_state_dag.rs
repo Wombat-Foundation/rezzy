@@ -19,27 +19,27 @@ use rezzy::basespec::event_types::{
     EventType, M_ROOM_CREATE, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
 use rezzy::basespec::rezzy_types::{LeanEvent, RoomId, StateResVersion};
+use rezzy::json;
 use rezzy::state::dag::{
-    compute_state_after_from_dag, compute_state_before_from_dag, derive_auth_events_from_state_dag,
+    apply_event_to_state, compute_state_before_from_dag, derive_auth_events_from_state_dag,
     order_missing_state_events_deterministic, validate_msc4242_prev_state_events, walk_state_dag,
-    StateDagCompleteness, StateDagValidationError, StateDagWalkOptions,
+    DagInputs, StateDagCompleteness, StateDagValidationError, StateDagWalkOptions,
 };
 use rezzy::HashMap;
-use serde_json::json;
 
-fn make_state_event(
+fn make_event(
     id: &str,
     event_type: &str,
-    state_key: &str,
+    state_key: Option<&str>,
     sender: &str,
     prev_state_events: Vec<&str>,
-    content: serde_json::Value,
+    content: rezzy::JsonValue,
     room_id: Option<&str>,
 ) -> LeanEvent {
     LeanEvent {
         event_id: id.to_string(),
         event_type: event_type.to_string(),
-        state_key: Some(state_key.to_string()),
+        state_key: state_key.map(ToString::to_string),
         sender: sender.to_string(),
         auth_events: prev_state_events
             .into_iter()
@@ -53,29 +53,99 @@ fn make_state_event(
     }
 }
 
+fn make_state_event(
+    id: &str,
+    event_type: &str,
+    state_key: &str,
+    sender: &str,
+    prev_state_events: Vec<&str>,
+    content: rezzy::JsonValue,
+    room_id: Option<&str>,
+) -> LeanEvent {
+    make_event(
+        id,
+        event_type,
+        Some(state_key),
+        sender,
+        prev_state_events,
+        content,
+        room_id,
+    )
+}
+
 fn make_timeline_event(
     id: &str,
     event_type: &str,
     sender: &str,
     prev_state_events: Vec<&str>,
-    content: serde_json::Value,
+    content: rezzy::JsonValue,
     room_id: Option<&str>,
 ) -> LeanEvent {
-    LeanEvent {
-        event_id: id.to_string(),
-        event_type: event_type.to_string(),
-        state_key: None,
-        sender: sender.to_string(),
-        auth_events: prev_state_events
-            .into_iter()
-            .map(ToString::to_string)
-            .collect(),
+    make_event(
+        id,
+        event_type,
+        None,
+        sender,
+        prev_state_events,
         content,
-        room_id: room_id.map(RoomId::from),
-        origin_server_ts: 1000,
-        depth: 1,
-        ..Default::default()
-    }
+        room_id,
+    )
+}
+
+fn root_create(sender: &str) -> LeanEvent {
+    make_state_event(
+        "$create",
+        M_ROOM_CREATE,
+        "",
+        sender,
+        vec![],
+        json!({ "creator": sender }),
+        None,
+    )
+}
+
+fn alice_pl() -> LeanEvent {
+    make_state_event(
+        "$pl",
+        M_ROOM_POWER_LEVELS,
+        "",
+        "@alice:example.com",
+        vec!["$create"],
+        json!({ "users": { "@alice:example.com": 100 } }),
+        None,
+    )
+}
+
+fn assert_state_before_has_pl(
+    state_before: &rezzy::state::at::SharedState<String, String>,
+    empty_key: &str,
+) {
+    assert_eq!(
+        state_before.get(&(EventType::from(M_ROOM_POWER_LEVELS), empty_key.to_string())),
+        Some(&"$pl".to_string())
+    );
+}
+
+fn alice_join(parent: &str) -> LeanEvent {
+    make_state_event(
+        "$join",
+        M_ROOM_MEMBER,
+        "@alice:example.com",
+        "@alice:example.com",
+        vec![parent],
+        json!({ "membership": "join" }),
+        None,
+    )
+}
+
+fn walk(events: &HashMap<String, LeanEvent>, target: &str) -> StateDagCompleteness<String> {
+    let target_id = target.to_string();
+    walk_state_dag(
+        &[&target_id],
+        events,
+        StateDagWalkOptions::default(),
+        StateResVersion::V2_2,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,7 +230,7 @@ fn test_prev_state_events_fanout_limit_only_applies_to_v22() {
         "type": M_ROOM_MEMBER,
         "state_key": "@a:example.com",
         "sender": "@a:example.com",
-        "prev_state_events": prev_state_events,
+        "prev_state_events": &prev_state_events,
         "content": { "membership": "join" }
     });
 
@@ -192,7 +262,7 @@ fn test_msc4242_rejects_legacy_auth_events_field() {
         "content": {"membership": "join"}
     });
     let err = LeanEvent::from_value(&raw, Some("org.matrix.msc4242.12")).unwrap_err();
-    assert!(err.to_string().contains("auth_events is not permitted"));
+    assert!(err.clone().contains("auth_events is not permitted"));
 }
 
 #[test]
@@ -369,27 +439,13 @@ fn test_walk_state_dag_complete_linear_path() {
         json!({}),
         None,
     );
-    let join = make_state_event(
-        "$join",
-        M_ROOM_MEMBER,
-        "@alice:example.com",
-        "@alice:example.com",
-        vec!["$pl"],
-        json!({ "membership": "join" }),
-        None,
-    );
+    let join = alice_join("$pl");
 
     events.insert("$create".to_string(), create);
     events.insert("$pl".to_string(), pl);
     events.insert("$join".to_string(), join);
 
-    let target_id = "$join".to_string();
-    let result = walk_state_dag(
-        &[&target_id],
-        &events,
-        StateDagWalkOptions::default(),
-        StateResVersion::V2_2,
-    );
+    let result = walk(&events, "$join");
 
     match result {
         StateDagCompleteness::Complete {
@@ -415,26 +471,12 @@ fn test_walk_state_dag_incomplete_missing_gap() {
         json!({}),
         None,
     );
-    let join = make_state_event(
-        "$join",
-        M_ROOM_MEMBER,
-        "@alice:example.com",
-        "@alice:example.com",
-        vec!["$pl"],
-        json!({ "membership": "join" }),
-        None,
-    );
+    let join = alice_join("$pl");
 
     events.insert("$pl".to_string(), pl);
     events.insert("$join".to_string(), join);
 
-    let target_id = "$join".to_string();
-    let result = walk_state_dag(
-        &[&target_id],
-        &events,
-        StateDagWalkOptions::default(),
-        StateResVersion::V2_2,
-    );
+    let result = walk(&events, "$join");
 
     match result {
         StateDagCompleteness::Incomplete {
@@ -443,7 +485,7 @@ fn test_walk_state_dag_incomplete_missing_gap() {
             reachable_event_ids,
         } => {
             assert_eq!(missing_event_ids, vec!["$create_missing"]);
-            assert_eq!(disconnected_event_ids, [] as [std::string::String; 0]);
+            assert_eq!(disconnected_event_ids.len(), 0);
             assert!(reachable_event_ids.contains(&"$join".to_string()));
             assert!(reachable_event_ids.contains(&"$pl".to_string()));
         }
@@ -463,26 +505,12 @@ fn test_walk_state_dag_incomplete_disconnected_leaf() {
         json!({}),
         None,
     );
-    let join = make_state_event(
-        "$join",
-        M_ROOM_MEMBER,
-        "@alice:example.com",
-        "@alice:example.com",
-        vec!["$disconnected_pl"],
-        json!({ "membership": "join" }),
-        None,
-    );
+    let join = alice_join("$disconnected_pl");
 
     events.insert("$disconnected_pl".to_string(), disconnected_pl);
     events.insert("$join".to_string(), join);
 
-    let target_id = "$join".to_string();
-    let result = walk_state_dag(
-        &[&target_id],
-        &events,
-        StateDagWalkOptions::default(),
-        StateResVersion::V2_2,
-    );
+    let result = walk(&events, "$join");
 
     match result {
         StateDagCompleteness::Incomplete {
@@ -490,7 +518,7 @@ fn test_walk_state_dag_incomplete_disconnected_leaf() {
             disconnected_event_ids,
             reachable_event_ids,
         } => {
-            assert_eq!(missing_event_ids, [] as [std::string::String; 0]);
+            assert_eq!(missing_event_ids.len(), 0);
             assert_eq!(disconnected_event_ids, vec!["$disconnected_pl"]);
             assert!(reachable_event_ids.contains(&"$join".to_string()));
             assert!(reachable_event_ids.contains(&"$disconnected_pl".to_string()));
@@ -622,24 +650,8 @@ fn test_compute_state_from_dag_linear_chain() {
     let mut events = HashMap::new();
     let empty_key = String::new();
 
-    let create = make_state_event(
-        "$create",
-        M_ROOM_CREATE,
-        "",
-        "@alice:example.com",
-        vec![],
-        json!({ "creator": "@alice:example.com" }),
-        None,
-    );
-    let pl = make_state_event(
-        "$pl",
-        M_ROOM_POWER_LEVELS,
-        "",
-        "@alice:example.com",
-        vec!["$create"],
-        json!({ "users": { "@alice:example.com": 100 } }),
-        None,
-    );
+    let create = root_create("@alice:example.com");
+    let pl = alice_pl();
     let join_alice = make_state_event(
         "$join_alice",
         M_ROOM_MEMBER,
@@ -654,18 +666,19 @@ fn test_compute_state_from_dag_linear_chain() {
     events.insert("$pl".to_string(), pl.clone());
     events.insert("$join_alice".to_string(), join_alice.clone());
 
-    let state_before =
-        compute_state_before_from_dag(&join_alice, &events, StateResVersion::V2_2, &empty_key)
-            .expect("compute state before");
+    let state_before = compute_state_before_from_dag(&DagInputs::new(
+        &join_alice,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("compute state before");
 
     assert_eq!(
         state_before.get(&(EventType::from(M_ROOM_CREATE), empty_key.clone())),
         Some(&"$create".to_string())
     );
-    assert_eq!(
-        state_before.get(&(EventType::from(M_ROOM_POWER_LEVELS), empty_key.clone())),
-        Some(&"$pl".to_string())
-    );
+    assert_state_before_has_pl(&state_before, &empty_key);
     assert_eq!(
         state_before.get(&(
             EventType::from(M_ROOM_MEMBER),
@@ -674,9 +687,8 @@ fn test_compute_state_from_dag_linear_chain() {
         None
     );
 
-    let state_after =
-        compute_state_after_from_dag(&join_alice, &events, StateResVersion::V2_2, &empty_key)
-            .expect("compute state after");
+    let mut state_after = state_before;
+    apply_event_to_state(&mut state_after, &join_alice);
 
     assert_eq!(
         state_after.get(&(
@@ -692,15 +704,7 @@ fn test_compute_state_from_dag_fork_resolution() {
     let mut events = HashMap::new();
     let empty_key = String::new();
 
-    let create = make_state_event(
-        "$create",
-        M_ROOM_CREATE,
-        "",
-        "@creator:example.com",
-        vec![],
-        json!({ "creator": "@creator:example.com" }),
-        None,
-    );
+    let create = root_create("@creator:example.com");
 
     let mut pl_root = make_state_event(
         "$pl_root",
@@ -770,9 +774,13 @@ fn test_compute_state_from_dag_fork_resolution() {
     events.insert("$member_bob".to_string(), member_bob);
     events.insert("$merge".to_string(), merge.clone());
 
-    let state_before_merge =
-        compute_state_before_from_dag(&merge, &events, StateResVersion::V2_2, &empty_key)
-            .expect("state before merge");
+    let state_before_merge = compute_state_before_from_dag(&DagInputs::new(
+        &merge,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("state before merge");
 
     // Both topic A and Bob's membership should be present in the resolved state!
     assert_eq!(
@@ -793,15 +801,7 @@ fn test_compute_state_from_dag_fork_resolution() {
 #[test]
 fn test_compute_state_from_dag_is_deterministic_across_storage_order() {
     let empty_key = String::new();
-    let create = make_state_event(
-        "$create",
-        M_ROOM_CREATE,
-        "",
-        "@creator:example.com",
-        vec![],
-        json!({ "creator": "@creator:example.com" }),
-        None,
-    );
+    let create = root_create("@creator:example.com");
     let mut name_a = make_state_event(
         "$name_a",
         "m.room.name",
@@ -845,12 +845,20 @@ fn test_compute_state_from_dag_is_deterministic_across_storage_order() {
         reverse.insert(event.event_id.clone(), event.clone());
     }
 
-    let state_forward =
-        compute_state_before_from_dag(&merge, &forward, StateResVersion::V2_2, &empty_key)
-            .expect("complete State DAG must resolve");
-    let state_reverse =
-        compute_state_before_from_dag(&merge, &reverse, StateResVersion::V2_2, &empty_key)
-            .expect("complete State DAG must resolve regardless of storage order");
+    let state_forward = compute_state_before_from_dag(&DagInputs::new(
+        &merge,
+        &forward,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("complete State DAG must resolve");
+    let state_reverse = compute_state_before_from_dag(&DagInputs::new(
+        &merge,
+        &reverse,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("complete State DAG must resolve regardless of storage order");
 
     assert_eq!(state_forward, state_reverse);
     assert_eq!(
@@ -869,15 +877,7 @@ fn test_derive_auth_events_for_membership() {
     let mut events = HashMap::new();
     let empty_key = String::new();
 
-    let create = make_state_event(
-        "$create",
-        M_ROOM_CREATE,
-        "",
-        "@creator:example.com",
-        vec![],
-        json!({ "creator": "@creator:example.com" }),
-        None,
-    );
+    let create = root_create("@creator:example.com");
     let pl = make_state_event(
         "$pl",
         M_ROOM_POWER_LEVELS,
@@ -911,9 +911,14 @@ fn test_derive_auth_events_for_membership() {
     events.insert("$jr".to_string(), join_rules);
     events.insert("$creator_join".to_string(), creator_join.clone());
 
-    let state_at_tip =
-        compute_state_after_from_dag(&creator_join, &events, StateResVersion::V2_2, &empty_key)
-            .expect("state after creator join");
+    let mut state_at_tip = compute_state_before_from_dag(&DagInputs::new(
+        &creator_join,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("state before creator join");
+    apply_event_to_state(&mut state_at_tip, &creator_join);
 
     // A new user (@bob) joins the room
     let bob_join = make_state_event(
@@ -1024,24 +1029,8 @@ fn test_v2_2_derives_auth_from_single_state_parent_citation() {
     let mut events = HashMap::new();
     let empty_key = String::new();
 
-    let create = make_state_event(
-        "$create",
-        M_ROOM_CREATE,
-        "",
-        "@alice:example.com",
-        vec![],
-        json!({ "creator": "@alice:example.com" }),
-        None,
-    );
-    let pl = make_state_event(
-        "$pl",
-        M_ROOM_POWER_LEVELS,
-        "",
-        "@alice:example.com",
-        vec!["$create"],
-        json!({ "users": { "@alice:example.com": 100 } }),
-        None,
-    );
+    let create = root_create("@alice:example.com");
+    let pl = alice_pl();
     let join_rules = make_state_event(
         "$jr",
         M_ROOM_JOIN_RULES,
@@ -1069,16 +1058,17 @@ fn test_v2_2_derives_auth_from_single_state_parent_citation() {
         None,
     );
 
-    let state_before =
-        compute_state_before_from_dag(&bob_join, &events, StateResVersion::V2_2, &empty_key)
-            .expect("state before bob's join");
+    let state_before = compute_state_before_from_dag(&DagInputs::new(
+        &bob_join,
+        &events,
+        StateResVersion::V2_2,
+        &empty_key,
+    ))
+    .expect("state before bob's join");
 
     // Both power_levels and join_rules are reachable via the validated
     // prev_state_events DAG, even though Bob cited neither directly.
-    assert_eq!(
-        state_before.get(&(EventType::from(M_ROOM_POWER_LEVELS), empty_key.clone())),
-        Some(&"$pl".to_string())
-    );
+    assert_state_before_has_pl(&state_before, &empty_key);
     assert_eq!(
         state_before.get(&(EventType::from(M_ROOM_JOIN_RULES), empty_key.clone())),
         Some(&"$jr".to_string())

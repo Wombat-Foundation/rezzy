@@ -1,11 +1,12 @@
-//! Fast auth chain operations using `roaring` bitmaps.
+//! Fast auth chain operations using [`Bitmap`] reachability sets.
 //!
 //! [`AuthGraph`] pre-computes a compressed, topologically-ordered representation
 //! of the auth DAG. Each event's full transitive auth chain is stored as a
-//! `RoaringBitmap`, enabling `O(1)` ancestor queries via bitwise intersection.
+//! `Bitmap`, enabling `O(1)` ancestor queries via bitwise intersection.
 //!
 //! This is used for fast auth-chain difference computations in state resolution.
 
+use crate::bitmap::Bitmap;
 use crate::DenseIndex;
 use crate::FastMap;
 use crate::HashMap;
@@ -14,19 +15,18 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use roaring::RoaringBitmap;
 
 /// A topologically-ordered auth DAG with pre-computed transitive reachability bitmaps.
 ///
 /// Each event is assigned a dense integer index (topological order), and its
-/// full auth chain is represented as a `RoaringBitmap`. Checking whether
+/// full auth chain is represented as a `Bitmap`. Checking whether
 /// event A is in event B's auth chain is a single `bitmap.contains(idx)` call.
 pub struct AuthGraph<Id = String> {
     /// Dense index over event IDs (first-seen order = topological order).
     pub index: DenseIndex<Id>,
     /// Per-event bitmaps: `auth_bitmaps[i]` contains the indices of all
     /// transitive auth ancestors of event `i`.
-    pub auth_bitmaps: Vec<RoaringBitmap>,
+    pub auth_bitmaps: Vec<Bitmap>,
 }
 
 impl<Id> AuthGraph<Id>
@@ -81,9 +81,9 @@ where
         let index = DenseIndex::try_build(sorted.iter().map(|&id| id.clone()))
             .expect("auth graph event count fits in a u32 index");
 
-        let mut auth_bitmaps = vec![RoaringBitmap::new(); sorted.len()];
+        let mut auth_bitmaps = vec![Bitmap::new(); sorted.len()];
         for (idx, &id) in sorted.iter().enumerate() {
-            let mut bitmap = RoaringBitmap::new();
+            let mut bitmap = Bitmap::new();
             if let Some(ev) = sort_context.get(id) {
                 for auth_id in &ev.auth_events {
                     if let Some(p_idx) = index.index_of(auth_id) {
@@ -106,7 +106,7 @@ where
     /// that are NOT in the auth chains of
     /// `unconflicted_ids`.
     ///
-    /// This is the roaring-bitmap fast path for the
+    /// This is the bitmap fast path for the
     /// same computation as
     /// [`compute_auth_chain_diff`](crate::state::at::compute_auth_chain_diff),
     /// but runs in `O(|bitmap|)` time on pre-computed
@@ -123,7 +123,7 @@ where
     #[must_use]
     pub fn auth_difference(&self, unconflicted_ids: &[Id], conflicted_ids: &[Id]) -> Vec<Id> {
         // Union of all unconflicted auth chains
-        let mut u_bitmap = RoaringBitmap::new();
+        let mut u_bitmap = Bitmap::new();
         for id in unconflicted_ids {
             if let Some(idx) = self.index.index_of(id) {
                 u_bitmap |= &self.auth_bitmaps[idx as usize];
@@ -132,7 +132,7 @@ where
         }
 
         // Union of all conflicted auth chains
-        let mut c_bitmap = RoaringBitmap::new();
+        let mut c_bitmap = Bitmap::new();
         for id in conflicted_ids {
             if let Some(idx) = self.index.index_of(id) {
                 c_bitmap |= &self.auth_bitmaps[idx as usize];
@@ -353,7 +353,7 @@ mod tests {
 
         // Empty conflicted — nothing returned
         let diff = graph.auth_difference(&["A".into()], &[]);
-        assert_eq!(diff, [] as [std::string::String; 0]);
+        assert_eq!(diff.len(), 0);
     }
 
     #[test]

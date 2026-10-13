@@ -30,14 +30,20 @@ format: ##H Format codebase (Rust + Lean + scripts)
 .PHONY: check
 check:	##H Cargo check and code dupe
 	$(CARGO) check --all-targets --all-features
-	cd benches/ && $(CARGO) check --all-targets --all-features
+	cd benches/ && direnv exec . sh -c '$$CARGO check --all-targets --all-features'
 	-jscpd $$(git ls-files '*.rs')
 	# $(CARGO) fix --all-targets --allow-dirty
+
+.PHONY: macro
+macro: ##H See macro expansion costs
+	set -o pipefail; \
+	$(CARGO) +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
+
 
 .PHONY: lint
 lint: ##H Run all linters
 	-shellcheck $(LINT_LOCS_SH)
-	$(CARGO) clippy --all-targets $(CARGO_FEATURE_ARGS)
+	$(CARGO) clippy --all-targets --all-features $(filter --locked,$(CARGO_FEATURE_ARGS))
 
 .PHONY: fix
 fix:	##H Clippy auto-fix (per-package; workspace-wide --fix silently drops fixes)
@@ -114,8 +120,7 @@ endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	#$(CARGO) bench --profile release --bench rezzy -- resolve
-	$(CARGO) bench --profile release --benches
+	cd benches/ && direnv exec . sh -c '$$CARGO bench --profile release --benches'
 
 
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
@@ -144,7 +149,7 @@ rust/clean: ##H Remove Rust build artifacts
 
 .PHONY: rust/install
 rust/install: ##H Install rezzy binary to cargo bin
-	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy
+	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls
 
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary from cargo bin

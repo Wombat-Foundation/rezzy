@@ -2,26 +2,37 @@
 use std::{cmp::Ordering, collections::BTreeSet, error::Error, fs, ops::Deref, path::Path};
 
 use ruma_common::{
-    EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
     room_version_rules::{AuthorizationRules, StateResolutionV2Rules},
+    EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 };
 use ruma_events::{StateEventType, TimelineEventType};
 //
 use crate::mock_ruma;
-use mock_ruma::{
-    Event, StateMap,
-    RoomCreateEvent,
-    resolve,
-    EventIdMap, EventIdSet,
-};
+use mock_ruma::{resolve, Event, EventIdMap, EventIdSet, RoomCreateEvent, StateMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{
     from_str as from_json_str, to_string_pretty as to_json_string_pretty,
     value::RawValue as RawJsonValue,
 };
-use similar::{Algorithm, udiff::unified_diff};
+use similar::{udiff::unified_diff, Algorithm};
 
 const FIXTURES_PATH: &str = "tests/resolve/fixtures";
+
+/// Snapshot the resolved state with the shared settings used by every
+/// state-resolution snapshot test.
+macro_rules! snapshot_resolved_state {
+    ($resolved_state:expr $(,)?) => {
+        insta::with_settings!({
+            description => "Resolved state",
+            omit_expression => true,
+            snapshot_path => "resolve/snapshots",
+            prepend_module_to_snapshot => false,
+            snapshot_suffix => "resolved_state",
+        }, {
+            insta::assert_snapshot!($resolved_state);
+        });
+    };
+}
 
 /// Create a snapshot test attempting the state resolution of several batches of PDUs.
 ///
@@ -47,15 +58,7 @@ macro_rules! snapshot_test_batches {
         fn $name() {
             let resolved_state = self::macros::test_resolve_batches(&$pdus_paths);
 
-            insta::with_settings!({
-                description => "Resolved state",
-                omit_expression => true,
-                snapshot_path => "resolve/snapshots",
-                prepend_module_to_snapshot => false,
-                snapshot_suffix => "resolved_state",
-            }, {
-                insta::assert_snapshot!(resolved_state);
-            });
+            snapshot_resolved_state!(resolved_state);
         }
     };
 }
@@ -80,15 +83,7 @@ macro_rules! snapshot_test_state_maps {
         fn $name() {
             let resolved_state = self::macros::test_resolve_state_maps(&$state_maps_paths, &$pdus_paths);
 
-            insta::with_settings!({
-                description => "Resolved state",
-                omit_expression => true,
-                snapshot_path => "resolve/snapshots",
-                prepend_module_to_snapshot => false,
-                snapshot_suffix => "resolved_state",
-            }, {
-                insta::assert_snapshot!(resolved_state);
-            });
+            snapshot_resolved_state!(resolved_state);
         }
     };
 }
@@ -104,8 +99,13 @@ macro_rules! snapshot_test_state_maps {
 macro_rules! assert_eq_diff {
     ($lhs_name:literal => $lhs:expr, $rhs_name:literal => $rhs:expr $(,)?) => {
         if $lhs != $rhs {
-            let diff =
-                unified_diff(Algorithm::default(), &$lhs, &$rhs, 3, Some(($lhs_name, $rhs_name)));
+            let diff = unified_diff(
+                Algorithm::default(),
+                &$lhs,
+                &$rhs,
+                3,
+                Some(($lhs_name, $rhs_name)),
+            );
 
             panic!("Assertion {} == {} failed:\n{diff}", $lhs_name, $rhs_name);
         }
@@ -208,9 +208,15 @@ pub(super) fn test_resolve_batches(pdus_paths: &[&str]) -> String {
 pub(super) fn test_resolve_state_maps(state_maps_paths: &[&str], pdus_paths: &[&str]) -> String {
     let (pdu_batches, auth_rules, state_res_rules) = load_pdus_and_room_version_rules(pdus_paths);
 
-    let pdus = pdu_batches.into_iter().flat_map(std::iter::IntoIterator::into_iter).collect::<Vec<_>>();
-    let pdus_map: EventIdMap<OwnedEventId, Pdu> =
-        pdus.clone().into_iter().map(|pdu| (pdu.event_id().to_owned(), pdu.clone())).collect();
+    let pdus = pdu_batches
+        .into_iter()
+        .flat_map(std::iter::IntoIterator::into_iter)
+        .collect::<Vec<_>>();
+    let pdus_map: EventIdMap<OwnedEventId, Pdu> = pdus
+        .clone()
+        .into_iter()
+        .map(|pdu| (pdu.event_id().to_owned(), pdu.clone()))
+        .collect();
 
     let state_maps = load_state_maps(state_maps_paths, &pdus_map);
 
@@ -280,10 +286,14 @@ fn load_pdus_and_room_version_rules(
     let room_version_id = RoomCreateEvent::new(room_create)
         .room_version()
         .expect("`m.room.create` PDU's content should be valid");
-    let rules = room_version_id.rules().expect("room version should be supported");
+    let rules = room_version_id
+        .rules()
+        .expect("room version should be supported");
     let auth_rules = rules.authorization;
-    let state_res_rules =
-        rules.state_res.v2_rules().expect("resolve only supports state resolution version 2");
+    let state_res_rules = rules
+        .state_res
+        .v2_rules()
+        .expect("resolve only supports state resolution version 2");
 
     (pdu_batches, auth_rules, *state_res_rules)
 }
@@ -316,7 +326,9 @@ fn load_state_maps(
                         (
                             (
                                 pdu.event_type().to_string().into(),
-                                pdu.state_key.clone().expect("All PDUs must be state events"),
+                                pdu.state_key
+                                    .clone()
+                                    .expect("All PDUs must be state events"),
                             ),
                             event_id,
                         )
@@ -362,7 +374,9 @@ where
         state_map.insert(
             (
                 pdu.event_type().to_string().into(),
-                pdu.state_key().ok_or("all PDUs should be state events")?.to_owned(),
+                pdu.state_key()
+                    .ok_or("all PDUs should be state events")?
+                    .to_owned(),
             ),
             pdu.event_id().clone(),
         );
@@ -370,8 +384,11 @@ where
         state_maps.push(state_map);
     }
 
-    pdus_map
-        .extend(pdus.clone().into_iter().map(|pdu| (pdu.event_id().to_owned(), pdu.to_owned())));
+    pdus_map.extend(
+        pdus.clone()
+            .into_iter()
+            .map(|pdu| (pdu.event_id().to_owned(), pdu.to_owned())),
+    );
 
     let mut auth_chain_sets = Vec::new();
     for pdu in pdus {
@@ -420,7 +437,10 @@ where
     for pdu in pdus.clone() {
         let mut has_prev_events = false;
         for prev_event in pdu.prev_events() {
-            forward_prev_events_graph.entry(prev_event).or_default().push(pdu.event_id());
+            forward_prev_events_graph
+                .entry(prev_event)
+                .or_default()
+                .push(pdu.event_id());
             has_prev_events = true;
         }
         if pdu.event_type() == &TimelineEventType::RoomCreate && !has_prev_events {
@@ -438,7 +458,9 @@ where
             let mut auth_chain_sets = EventIdSet::new();
 
             for event_id in state_map.values() {
-                let pdu = pdus_map.get(event_id).expect("every pdu should be available");
+                let pdu = pdus_map
+                    .get(event_id)
+                    .expect("every pdu should be available");
                 auth_chain_sets.extend(pdu_auth_chain(pdu, &pdus_map));
             }
 
@@ -452,7 +474,9 @@ where
         let mut incoming_parent_states = Vec::new();
         let mut incoming_parent_auth_chains = Vec::new();
 
-        let current_pdu = pdus_map.get(&event_id).expect("every pdu should be available");
+        let current_pdu = pdus_map
+            .get(&event_id)
+            .expect("every pdu should be available");
 
         for prev_event in current_pdu.prev_events() {
             let Some(state_at_event) = state_at_events.get(prev_event) else {
@@ -481,7 +505,10 @@ where
         proposed_state_at_event.insert(
             (
                 current_pdu.event_type().to_string().into(),
-                current_pdu.state_key().expect("all pdus are state events").to_owned(),
+                current_pdu
+                    .state_key()
+                    .expect("all pdus are state events")
+                    .to_owned(),
             ),
             event_id.clone(),
         );
@@ -508,7 +535,8 @@ where
         }
     }
 
-    assert!(state_at_events.len() == pdus_map.len(),
+    assert!(
+        state_at_events.len() == pdus_map.len(),
         "Not all events have a state calculated! This is likely due to an \
          event having a `prev_events` which points to a non-existent PDU."
     );
@@ -517,7 +545,9 @@ where
     let mut auth_chain_sets = Vec::new();
 
     for leaf in leaves {
-        let state_at_event = state_at_events.get(&leaf).expect("states at all events are known");
+        let state_at_event = state_at_events
+            .get(&leaf)
+            .expect("states at all events are known");
         let auth_chain_at_event = auth_chain_from_state_map(state_at_event)?;
 
         leaf_states.push(state_at_event.clone());
@@ -718,7 +748,9 @@ impl Eq for ResolvedStateEvent<'_> {}
 
 impl Ord for ResolvedStateEvent<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.event_type.cmp(other.event_type).then_with(|| self.state_key.cmp(other.state_key))
+        self.event_type
+            .cmp(other.event_type)
+            .then_with(|| self.state_key.cmp(other.state_key))
     }
 }
 

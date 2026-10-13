@@ -16,21 +16,42 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use rezzy::{resolve_iterative_sort, LeanEvent, StateResVersion};
 use std::collections::HashMap;
+use utils::to_event_map;
 
-/// Load a JSON fixture file into a Vec<LeanEvent>.
-/// The fixtures use "type" (not "`event_type`") which our serde rename handles.
+/// Load a JSON fixture file into a Vec<LeanEvent>, accepting either a bare
+/// array or an object with an `"events"` array.
 fn load_fixture(path: &str) -> Vec<LeanEvent> {
     let content = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"));
-    serde_json::from_str(&content).unwrap_or_else(|e| panic!("Failed to parse fixture {path}: {e}"))
+    utils::parse_fixture_json(&content)
 }
 
-/// Build a `HashMap`<String, `LeanEvent`> from a list of events (keyed by `event_id`).
-fn to_event_map(events: &[LeanEvent]) -> HashMap<String, LeanEvent> {
-    events
-        .iter()
-        .map(|e| (e.event_id.clone(), e.clone()))
-        .collect()
+/// Loads a fixture whose events live under the top-level `"events"` array.
+fn load_events_json(path: &str) -> Vec<LeanEvent> {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"));
+    let data = rezzy::JsonValue::parse(&content).unwrap();
+    utils::parse_events_value(&data["events"]).unwrap()
+}
+
+type ResolvedState =
+    rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>;
+
+/// Resolves an already-built event map at the given state resolution version.
+fn resolve_map(map: &HashMap<String, LeanEvent>, version: StateResVersion) -> ResolvedState {
+    resolve_iterative_sort(rezzy::IterativeInputs::new(
+        &utils::build_unconflicted_state_test_helper(map),
+        map,
+        map,
+        version,
+        &mut std::collections::HashMap::new(),
+        &String::new(),
+    ))
+}
+
+/// Builds the event map for `events` and resolves it at the given version.
+fn resolve_events(events: &[LeanEvent], version: StateResVersion) -> ResolvedState {
+    resolve_map(&to_event_map(events), version)
 }
 
 const FIXTURE_DIR: &str = "res/ruma_upstream";
@@ -38,13 +59,14 @@ const FIXTURE_DIR: &str = "res/ruma_upstream";
 fn sort_and_verify(events: &[LeanEvent], version: StateResVersion) -> Vec<String> {
     let map = to_event_map(events);
     let create_ev = events.iter().find(|ev| ev.event_type == "m.room.create");
-    let result = rezzy::lean_kahn_sort_with_cycle_diagnostics(
+    let result = rezzy::KahnSortInputs::new(
         &map,
         &map,
         create_ev,
         version,
         &mut std::collections::HashMap::new(),
-    );
+    )
+    .with_cycle_diagnostics();
     assert!(result.is_ok(), "Cycle detected during sort");
     result.into_sorted()
 }
@@ -54,8 +76,8 @@ fn sort_and_verify(events: &[LeanEvent], version: StateResVersion) -> Vec<String
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_sort_no_cycles() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
+    let data: rezzy::JsonValue = rezzy::JsonValue::parse(&content).unwrap();
+    let events: Vec<LeanEvent> = utils::parse_events_value(&data["events"]).unwrap();
     let sorted = sort_and_verify(&events, StateResVersion::V2);
     assert_eq!(sorted.len(), 1000);
     assert_eq!(sorted[0], "$00000-m-room-create");
@@ -66,8 +88,8 @@ fn test_benchmark_1k_sort_no_cycles() {
 fn test_benchmark_1k_v2_1_sort_no_cycles() {
     let content =
         std::fs::read_to_string("res/benchmark_1k_v2_1.json").expect("benchmark_1k_v2_1.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
+    let data: rezzy::JsonValue = rezzy::JsonValue::parse(&content).unwrap();
+    let events: Vec<LeanEvent> = utils::parse_events_value(&data["events"]).unwrap();
     let sorted = sort_and_verify(&events, StateResVersion::V2_1);
     assert_eq!(sorted.len(), 1000);
     assert_eq!(sorted[0], "$00000-m-room-create");
@@ -77,26 +99,12 @@ fn test_benchmark_1k_v2_1_sort_no_cycles() {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_benchmark_1k_resolution_determinism() {
     let content = std::fs::read_to_string("res/benchmark_1k.json").expect("benchmark_1k.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_value(data["events"].clone()).unwrap();
+    let data: rezzy::JsonValue = rezzy::JsonValue::parse(&content).unwrap();
+    let events: Vec<LeanEvent> = utils::parse_events_value(&data["events"]).unwrap();
 
     // Run resolution twice and verify determinism
-    let resolved1 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        &to_event_map(&events),
-        &to_event_map(&events),
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
-    let resolved2 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        &to_event_map(&events),
-        &to_event_map(&events),
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved1 = resolve_events(&events, StateResVersion::V2);
+    let resolved2 = resolve_events(&events, StateResVersion::V2);
     assert_eq!(resolved1, resolved2, "Resolution must be deterministic");
 }
 
@@ -131,10 +139,7 @@ fn test_ruma_bootstrap_auth_chain() {
 // ============================================================================
 
 fn load_large_room() -> Vec<LeanEvent> {
-    let content = std::fs::read_to_string("res/realistic_large_room.json")
-        .expect("realistic_large_room.json");
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
-    serde_json::from_value(data["events"].clone()).unwrap()
+    load_events_json("res/realistic_large_room.json")
 }
 
 #[test]
@@ -168,22 +173,8 @@ fn test_large_room_10k_v2_1_sort() {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_large_room_10k_resolution_determinism() {
     let events = load_large_room();
-    let r1 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        &to_event_map(&events),
-        &to_event_map(&events),
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
-    let r2 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&to_event_map(&events)),
-        &to_event_map(&events),
-        &to_event_map(&events),
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let r1 = resolve_events(&events, StateResVersion::V2);
+    let r2 = resolve_events(&events, StateResVersion::V2);
     assert_eq!(r1, r2, "10K room resolution must be deterministic");
 }
 
@@ -192,22 +183,8 @@ fn test_large_room_10k_resolution_determinism() {
 fn test_large_room_10k_v2_vs_v2_1_divergence() {
     let events = load_large_room();
     let map = to_event_map(&events);
-    let v2 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
-        &map,
-        &map,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
-    let v2_1 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
-        &map,
-        &map,
-        StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let v2 = resolve_map(&map, StateResVersion::V2);
+    let v2_1 = resolve_map(&map, StateResVersion::V2_1);
     // V2 and V2.1 may diverge on conflicted state — that's the whole point of MSC4297.
     // But both must produce valid resolved state.
     assert!(!v2.is_empty(), "V2 must produce resolved state");
@@ -288,7 +265,8 @@ fn test_large_room_10k_auth_chain() {
 fn test_real_room_42k_state_deserialization() {
     let path = "res/real_matrix_state.json";
     let content = std::fs::read_to_string(path).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    let value = rezzy::JsonValue::parse(&content).unwrap();
+    let events = utils::parse_events_value(&value).unwrap();
     assert!(
         events.len() > 40000,
         "Should have 42K+ events, got {}",
@@ -306,7 +284,8 @@ fn test_real_room_42k_power_level_coercion() {
     let path = "res/real_matrix_state.json";
     // The real room dump likely has string/float power levels from old Synapse versions.
     let content = std::fs::read_to_string(path).unwrap();
-    let events: Vec<LeanEvent> = serde_json::from_str(&content).unwrap();
+    let value = rezzy::JsonValue::parse(&content).unwrap();
+    let events = utils::parse_events_value(&value).unwrap();
     // Find PL events and verify they deserialize without panicking
     let pl_events: Vec<_> = events
         .iter()
@@ -330,11 +309,11 @@ fn test_real_room_42k_power_level_coercion() {
 fn test_real_room_v2_1_deserialization() {
     let path = "res/real_matrix_state_v2_1.json";
     let content = std::fs::read_to_string(path).unwrap();
-    let val: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let val: rezzy::JsonValue = rezzy::JsonValue::parse(&content).unwrap();
     let events: Vec<LeanEvent> = if val.is_array() {
-        serde_json::from_value(val).unwrap()
+        utils::parse_events_value(&val).unwrap()
     } else {
-        serde_json::from_value(val["events"].clone()).unwrap()
+        utils::parse_events_value(&val["events"]).unwrap()
     };
     assert!(
         events.len() > 10,
@@ -348,9 +327,7 @@ fn test_real_room_v2_1_deserialization() {
 // ============================================================================
 
 fn load_real_dag(path: &str) -> Vec<LeanEvent> {
-    let content = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Missing {path}"));
-    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
-    serde_json::from_value(data["events"].clone()).unwrap()
+    load_events_json(path)
 }
 
 #[test]
@@ -392,27 +369,11 @@ fn test_real_dag_52k_room_v2_1_sort() {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_real_dag_52k_room_resolution() {
     let events = load_real_dag("res/real_dag_52k_room.json");
-    let map = to_event_map(&events);
-    let resolved = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
-        &map,
-        &map,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved = resolve_events(&events, StateResVersion::V2);
     assert!(!resolved.is_empty(), "Resolution should produce state");
     // Determinism check
     let events2 = load_real_dag("res/real_dag_52k_room.json");
-    let map2 = to_event_map(&events2);
-    let resolved2 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map2),
-        &map2,
-        &map2,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved2 = resolve_events(&events2, StateResVersion::V2);
     assert_eq!(resolved, resolved2, "Resolution must be deterministic");
 }
 
@@ -454,29 +415,22 @@ fn test_real_dag_nheko_room_106_heads() {
     );
 
     // Resolution must still complete on this messy DAG
-    let resolved = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&event_map),
-        &event_map,
-        &event_map,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved = resolve_map(&event_map, StateResVersion::V2);
     assert!(!resolved.is_empty(), "Resolution should produce state");
 }
 
 fn parse_jsonl_line(line: &str) -> LeanEvent {
-    if let Ok(ev) = serde_json::from_str::<LeanEvent>(line) {
+    if let Ok(ev) = utils::parse_event_json(line) {
         return ev;
     }
-    let val: serde_json::Value = serde_json::from_str(line)
+    let val: rezzy::JsonValue = rezzy::JsonValue::parse(line)
         .unwrap_or_else(|e| panic!("Failed to parse line as JSON: {e}. Line: {line}"));
     if let Some(source) = val.get("_source") {
-        serde_json::from_value::<LeanEvent>(source.clone()).unwrap_or_else(|e| {
+        LeanEvent::from_value(source, None).unwrap_or_else(|e| {
             panic!("Failed to parse '_source' field as LeanEvent: {e}. Line: {line}")
         })
     } else if let Some(event) = val.get("event") {
-        serde_json::from_value::<LeanEvent>(event.clone()).unwrap_or_else(|e| {
+        LeanEvent::from_value(event, None).unwrap_or_else(|e| {
             panic!("Failed to parse 'event' field as LeanEvent: {e}. Line: {line}")
         })
     } else {
@@ -491,7 +445,6 @@ fn parse_jsonl_line(line: &str) -> LeanEvent {
 #[cfg_attr(not(has_res_submodule), ignore = "res submodule not initialized")]
 fn test_unredacted_spam_storm_v2_1_1() {
     use std::io::BufRead;
-    const CACHE_FORMAT_VERSION: &str = "1";
 
     let path = "res/remote-dag-sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE-v12-merged.jsonl";
 
@@ -514,52 +467,12 @@ fn test_unredacted_spam_storm_v2_1_1() {
                 }
             }
         }
-        let version_prefix = format!(
-            "LEAN_{}_FMT{}",
-            env!("CARGO_PKG_VERSION"),
-            CACHE_FORMAT_VERSION
-        );
-        let mut encoded = version_prefix.as_bytes().to_vec();
-        encoded.extend(bincode::serialize(&parsed_events).unwrap());
-        let _ = std::fs::write(format!("{path}.bincode"), encoded);
         Some(parsed_events)
     };
 
-    let cache_path = format!("{path}.bincode");
-    let events: Vec<LeanEvent> = if let Ok(bytes) = std::fs::read(&cache_path) {
-        let version_prefix = format!(
-            "LEAN_{}_FMT{}",
-            env!("CARGO_PKG_VERSION"),
-            CACHE_FORMAT_VERSION
-        );
-        let prefix_bytes = version_prefix.as_bytes();
-
-        if bytes.starts_with(prefix_bytes) {
-            let encoded = &bytes[prefix_bytes.len()..];
-            match bincode::deserialize::<Vec<LeanEvent>>(encoded) {
-                Ok(cached_events) => {
-                    println!("Loaded from Bincode cache");
-                    cached_events
-                }
-                Err(e) => {
-                    println!("Cache decode failed ({e}), rebuilding from JSONL");
-                    match load_from_jsonl() {
-                        Some(ev) => ev,
-                        None => return,
-                    }
-                }
-            }
-        } else {
-            match load_from_jsonl() {
-                Some(ev) => ev,
-                None => return,
-            }
-        }
-    } else {
-        match load_from_jsonl() {
-            Some(ev) => ev,
-            None => return,
-        }
+    let events: Vec<LeanEvent> = match load_from_jsonl() {
+        Some(ev) => ev,
+        None => return,
     };
 
     assert!(
@@ -571,14 +484,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     let map = to_event_map(&events);
 
     let start_v2 = std::time::Instant::now();
-    let resolved_v2 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
-        &map,
-        &map,
-        StateResVersion::V2,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved_v2 = resolve_map(&map, StateResVersion::V2);
     let dur_v2 = start_v2.elapsed();
     println!(
         "V2.0 State Resolution of {} events took: {:?}",
@@ -587,14 +493,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_v21 = std::time::Instant::now();
-    let resolved_v21 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
-        &map,
-        &map,
-        StateResVersion::V2_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved_v21 = resolve_map(&map, StateResVersion::V2_1);
     let dur_v21 = start_v21.elapsed();
     println!(
         "V2.1 State Resolution of {} events took: {:?}",
@@ -603,14 +502,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_v211 = std::time::Instant::now();
-    let resolved_v211 = resolve_iterative_sort(
-        &utils::build_unconflicted_state_test_helper(&map),
-        &map,
-        &map,
-        StateResVersion::V2_1_1,
-        &mut std::collections::HashMap::new(),
-        &String::new(),
-    );
+    let resolved_v211 = resolve_map(&map, StateResVersion::V2_1_1);
     let dur_v211 = start_v211.elapsed();
     println!(
         "V2.1.1 State Resolution of {} events took: {:?}",
@@ -619,7 +511,7 @@ fn test_unredacted_spam_storm_v2_1_1() {
     );
 
     let start_lattice = std::time::Instant::now();
-    let lattice_unconflicted = imbl::OrdMap::new();
+    let lattice_unconflicted = rezzy::PersistentOrdMap::new();
     let lattice_conflicted = map.clone();
     let resolved_lattice = rezzy::resolve_semilattice_fold(
         &lattice_unconflicted,
@@ -655,10 +547,22 @@ fn test_unredacted_spam_storm_v2_1_1() {
 #[allow(clippy::too_many_lines)]
 fn verify_spam_storm_results(
     events: &[LeanEvent],
-    resolved_v2: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    resolved_v21: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    resolved_v211: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
-    resolved_lattice: &imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+    resolved_v2: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
+    resolved_v21: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
+    resolved_v211: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
+    resolved_lattice: &rezzy::PersistentOrdMap<
+        (rezzy::basespec::event_types::EventType, String),
+        String,
+    >,
     durs: (
         std::time::Duration,
         std::time::Duration,

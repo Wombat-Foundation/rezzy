@@ -25,7 +25,6 @@ use alloc::vec::Vec;
 ///
 /// Generic over the state-key type `K` (defaults to `String`); see
 /// [`crate::basespec::rezzy_types::StateKey`].
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateDiffEntry<Id, K = String> {
     /// Key exists in `new` but not in `old`.
     Added { key: (EventType, K), event_id: Id },
@@ -40,7 +39,6 @@ pub enum StateDiffEntry<Id, K = String> {
 }
 
 /// The result of diffing two state snapshots.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDiff<Id, K = String> {
     /// All differences between old and new state.
     pub entries: Vec<StateDiffEntry<Id, K>>,
@@ -127,19 +125,19 @@ pub fn compute_state_diff_generic<Id: EventId, K: Ord + Clone>(
 
     for diff_item in old.diff(new) {
         match diff_item {
-            imbl::ordmap::DiffItem::Add(key, new_id) => {
+            crate::state::DiffItem::Add(key, new_id) => {
                 entries.push(StateDiffEntry::Added {
                     key: key.clone(),
                     event_id: new_id.clone(),
                 });
             }
-            imbl::ordmap::DiffItem::Remove(key, old_id) => {
+            crate::state::DiffItem::Remove(key, old_id) => {
                 entries.push(StateDiffEntry::Removed {
                     key: key.clone(),
                     event_id: old_id.clone(),
                 });
             }
-            imbl::ordmap::DiffItem::Update {
+            crate::state::DiffItem::Update {
                 old: (key, old_id),
                 new: (_, new_id),
             } => {

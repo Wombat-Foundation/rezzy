@@ -32,35 +32,218 @@ pub trait HamtCodec: Sized {
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str>;
 }
 
-macro_rules! impl_fixed_hamt_codec {
-    ($($ty:ty),* $(,)?) => {
-        $(
-            impl HamtCodec for $ty {
-                #[inline]
-                fn encode_hamt(&self, out: &mut Vec<u8>) {
-                    out.extend_from_slice(&self.to_le_bytes());
-                }
-
-                #[inline]
-                fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-                    let width = core::mem::size_of::<$ty>();
-                    let end = cursor
-                        .checked_add(width)
-                        .ok_or("HAMT codec cursor overflow")?;
-                    let bytes = input
-                        .get(*cursor..end)
-                        .ok_or("HAMT codec buffer too short")?;
-                    let mut raw = [0u8; core::mem::size_of::<$ty>()];
-                    raw.copy_from_slice(bytes);
-                    *cursor = end;
-                    Ok(<$ty>::from_le_bytes(raw))
-                }
-            }
-        )*
-    };
+fn read_fixed<const N: usize>(input: &[u8], cursor: &mut usize) -> Result<[u8; N], &'static str> {
+    let end = cursor.checked_add(N).ok_or("HAMT codec cursor overflow")?;
+    let bytes = input
+        .get(*cursor..end)
+        .ok_or("HAMT codec buffer too short")?;
+    let mut raw = [0u8; N];
+    raw.copy_from_slice(bytes);
+    *cursor = end;
+    Ok(raw)
 }
 
-impl_fixed_hamt_codec!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
+fn read_len_prefixed<'a>(input: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], &'static str> {
+    let len = u32::from_le_bytes(read_fixed::<4>(input, cursor)?) as usize;
+    let end = cursor
+        .checked_add(len)
+        .ok_or("HAMT codec cursor overflow")?;
+    let bytes = input
+        .get(*cursor..end)
+        .ok_or("HAMT codec buffer too short")?;
+    *cursor = end;
+    Ok(bytes)
+}
+
+fn decode_node_header(
+    buf: &[u8],
+    datamap_start: usize,
+) -> Result<(u32, u32, usize, usize), &'static str> {
+    let mut cursor = datamap_start;
+    let datamap = u32::from_le_bytes(
+        read_fixed::<4>(buf, &mut cursor).map_err(|_| "Buffer too short for datamap")?,
+    );
+    let nodemap = u32::from_le_bytes(
+        read_fixed::<4>(buf, &mut cursor).map_err(|_| "Buffer too short for nodemap")?,
+    );
+    if (datamap & nodemap) != 0 {
+        return Err("Datamap and nodemap overlap: node is corrupt");
+    }
+    let leaf_count = u32::from_le_bytes(
+        read_fixed::<4>(buf, &mut cursor).map_err(|_| "Buffer too short for leaf count")?,
+    ) as usize;
+    let child_count = u32::from_le_bytes(
+        read_fixed::<4>(buf, &mut cursor).map_err(|_| "Buffer too short for child count")?,
+    ) as usize;
+    let expected_leaves = datamap.count_ones() as usize;
+    let expected_children = nodemap.count_ones() as usize;
+    if leaf_count != expected_leaves {
+        return Err("Leaf count does not match datamap");
+    }
+    if child_count != expected_children {
+        return Err("Child count does not match nodemap");
+    }
+    Ok((datamap, nodemap, leaf_count, child_count))
+}
+
+fn decode_leaves<K, V>(
+    buf: &[u8],
+    cursor: &mut usize,
+    leaf_count: usize,
+) -> Result<Vec<(K, V)>, &'static str>
+where
+    K: HamtCodec,
+    V: HamtCodec,
+{
+    let mut leaves = Vec::with_capacity(leaf_count);
+    for _ in 0..leaf_count {
+        let key = K::decode_hamt(buf, cursor)?;
+        let value = V::decode_hamt(buf, cursor)?;
+        leaves.push((key, value));
+    }
+    Ok(leaves)
+}
+
+fn check_child_payload(
+    buf: &[u8],
+    cursor: usize,
+    child_count: usize,
+    width: usize,
+) -> Result<(), &'static str> {
+    let child_bytes = child_count
+        .checked_mul(width)
+        .ok_or("Child hash payload size overflows usize")?;
+    let total_len = cursor
+        .checked_add(child_bytes)
+        .ok_or("Child hash payload size overflows usize")?;
+    if buf.len() < total_len {
+        return Err("Buffer too short for child hashes");
+    }
+    if buf.len() > total_len {
+        return Err("Buffer contains trailing bytes");
+    }
+    Ok(())
+}
+
+impl HamtCodec for u8 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<1>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for u16 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<2>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for u32 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<4>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for u64 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<8>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for u128 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<16>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for i8 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<1>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for i16 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<2>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for i32 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<4>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for i64 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<8>(input, cursor)?))
+    }
+}
+
+impl HamtCodec for i128 {
+    #[inline]
+    fn encode_hamt(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_le_bytes());
+    }
+
+    #[inline]
+    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+        Ok(Self::from_le_bytes(read_fixed::<16>(input, cursor)?))
+    }
+}
 
 impl HamtCodec for usize {
     #[inline]
@@ -70,14 +253,8 @@ impl HamtCodec for usize {
 
     #[inline]
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        let end = cursor.checked_add(8).ok_or("HAMT codec cursor overflow")?;
-        let bytes = input
-            .get(*cursor..end)
-            .ok_or("HAMT codec buffer too short")?;
-        let mut raw = [0u8; 8];
-        raw.copy_from_slice(bytes);
-        *cursor = end;
-        usize::try_from(u64::from_le_bytes(raw)).map_err(|_| "HAMT codec usize out of range")
+        usize::try_from(u64::from_le_bytes(read_fixed::<8>(input, cursor)?))
+            .map_err(|_| "HAMT codec usize out of range")
     }
 }
 
@@ -89,14 +266,8 @@ impl HamtCodec for isize {
 
     #[inline]
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        let end = cursor.checked_add(8).ok_or("HAMT codec cursor overflow")?;
-        let bytes = input
-            .get(*cursor..end)
-            .ok_or("HAMT codec buffer too short")?;
-        let mut raw = [0u8; 8];
-        raw.copy_from_slice(bytes);
-        *cursor = end;
-        isize::try_from(i64::from_le_bytes(raw)).map_err(|_| "HAMT codec isize out of range")
+        isize::try_from(i64::from_le_bytes(read_fixed::<8>(input, cursor)?))
+            .map_err(|_| "HAMT codec isize out of range")
     }
 }
 
@@ -127,23 +298,8 @@ impl HamtCodec for String {
     }
 
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        let len_end = cursor.checked_add(4).ok_or("HAMT codec cursor overflow")?;
-        let len_bytes = input
-            .get(*cursor..len_end)
-            .ok_or("HAMT codec buffer too short")?;
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(len_bytes);
-        *cursor = len_end;
-
-        let len = u32::from_le_bytes(raw) as usize;
-        let end = cursor
-            .checked_add(len)
-            .ok_or("HAMT codec cursor overflow")?;
-        let bytes = input
-            .get(*cursor..end)
-            .ok_or("HAMT codec buffer too short")?;
-        *cursor = end;
-        String::from_utf8(bytes.to_vec()).map_err(|_| "HAMT codec invalid UTF-8")
+        String::from_utf8(read_len_prefixed(input, cursor)?.to_vec())
+            .map_err(|_| "HAMT codec invalid UTF-8")
     }
 }
 
@@ -155,23 +311,7 @@ impl HamtCodec for Vec<u8> {
     }
 
     fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        let len_end = cursor.checked_add(4).ok_or("HAMT codec cursor overflow")?;
-        let len_bytes = input
-            .get(*cursor..len_end)
-            .ok_or("HAMT codec buffer too short")?;
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(len_bytes);
-        *cursor = len_end;
-
-        let len = u32::from_le_bytes(raw) as usize;
-        let end = cursor
-            .checked_add(len)
-            .ok_or("HAMT codec cursor overflow")?;
-        let bytes = input
-            .get(*cursor..end)
-            .ok_or("HAMT codec buffer too short")?;
-        *cursor = end;
-        Ok(bytes.to_vec())
+        Ok(read_len_prefixed(input, cursor)?.to_vec())
     }
 }
 
@@ -206,7 +346,7 @@ impl HamtCodec for crate::basespec::event_types::EventType {
 ///
 /// Leaves are stored inline as `(K, V)` pairs in datamap order, while child
 /// references are stored separately in nodemap order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PersistedInternalNode<K, V> {
     pub datamap: u32,
     pub nodemap: u32,
@@ -310,65 +450,17 @@ where
             return Err("Buffer too short for v1 header");
         }
 
-        let datamap = u32::from_le_bytes(
-            buf.get(5..9)
-                .ok_or("Buffer too short for datamap")?
-                .try_into()
-                .map_err(|_| "Buffer too short for datamap")?,
-        );
-        let nodemap = u32::from_le_bytes(
-            buf.get(9..13)
-                .ok_or("Buffer too short for nodemap")?
-                .try_into()
-                .map_err(|_| "Buffer too short for nodemap")?,
-        );
-
-        if (datamap & nodemap) != 0 {
-            return Err("Datamap and nodemap overlap: node is corrupt");
-        }
-
-        let leaf_count = u32::from_le_bytes(
-            buf.get(13..17)
-                .ok_or("Buffer too short for leaf count")?
-                .try_into()
-                .map_err(|_| "Buffer too short for leaf count")?,
-        ) as usize;
-        let child_count = u32::from_le_bytes(
-            buf.get(17..21)
-                .ok_or("Buffer too short for child count")?
-                .try_into()
-                .map_err(|_| "Buffer too short for child count")?,
-        ) as usize;
-
-        let expected_leaves = datamap.count_ones() as usize;
-        let expected_children = nodemap.count_ones() as usize;
-        if leaf_count != expected_leaves {
-            return Err("Leaf count does not match datamap");
-        }
-        if child_count != expected_children {
-            return Err("Child count does not match nodemap");
-        }
+        let (datamap, nodemap, leaf_count, child_count) = decode_node_header(buf, 5)?;
 
         let mut cursor = 21_usize;
-        let mut leaves = Vec::with_capacity(leaf_count);
-        for _ in 0..leaf_count {
-            let key = K::decode_hamt(buf, &mut cursor)?;
-            let value = V::decode_hamt(buf, &mut cursor)?;
-            leaves.push((key, value));
-        }
+        let leaves = decode_leaves(buf, &mut cursor, leaf_count)?;
 
-        let child_bytes = child_count
-            .checked_mul(core::mem::size_of::<StructuralHash>())
-            .ok_or("Child hash payload size overflows usize")?;
-        let total_len = cursor
-            .checked_add(child_bytes)
-            .ok_or("Child hash payload size overflows usize")?;
-        if buf.len() < total_len {
-            return Err("Buffer too short for child hashes");
-        }
-        if buf.len() > total_len {
-            return Err("Buffer contains trailing bytes");
-        }
+        check_child_payload(
+            buf,
+            cursor,
+            child_count,
+            core::mem::size_of::<StructuralHash>(),
+        )?;
 
         let mut child_hashes = Vec::with_capacity(child_count);
         for i in 0..child_count {
@@ -420,65 +512,12 @@ where
             return Err("Buffer too short for v1 header");
         }
 
-        let datamap = u32::from_le_bytes(
-            buf.get(1..5)
-                .ok_or("Buffer too short for datamap")?
-                .try_into()
-                .map_err(|_| "Buffer too short for datamap")?,
-        );
-        let nodemap = u32::from_le_bytes(
-            buf.get(5..9)
-                .ok_or("Buffer too short for nodemap")?
-                .try_into()
-                .map_err(|_| "Buffer too short for nodemap")?,
-        );
-
-        if (datamap & nodemap) != 0 {
-            return Err("Datamap and nodemap overlap: node is corrupt");
-        }
-
-        let leaf_count = u32::from_le_bytes(
-            buf.get(9..13)
-                .ok_or("Buffer too short for leaf count")?
-                .try_into()
-                .map_err(|_| "Buffer too short for leaf count")?,
-        ) as usize;
-        let child_count = u32::from_le_bytes(
-            buf.get(13..17)
-                .ok_or("Buffer too short for child count")?
-                .try_into()
-                .map_err(|_| "Buffer too short for child count")?,
-        ) as usize;
-
-        let expected_leaves = datamap.count_ones() as usize;
-        let expected_children = nodemap.count_ones() as usize;
-        if leaf_count != expected_leaves {
-            return Err("Leaf count does not match datamap");
-        }
-        if child_count != expected_children {
-            return Err("Child count does not match nodemap");
-        }
+        let (datamap, nodemap, leaf_count, child_count) = decode_node_header(buf, 1)?;
 
         let mut cursor = 17_usize;
-        let mut leaves = Vec::with_capacity(leaf_count);
-        for _ in 0..leaf_count {
-            let key = K::decode_hamt(buf, &mut cursor)?;
-            let value = V::decode_hamt(buf, &mut cursor)?;
-            leaves.push((key, value));
-        }
+        let leaves = decode_leaves(buf, &mut cursor, leaf_count)?;
 
-        let child_bytes = child_count
-            .checked_mul(LEGACY_HASH_WIDTH)
-            .ok_or("Child hash payload size overflows usize")?;
-        let total_len = cursor
-            .checked_add(child_bytes)
-            .ok_or("Child hash payload size overflows usize")?;
-        if buf.len() < total_len {
-            return Err("Buffer too short for child hashes");
-        }
-        if buf.len() > total_len {
-            return Err("Buffer contains trailing bytes");
-        }
+        check_child_payload(buf, cursor, child_count, LEGACY_HASH_WIDTH)?;
 
         let mut child_hashes = Vec::with_capacity(child_count);
         for _ in 0..child_count {

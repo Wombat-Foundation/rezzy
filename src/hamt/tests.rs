@@ -2,15 +2,30 @@ use super::*;
 use crate::hamt::codec::PersistedInternalNode;
 use crate::hamt::delta::{isolate_delta, HamtTraversalError};
 use crate::hamt::{build_hamt, build_hamt_root_handle, HamtBuildError};
-use crate::state::LtHash;
+use crate::incremental::LtHash;
 use alloc::{boxed::Box, vec};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
+use std::collections::BTreeSet;
 #[cfg(feature = "std")]
 use std::error::Error as _;
 #[cfg(feature = "std")]
 use std::format;
 use std::sync::Arc;
+
+macro_rules! impl_u64_hamt_codec {
+    ($ty:ty) => {
+        impl HamtCodec for $ty {
+            fn encode_hamt(&self, out: &mut Vec<u8>) {
+                self.0.encode_hamt(out);
+            }
+
+            fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
+                u64::decode_hamt(input, cursor).map(Self)
+            }
+        }
+    };
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VariableBytes(&'static [u8]);
@@ -47,72 +62,22 @@ impl Borrow<u64> for NonCloneKey {
     }
 }
 
-impl HamtCodec for NonCloneKey {
-    fn encode_hamt(&self, out: &mut Vec<u8>) {
-        self.0.encode_hamt(out);
-    }
-
-    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        u64::decode_hamt(input, cursor).map(Self)
-    }
-}
+impl_u64_hamt_codec!(NonCloneKey);
 
 #[test]
 fn test_structural_hash_equivalence() {
     let key = b"dummy_server_key";
-    let leaf1 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let leaf2 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let leaf3 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2, 200)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
+    let leaf1 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
+    let leaf2 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
+    let leaf3 = rebuild_node(key, 1, 0, vec![(2, 200)], vec![]);
 
     // Identical leaves should have the same structural hash
     assert_eq!(leaf1.structural_hash, leaf2.structural_hash);
     assert_ne!(leaf1.structural_hash, leaf3.structural_hash);
 
-    let internal1 = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::Resolved(leaf1.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::Resolved(leaf1.clone())],
-        ),
-    });
+    let internal1 = rebuild_node(key, 0, 1, vec![], vec![NodeRef::Resolved(leaf1.clone())]);
 
-    let internal2 = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::Resolved(leaf2.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::Resolved(leaf2.clone())],
-        ),
-    });
+    let internal2 = rebuild_node(key, 0, 1, vec![], vec![NodeRef::Resolved(leaf2.clone())]);
 
     // Even though they are different Arc instances, their structural hashes must match
     assert_eq!(internal1.structural_hash, internal2.structural_hash);
@@ -182,13 +147,7 @@ fn test_hamt_traversal_error_display_and_source() {
 #[test]
 fn test_lthash_short_circuit() {
     let key = b"dummy_server_key";
-    let leaf1 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let leaf1 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
     let lattice_a = LtHash::default();
     let lattice_b = LtHash::default();
@@ -198,30 +157,18 @@ fn test_lthash_short_circuit() {
     // Simulate identical roots.
     let (added, removed) =
         isolate_delta(&leaf1, &lattice_a, &leaf1, &lattice_b, &mut resolver).unwrap();
-    assert_eq!(added, [] as [(i32, i32); 0]);
-    assert_eq!(removed, [] as [(i32, i32); 0]);
+    assert_eq!(added.len(), 0);
+    assert_eq!(removed.len(), 0);
 }
 
 #[test]
 fn test_lthash_equal_does_not_mask_different_roots() {
     let key = b"dummy_server_key";
-    let root_a = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let root_b = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2, 200)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
+    let root_a = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
+    let root_b = rebuild_node(key, 1, 0, vec![(2, 200)], vec![]);
 
-    let lattice_a = LtHash([7u16; 1024]);
-    let lattice_b = LtHash([7u16; 1024]);
+    let lattice_a = LtHash::from_lanes([7u16; 1024]);
+    let lattice_b = LtHash::from_lanes([7u16; 1024]);
     let (added, removed) = isolate_delta(
         &root_a,
         &lattice_a,
@@ -238,33 +185,15 @@ fn test_lthash_equal_does_not_mask_different_roots() {
 #[test]
 fn test_isolate_delta_resolves_lazy_child() {
     let key = b"dummy_server_key";
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(leaf.structural_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(leaf.structural_hash)],
-        ),
-    });
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0,
-        leaves: vec![],
-        children: vec![],
-        structural_hash: HamtNode::<u64, u64>::compute_structural_hash(key, 0, 0, &[], &[]),
-    });
+    let leaf = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
+    let root_a = rebuild_node(
+        key,
+        0,
+        1,
+        vec![],
+        vec![NodeRef::<u64, u64>::Lazy(leaf.structural_hash)],
+    );
+    let root_b = rebuild_node::<u64, u64>(key, 0, 0, vec![], vec![]);
 
     let mut resolver = |hash: &StructuralHash| {
         assert_eq!(hash, &leaf.structural_hash);
@@ -275,12 +204,12 @@ fn test_isolate_delta_resolves_lazy_child() {
         &root_a,
         &LtHash::default(),
         &root_b,
-        &LtHash([1u16; 1024]),
+        &LtHash::from_lanes([1u16; 1024]),
         &mut resolver,
     )
     .expect("delta should resolve lazy child");
 
-    assert_eq!(added, [] as [(u64, u64); 0]);
+    assert_eq!(added.len(), 0);
     assert_eq!(removed, vec![(1, 100)]);
 }
 
@@ -330,6 +259,18 @@ fn test_node_decoder_rejects_state_root_record_kind() {
     );
 }
 
+fn legacy_node_body() -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&1_u32.to_le_bytes()); // datamap (bit 0)
+    body.extend_from_slice(&2_u32.to_le_bytes()); // nodemap (bit 1)
+    body.extend_from_slice(&1_u32.to_le_bytes()); // leaf_count
+    body.extend_from_slice(&1_u32.to_le_bytes()); // child_count
+    body.extend_from_slice(&5_i32.to_le_bytes()); // leaf key
+    body.extend_from_slice(&50_i32.to_le_bytes()); // leaf value
+    body.extend_from_slice(&[0xAB; 16]); // legacy child hash
+    body
+}
+
 #[test]
 fn test_decode_v1_rejects_short_legacy_layout() {
     // Hand-crafted current-format record with a legacy-width child hash:
@@ -338,13 +279,7 @@ fn test_decode_v1_rejects_short_legacy_layout() {
     let mut legacy = Vec::new();
     legacy.extend_from_slice(super::codec::HAMT_NODE_MAGIC);
     legacy.push(super::codec::HAMT_WIRE_VERSION);
-    legacy.extend_from_slice(&1_u32.to_le_bytes()); // datamap (bit 0)
-    legacy.extend_from_slice(&2_u32.to_le_bytes()); // nodemap (bit 1)
-    legacy.extend_from_slice(&1_u32.to_le_bytes()); // leaf_count
-    legacy.extend_from_slice(&1_u32.to_le_bytes()); // child_count
-    legacy.extend_from_slice(&5_i32.to_le_bytes()); // leaf key
-    legacy.extend_from_slice(&50_i32.to_le_bytes()); // leaf value
-    legacy.extend_from_slice(&[0xAB; 16]); // legacy child hash
+    legacy.extend_from_slice(&legacy_node_body());
 
     assert_eq!(
         PersistedInternalNode::<i32, i32>::decode_v1_unverified(&legacy),
@@ -354,15 +289,8 @@ fn test_decode_v1_rejects_short_legacy_layout() {
 
 #[test]
 fn test_decode_v1_legacy_unverified_reads_16_byte_hash_layout() {
-    let mut legacy = Vec::new();
-    legacy.push(super::codec::HAMT_WIRE_VERSION);
-    legacy.extend_from_slice(&1_u32.to_le_bytes()); // datamap (bit 0)
-    legacy.extend_from_slice(&2_u32.to_le_bytes()); // nodemap (bit 1)
-    legacy.extend_from_slice(&1_u32.to_le_bytes()); // leaf_count
-    legacy.extend_from_slice(&1_u32.to_le_bytes()); // child_count
-    legacy.extend_from_slice(&5_i32.to_le_bytes()); // leaf key
-    legacy.extend_from_slice(&50_i32.to_le_bytes()); // leaf value
-    legacy.extend_from_slice(&[0xAB; 16]); // legacy child hash
+    let mut legacy = vec![super::codec::HAMT_WIRE_VERSION];
+    legacy.extend_from_slice(&legacy_node_body());
 
     let decoded = PersistedInternalNode::<i32, i32>::decode_v1_legacy_unverified(&legacy)
         .expect("legacy layout must parse for diagnostics");
@@ -650,19 +578,7 @@ fn test_hamt_get_mismatched_leaf_returns_none() {
     let key = b"dummy_server_key";
     let stored_key = find_key_with_root_slot(key, 4);
     let query_key = find_different_key_with_root_slot(key, 4, stored_key);
-    let root = HamtNode {
-        datamap: 1_u32 << 4,
-        nodemap: 0,
-        leaves: vec![(stored_key, 10_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            1_u32 << 4,
-            0,
-            &[(stored_key, 10_u64)],
-            &[],
-        ),
-    };
+    let root = rebuild_node(key, 1_u32 << 4, 0, vec![(stored_key, 10_u64)], vec![]);
 
     assert_eq!(root.get(key, &query_key), None);
 }
@@ -671,75 +587,28 @@ fn test_hamt_get_mismatched_leaf_returns_none() {
 fn test_hamt_get_returns_none_for_lazy_child() {
     let key = b"dummy_server_key";
     let query_key = find_key_with_path_slots(key, 3, 7);
-    let child = Arc::new(HamtNode {
-        datamap: 1_u32 << 7,
-        nodemap: 0,
-        leaves: vec![(query_key, 42_u64)],
-        children: vec![],
-        structural_hash: HamtNode::<u64, u64>::compute_structural_hash(
-            key,
-            1_u32 << 7,
-            0,
-            &[(query_key, 42_u64)],
-            &[],
-        ),
-    });
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        ),
-    };
+    let root = lazy_leaf_child(key, 3, 1_u32 << 7, vec![(query_key, 42_u64)]).root;
 
     assert_eq!(root.get(key, &query_key), None);
 }
 
 #[test]
 fn test_hamt_search_resolves_lazy_child() {
-    let key = b"dummy_server_key";
-    let query = find_key_with_path_slots(key, 3, 7);
-    let child_hash =
-        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(query, 42_u64)], &[]);
-    let child = Arc::new(HamtNode {
-        datamap: 1_u32 << 7,
-        nodemap: 0,
-        leaves: vec![(query, 42_u64)],
-        children: vec![],
-        structural_hash: child_hash,
-    });
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        ),
-    };
+    let QueryLazyChild {
+        key,
+        query,
+        root,
+        child,
+    } = query_lazy_child();
 
-    let mut calls = 0_usize;
-    let mut resolver = |hash: &StructuralHash| {
-        calls = calls.wrapping_add(1);
-        assert_eq!(hash, &child.structural_hash);
-        Ok::<_, ()>(child.clone())
-    };
+    let calls = core::cell::Cell::new(0_usize);
+    let mut resolver = single_child_resolver(&child, &calls);
 
     let found = root
         .search(key, &query, &mut resolver)
         .expect("search should succeed");
     assert_eq!(found, Some(42_u64));
-    assert_eq!(calls, 1);
+    assert_eq!(calls.get(), 1);
 }
 
 /// Covers the `NodeRef::Resolved` child recursion in
@@ -752,36 +621,16 @@ fn test_hamt_search_resolves_lazy_child() {
 fn test_hamt_search_descends_resolved_child() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
-    let child = Arc::new(HamtNode {
-        datamap: 1_u32 << 7,
-        nodemap: 0,
-        leaves: vec![(query, 42_u64)],
-        children: vec![],
-        structural_hash: HamtNode::<u64, u64>::compute_structural_hash(
-            key,
-            1_u32 << 7,
-            0,
-            &[(query, 42_u64)],
-            &[],
-        ),
-    });
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Resolved(child.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Resolved(child.clone())],
-        ),
-    };
+    let child = leaf_child(key, 1_u32 << 7, vec![(query, 42_u64)]);
+    let root = rebuild_node(
+        key,
+        0,
+        1_u32 << 3,
+        vec![],
+        vec![NodeRef::<u64, u64>::Resolved(child.clone())],
+    );
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("resolved child should not be resolved lazily")
-    };
+    let mut resolver = unreachable_resolver();
 
     let found = root
         .search(key, &query, &mut resolver)
@@ -799,9 +648,7 @@ fn test_hamt_search_descends_resolved_child() {
 fn test_hamt_search_by_path_hash_rejects_excessive_depth() {
     let root = build_deep_chain(HAMT_MAX_DEPTH, 0xAA);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("fully resolved chain, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let result = root.search_by_path_hash(&0_u64, &[0u8; 32], &mut resolver);
     assert_eq!(
@@ -869,23 +716,17 @@ fn test_hamt_lookup_with_custom_key_hash() {
 #[test]
 fn test_hamt_mutation_with_custom_key_hash() {
     let key = b"dummy_server_key";
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
     let root = crate::hamt::build_hamt_with_key_hash(key, vec![(1_u64, 10_u64)], |key| {
         custom_routing_hash(*key)
     })
     .expect("build with custom hash should work");
 
-    let (root, displaced) = crate::hamt::insert_with_key_hash(
-        &root,
-        key,
-        2_u64,
-        20_u64,
-        |key| custom_routing_hash(*key),
-        &mut resolver,
-    )
-    .expect("custom insert should work");
+    let (root, displaced) =
+        crate::hamt::HamtMutator::new(|key: &u64| custom_routing_hash(*key), &mut resolver)
+            .insert(&root, key, 2_u64, 20_u64)
+            .expect("custom insert should work");
     assert_eq!(displaced, None);
     assert_eq!(
         root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
@@ -896,14 +737,7 @@ fn test_hamt_mutation_with_custom_key_hash() {
         Some(&20_u64)
     );
 
-    let (root, removed) = crate::hamt::remove_with_key_hash(
-        &root,
-        key,
-        &1_u64,
-        |key: &u64| custom_routing_hash(*key),
-        &mut resolver,
-    )
-    .expect("custom remove should work");
+    let (root, removed) = remove_custom(&root, key, 1_u64, &mut resolver);
     assert_eq!(removed, Some(10_u64));
     assert_eq!(
         root.get_with_key_hash(&1_u64, |key| custom_routing_hash(*key)),
@@ -918,8 +752,7 @@ fn test_hamt_mutation_with_custom_key_hash() {
 #[test]
 fn test_hamt_remove_with_custom_key_hash_collapses_to_leaf() {
     let key = b"dummy_server_key";
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
     let root =
         crate::hamt::build_hamt_with_key_hash(key, vec![(1_u64, 10_u64), (2_u64, 20_u64)], |key| {
@@ -927,14 +760,7 @@ fn test_hamt_remove_with_custom_key_hash_collapses_to_leaf() {
         })
         .expect("build with custom hash should work");
 
-    let (root, removed) = crate::hamt::remove_with_key_hash(
-        &root,
-        key,
-        &1_u64,
-        |key: &u64| custom_routing_hash(*key),
-        &mut resolver,
-    )
-    .expect("custom remove should work");
+    let (root, removed) = remove_custom(&root, key, 1_u64, &mut resolver);
 
     assert_eq!(removed, Some(10_u64));
     assert_eq!(root.datamap.count_ones(), 1);
@@ -979,8 +805,7 @@ fn linear_key_hash(key: &u64) -> StructuralHash {
 #[test]
 fn test_persist_mutation_with_key_hash_matches_direct_mutation_and_rebuild() {
     let key = b"dummy_server_key";
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
     let initial: Vec<(u64, u64)> = (0_u64..40).map(|i| (i, i * 10)).collect();
     let root = crate::hamt::build_hamt_with_key_hash(key, initial.clone(), linear_key_hash)
@@ -1048,8 +873,7 @@ fn test_persist_mutation_with_key_hash_matches_direct_mutation_and_rebuild() {
 #[test]
 fn test_persist_mutations_and_chain_with_key_hash() {
     let key = b"dummy_server_key";
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
     let initial: Vec<(u64, u64)> = (0_u64..20).map(|i| (i, i * 10)).collect();
     let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
@@ -1057,16 +881,12 @@ fn test_persist_mutations_and_chain_with_key_hash() {
 
     let batch: Vec<(u64, Option<u64>)> = alloc::vec![(100, Some(1)), (5, None), (101, Some(2)),];
 
-    let (batched_root, displaced_vec, created) = crate::hamt::persist_mutations_with_key_hash(
-        &root,
-        key,
-        batch.clone(),
-        linear_key_hash,
-        &mut resolver,
-    )
-    .expect("persist_mutations_with_key_hash should work");
+    let (batched_root, displaced_vec, created) =
+        crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
+            .persist_mutations(&root, key, batch.clone())
+            .expect("persist_mutations should work");
     assert_eq!(displaced_vec, alloc::vec![None, Some(50_u64), None]);
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert_ne!(created.len(), 0);
     assert_eq!(
         batched_root.get_with_key_hash(&100_u64, linear_key_hash),
         Some(&1_u64)
@@ -1080,9 +900,9 @@ fn test_persist_mutations_and_chain_with_key_hash() {
         None
     );
 
-    let chain_steps =
-        crate::hamt::persist_chain_with_key_hash(&root, key, batch, linear_key_hash, &mut resolver)
-            .expect("persist_chain_with_key_hash should work");
+    let chain_steps = crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
+        .persist_chain(&root, key, batch)
+        .expect("persist_chain should work");
     let chained_root = &chain_steps.last().expect("batch is non-empty").root;
 
     // Both batch styles must converge to the same final structural hash as
@@ -1108,12 +928,9 @@ fn test_persist_mutations_and_chain_with_key_hash() {
 #[test]
 fn test_persist_mutation_with_key_hash_noop_reports_no_created_nodes() {
     let key = b"dummy_server_key";
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
-    let initial: Vec<(u64, u64)> = (0_u64..10).map(|i| (i, i * 10)).collect();
-    let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
-        .expect("build with custom hash should work");
+    let root = linear_hash_root();
 
     let (new_root, displaced, created) = crate::hamt::persist_mutation_with_key_hash(
         &root,
@@ -1139,24 +956,17 @@ fn test_persist_mutation_with_key_hash_noop_reports_no_created_nodes() {
 #[test]
 fn test_persist_mutations_with_key_hash_noop_batch_short_circuits() {
     let key = b"dummy_server_key";
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
-    let initial: Vec<(u64, u64)> = (0_u64..10).map(|i| (i, i * 10)).collect();
-    let root = crate::hamt::build_hamt_with_key_hash(key, initial, linear_key_hash)
-        .expect("build with custom hash should work");
+    let root = linear_hash_root();
 
     // Net effect is identity: insert a new key, then remove it again.
     let batch: Vec<(u64, Option<u64>)> = alloc::vec![(1000, Some(1)), (1000, None)];
 
-    let (final_root, displaced_vec, created) = crate::hamt::persist_mutations_with_key_hash(
-        &root,
-        key,
-        batch,
-        linear_key_hash,
-        &mut resolver,
-    )
-    .expect("net-identity batch should still succeed");
+    let (final_root, displaced_vec, created) =
+        crate::hamt::HamtMutator::new(linear_key_hash, &mut resolver)
+            .persist_mutations(&root, key, batch)
+            .expect("net-identity batch should still succeed");
 
     assert_eq!(displaced_vec, alloc::vec![None, Some(1_u64)]);
     assert_eq!(final_root.structural_hash, root.structural_hash);
@@ -1170,21 +980,7 @@ fn test_persist_mutations_with_key_hash_noop_batch_short_circuits() {
 fn test_hamt_search_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let query = find_key_with_path_slots(key, 3, 7);
-    let child_hash =
-        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(query, 42_u64)], &[]);
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child_hash)],
-        ),
-    };
+    let root = lazy_leaf_hash_root(key, 3, 1_u32 << 7, &[(query, 42_u64)]);
 
     let mut calls = 0_usize;
     let mut resolver = |_hash: &StructuralHash| {
@@ -1198,30 +994,9 @@ fn test_hamt_search_propagates_resolver_error() {
 
 #[test]
 fn test_hamt_visit_entries_resolves_lazy_child() {
-    let key = b"dummy_server_key";
-    let query = find_key_with_path_slots(key, 3, 7);
-    let child_hash =
-        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(query, 42_u64)], &[]);
-    let child = Arc::new(HamtNode {
-        datamap: 1_u32 << 7,
-        nodemap: 0,
-        leaves: vec![(query, 42_u64)],
-        children: vec![],
-        structural_hash: child_hash,
-    });
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        ),
-    };
+    let QueryLazyChild {
+        query, root, child, ..
+    } = query_lazy_child();
 
     let mut resolver = |hash: &StructuralHash| {
         assert_eq!(hash, &child.structural_hash);
@@ -1242,26 +1017,8 @@ fn test_hamt_visit_entries_resolves_lazy_child() {
 fn test_hamt_visit_entries_propagates_visitor_error() {
     let key = b"dummy_server_key";
     let child_datamap = (1_u32 << 7) | (1_u32 << 9);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        child_datamap,
-        0,
-        &[(1_u64, 10_u64), (2_u64, 20_u64)],
-        &[],
-    );
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child_hash)],
-        ),
-    };
+    let root = lazy_leaf_hash_root(key, 3, child_datamap, &[(1_u64, 10_u64), (2_u64, 20_u64)]);
+    let child_hash = root.children[0].structural_hash();
 
     let mut resolver_calls = 0_usize;
     let mut visitor_calls = 0_usize;
@@ -1289,26 +1046,7 @@ fn test_hamt_visit_entries_propagates_visitor_error() {
 fn test_hamt_visit_entries_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let child_datamap = (1_u32 << 7) | (1_u32 << 9);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        child_datamap,
-        0,
-        &[(1_u64, 10_u64), (2_u64, 20_u64)],
-        &[],
-    );
-    let root = HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child_hash)],
-        ),
-    };
+    let root = lazy_leaf_hash_root(key, 3, child_datamap, &[(1_u64, 10_u64), (2_u64, 20_u64)]);
 
     let mut visitor_calls = 0_usize;
     let mut resolver = |_hash: &StructuralHash| Err::<Arc<HamtNode<u64, u64>>, _>("boom");
@@ -1339,7 +1077,7 @@ fn test_hamt_is_empty() {
         children: vec![],
         structural_hash: [1; 32],
     };
-    assert!(!leaf_node.is_empty());
+    assert!(!leaf_node.is_empty(), "leaf node should be non-empty");
 }
 
 #[test]
@@ -1355,13 +1093,13 @@ fn test_hamt_any_entry_short_circuits() {
         &[(10_u64, 100_u64), (20_u64, 200_u64)],
         &[],
     );
-    let child = Arc::new(HamtNode {
-        datamap: child_datamap,
-        nodemap: 0,
-        leaves: vec![(10_u64, 100_u64), (20_u64, 200_u64)],
-        children: vec![],
-        structural_hash: child_hash,
-    });
+    let child = rebuild_node(
+        key,
+        child_datamap,
+        0,
+        vec![(10_u64, 100_u64), (20_u64, 200_u64)],
+        vec![],
+    );
 
     let root = HamtNode {
         datamap: 1_u32 << 1,
@@ -1417,13 +1155,7 @@ fn test_hamt_find_entry() {
         &[(42_u64, 420_u64)],
         &[],
     );
-    let child = Arc::new(HamtNode {
-        datamap: child_datamap,
-        nodemap: 0,
-        leaves: vec![(42_u64, 420_u64)],
-        children: vec![],
-        structural_hash: child_hash,
-    });
+    let child = rebuild_node(key, child_datamap, 0, vec![(42_u64, 420_u64)], vec![]);
 
     let root = HamtNode {
         datamap: 1_u32 << 1,
@@ -1520,10 +1252,9 @@ fn test_hamt_insert_remove_matches_build_hamt() {
 #[test]
 fn test_hamt_insert_replaces_existing_value() {
     let key = b"dummy_server_key";
-    let root = build_hamt(key, vec![(1_u64, 10_u64), (2_u64, 20_u64)]).expect("build should work");
+    let root = two_entry_root();
 
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
     let (new_root, displaced) =
         crate::hamt::insert(&root, key, 1_u64, 99_u64, &mut resolver).expect("insert should work");
 
@@ -1537,47 +1268,17 @@ fn test_hamt_insert_resolves_lazy_child() {
     let key = b"dummy_server_key";
     let existing = find_key_with_path_slots(key, 3, 7);
     let new_key = find_key_with_path_slots(key, 3, 11);
-    let child_datamap = 1_u32 << 7;
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        child_datamap,
-        0,
-        &[(existing, 1_u64)],
-        &[],
-    );
-    let child = Arc::new(HamtNode {
-        datamap: child_datamap,
-        nodemap: 0,
-        leaves: vec![(existing, 1_u64)],
-        children: vec![],
-        structural_hash: child_hash,
-    });
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        ),
-    });
+    let LazyLeafChild { root, child } =
+        lazy_leaf_child(key, 3, 1_u32 << 7, vec![(existing, 1_u64)]);
 
-    let mut calls = 0_usize;
-    let mut resolver = |hash: &StructuralHash| {
-        calls = calls.wrapping_add(1);
-        assert_eq!(hash, &child.structural_hash);
-        Ok::<_, ()>(child.clone())
-    };
+    let calls = core::cell::Cell::new(0_usize);
+    let mut resolver = single_child_resolver(&child, &calls);
 
     let (new_root, displaced) = crate::hamt::insert(&root, key, new_key, 2_u64, &mut resolver)
         .expect("insert through a lazy child should succeed");
 
     assert_eq!(displaced, None);
-    assert_eq!(calls, 1);
+    assert_eq!(calls.get(), 1);
     assert_eq!(new_root.get(key, &existing), Some(&1_u64));
     assert_eq!(new_root.get(key, &new_key), Some(&2_u64));
 }
@@ -1587,26 +1288,7 @@ fn test_hamt_insert_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let existing = find_key_with_path_slots(key, 3, 7);
     let new_key = find_key_with_path_slots(key, 3, 11);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        1_u32 << 7,
-        0,
-        &[(existing, 1_u64)],
-        &[],
-    );
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child_hash)],
-        ),
-    });
+    let root = lazy_leaf_hash_root(key, 3, 1_u32 << 7, &[(existing, 1_u64)]);
 
     let mut resolver = |_hash: &StructuralHash| Err::<Arc<HamtNode<u64, u64>>, _>("boom");
 
@@ -1619,10 +1301,9 @@ fn test_hamt_insert_propagates_resolver_error() {
 #[test]
 fn test_hamt_remove_missing_key_is_noop() {
     let key = b"dummy_server_key";
-    let root = build_hamt(key, vec![(1_u64, 10_u64), (2_u64, 20_u64)]).expect("build should work");
+    let root = two_entry_root();
 
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
     let (new_root, displaced) =
         crate::hamt::remove(&root, key, &999_u64, &mut resolver).expect("remove should work");
 
@@ -1640,8 +1321,7 @@ fn test_hamt_remove_collapses_sibling_to_leaf() {
     assert_eq!(root.nodemap.count_ones(), 1);
     assert_eq!(root.datamap, 0);
 
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
     let (new_root, displaced) =
         crate::hamt::remove(&root, key, &a, &mut resolver).expect("remove should work");
 
@@ -1662,46 +1342,17 @@ fn test_hamt_remove_resolves_lazy_child() {
     let a = find_key_with_path_slots(key, 3, 7);
     let b = find_key_with_path_slots(key, 3, 11);
     let child_datamap = (1_u32 << 7) | (1_u32 << 11);
-    let child_hash = HamtNode::<u64, u64>::compute_structural_hash(
-        key,
-        child_datamap,
-        0,
-        &[(a, 1_u64), (b, 2_u64)],
-        &[],
-    );
-    let child = Arc::new(HamtNode {
-        datamap: child_datamap,
-        nodemap: 0,
-        leaves: vec![(a, 1_u64), (b, 2_u64)],
-        children: vec![],
-        structural_hash: child_hash,
-    });
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child.structural_hash)],
-        ),
-    });
+    let LazyLeafChild { root, child } =
+        lazy_leaf_child(key, 3, child_datamap, vec![(a, 1_u64), (b, 2_u64)]);
 
-    let mut calls = 0_usize;
-    let mut resolver = |hash: &StructuralHash| {
-        calls = calls.wrapping_add(1);
-        assert_eq!(hash, &child.structural_hash);
-        Ok::<_, ()>(child.clone())
-    };
+    let calls = core::cell::Cell::new(0_usize);
+    let mut resolver = single_child_resolver(&child, &calls);
 
     let (new_root, displaced) = crate::hamt::remove(&root, key, &a, &mut resolver)
         .expect("remove through a lazy child should succeed");
 
     assert_eq!(displaced, Some(1_u64));
-    assert_eq!(calls, 1);
+    assert_eq!(calls.get(), 1);
     assert_eq!(new_root.get(key, &b), Some(&2_u64));
 }
 
@@ -1709,21 +1360,7 @@ fn test_hamt_remove_resolves_lazy_child() {
 fn test_hamt_remove_propagates_resolver_error() {
     let key = b"dummy_server_key";
     let a = find_key_with_path_slots(key, 3, 7);
-    let child_hash =
-        HamtNode::<u64, u64>::compute_structural_hash(key, 1_u32 << 7, 0, &[(a, 1_u64)], &[]);
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1_u32 << 3,
-        leaves: vec![],
-        children: vec![NodeRef::<u64, u64>::Lazy(child_hash)],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1_u32 << 3,
-            &[],
-            &[NodeRef::<u64, u64>::Lazy(child_hash)],
-        ),
-    });
+    let root = lazy_leaf_hash_root(key, 3, 1_u32 << 7, &[(a, 1_u64)]);
 
     let mut resolver = |_hash: &StructuralHash| Err::<Arc<HamtNode<u64, u64>>, _>("boom");
 
@@ -1748,41 +1385,16 @@ impl Hash for CollidingKey {
     }
 }
 
-impl HamtCodec for CollidingKey {
-    fn encode_hamt(&self, out: &mut Vec<u8>) {
-        self.0.encode_hamt(out);
-    }
-
-    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        u64::decode_hamt(input, cursor).map(Self)
-    }
-}
+impl_u64_hamt_codec!(CollidingKey);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct InMemoryOnlyKey(u64);
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct InMemoryOnlyValue(u64);
 
-impl HamtCodec for InMemoryOnlyKey {
-    fn encode_hamt(&self, out: &mut Vec<u8>) {
-        self.0.encode_hamt(out);
-    }
-
-    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        u64::decode_hamt(input, cursor).map(Self)
-    }
-}
-
-impl HamtCodec for InMemoryOnlyValue {
-    fn encode_hamt(&self, out: &mut Vec<u8>) {
-        self.0.encode_hamt(out);
-    }
-
-    fn decode_hamt(input: &[u8], cursor: &mut usize) -> Result<Self, &'static str> {
-        u64::decode_hamt(input, cursor).map(Self)
-    }
-}
+impl_u64_hamt_codec!(InMemoryOnlyKey);
+impl_u64_hamt_codec!(InMemoryOnlyValue);
 
 #[test]
 fn test_in_memory_mutation_with_hamt_codec() {
@@ -1860,9 +1472,7 @@ fn test_hamt_insert_propagates_build_hash_collision() {
     let key = b"dummy_server_key";
     let root = build_hamt(key, vec![(CollidingKey(1), 10_u64)]).expect("build should work");
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<CollidingKey, u64>>, ()> {
-        unreachable!("no lazy children in a freshly built tree")
-    };
+    let mut resolver = unreachable_resolver();
 
     // CollidingKey's Hash impl makes every instance route to the exact same
     // slot at every depth, so inserting a second, different CollidingKey
@@ -1887,17 +1497,9 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
     // rather than through the leaf-split-at-`build_node` path already covered
     // by `test_hamt_insert_propagates_build_hash_collision`.
     let key = b"dummy_server_key";
-    let node = Arc::new(HamtNode::<u64, u64> {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 10_u64)],
-        children: vec![],
-        structural_hash: [0; 32],
-    });
+    let node = single_leaf_node(1_u64, 10_u64);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("resolver should not be called at a depth-exhausted guard")
-    };
+    let mut resolver = unreachable_resolver();
     let mut key_hash_fn = |k: &u64| key_path_hash(key, k);
     let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
     let mut ctx = InsertCtx {
@@ -1907,7 +1509,7 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
         sink: &mut sink,
     };
 
-    let result = insert_node_with_ctx(&node, 2_u64, 20_u64, [0u8; 32], HAMT_MAX_DEPTH, &mut ctx);
+    let result = ctx.insert_node(&node, 2_u64, 20_u64, [0u8; 32], HAMT_MAX_DEPTH);
 
     assert_eq!(
         result.unwrap_err(),
@@ -1928,17 +1530,9 @@ fn test_insert_node_with_ctx_guards_max_depth_reentry() {
 #[test]
 fn test_remove_node_with_ctx_guards_max_depth_entry() {
     let key = b"dummy_server_key";
-    let node = Arc::new(HamtNode::<u64, u64> {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 10_u64)],
-        children: vec![],
-        structural_hash: [0; 32],
-    });
+    let node = single_leaf_node(1_u64, 10_u64);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("entry guard returns before any resolver call")
-    };
+    let mut resolver = unreachable_resolver();
     let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
 
     let mut ctx = crate::hamt::RemoveCtx {
@@ -1966,13 +1560,7 @@ fn test_remove_node_with_ctx_guards_max_depth_entry() {
 #[test]
 fn test_remove_node_with_ctx_guards_max_depth_reentry() {
     let key = b"dummy_server_key";
-    let child = Arc::new(HamtNode::<u64, u64> {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2_u64, 20_u64)],
-        children: vec![],
-        structural_hash: [0; 32],
-    });
+    let child = single_leaf_node(2_u64, 20_u64);
     let node = Arc::new(HamtNode::<u64, u64> {
         datamap: 0,
         nodemap: 1,
@@ -1981,9 +1569,7 @@ fn test_remove_node_with_ctx_guards_max_depth_reentry() {
         structural_hash: [0; 32],
     });
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("resolved child is never resolved lazily")
-    };
+    let mut resolver = unreachable_resolver();
     let mut sink = |_: &Arc<HamtNode<u64, u64>>| {};
 
     let depth = HAMT_MAX_DEPTH - 1;
@@ -2006,9 +1592,7 @@ fn test_hamt_insert_value_replacement() {
     let key = b"dummy_server_key";
     let root = build_hamt(key, vec![(10_u64, 100_u64)]).expect("build should work");
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("no lazy children in tree")
-    };
+    let mut resolver = unreachable_resolver();
 
     // Replace value for existing key 10
     let (new_root, old_val) = crate::hamt::insert(&root, key, 10_u64, 200_u64, &mut resolver)
@@ -2072,9 +1656,7 @@ fn test_hamt_error_display_formatting() {
 fn test_persist_mutations_insert_and_remove() {
     let structural_key = b"persist_mutations_test";
     let root = build_hamt::<u64, u64, _>(structural_key, []).expect("empty root");
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("empty root has no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let (new_root, displaced, created) = persist_mutations(
         &root,
@@ -2086,16 +1668,14 @@ fn test_persist_mutations_insert_and_remove() {
 
     assert_eq!(displaced, vec![None, None]);
     assert_eq!(new_root.get(structural_key, &1), Some(&10));
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert_ne!(created.len(), 0);
 }
 
 #[test]
 fn test_persist_mutations_noop_and_remove_existing() {
     let structural_key = b"persist_mutations_noop";
     let root = build_hamt(structural_key, [(1_u64, 10_u64), (2_u64, 20_u64)]).expect("root");
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("root has no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let (same_root, displaced, created) = persist_mutations(
         &root,
@@ -2105,8 +1685,8 @@ fn test_persist_mutations_noop_and_remove_existing() {
     )
     .expect("empty mutation batch should succeed");
     assert_eq!(same_root.structural_hash, root.structural_hash);
-    assert_eq!(displaced, [] as [core::option::Option<u64>; 0]);
-    assert_eq!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert_eq!(displaced.len(), 0);
+    assert_eq!(created.len(), 0);
 
     let (removed_root, displaced, created) =
         persist_mutations(&root, structural_key, vec![(1_u64, None)], &mut resolver)
@@ -2114,14 +1694,14 @@ fn test_persist_mutations_noop_and_remove_existing() {
     assert_eq!(displaced, vec![Some(10)]);
     assert_eq!(removed_root.get(structural_key, &1), None);
     assert_eq!(removed_root.get(structural_key, &2), Some(&20));
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert_ne!(created.len(), 0);
 
     let (single_removed_root, displaced, created) =
         persist_mutation(&root, structural_key, 1_u64, None, &mut resolver)
             .expect("single remove mutation should succeed");
     assert_eq!(displaced, Some(10));
     assert_eq!(single_removed_root.get(structural_key, &2), Some(&20));
-    assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert_ne!(created.len(), 0);
 }
 
 #[test]
@@ -2147,9 +1727,7 @@ fn test_persist_mutations_emits_resolved_child_nodes() {
             bucket_index(&leaf_hash_for_key(structural_key, *candidate), 0) == first_slot
         })
         .expect("find another colliding key");
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("root is fully resolved")
-    };
+    let mut resolver = unreachable_resolver();
     let (new_root, _, created) = persist_mutations(
         &root,
         structural_key,
@@ -2209,22 +1787,9 @@ fn test_insert_node_errors_at_max_depth_boundary() {
     let existing = find_key_with_slot_at_depth(key, depth, slot);
     let new_key = find_different_key_with_slot_at_depth(key, depth, slot, existing);
 
-    let node = Arc::new(HamtNode {
-        datamap: 1_u32 << slot,
-        nodemap: 0,
-        leaves: vec![(existing, 1_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            1_u32 << slot,
-            0,
-            &[(existing, 1_u64)],
-            &[],
-        ),
-    });
+    let node = rebuild_node(key, 1_u32 << slot, 0, vec![(existing, 1_u64)], vec![]);
     let new_path_hash = leaf_hash_for_key(key, new_key);
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
     let result = insert_node(
         &node,
@@ -2258,22 +1823,9 @@ fn test_insert_node_updates_existing_leaf_at_max_depth_boundary() {
     let slot = 1_usize << residual_bits.saturating_sub(1);
     let existing = find_key_with_slot_at_depth(key, depth, slot);
 
-    let node = Arc::new(HamtNode {
-        datamap: 1_u32 << slot,
-        nodemap: 0,
-        leaves: vec![(existing, 1_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            1_u32 << slot,
-            0,
-            &[(existing, 1_u64)],
-            &[],
-        ),
-    });
+    let node = rebuild_node(key, 1_u32 << slot, 0, vec![(existing, 1_u64)], vec![]);
     let existing_path_hash = leaf_hash_for_key(key, existing);
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
 
     let (new_node, old_value) = insert_node(
         &node,
@@ -2296,15 +1848,14 @@ fn test_hamt_remove_empties_root() {
     let only = find_key_with_root_slot(key, 4);
     let root = build_hamt(key, vec![(only, 42_u64)]).expect("build should work");
 
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
     let (new_root, displaced) =
         crate::hamt::remove(&root, key, &only, &mut resolver).expect("remove should work");
 
     assert_eq!(displaced, Some(42_u64));
     assert_eq!(new_root.datamap, 0);
     assert_eq!(new_root.nodemap, 0);
-    assert_eq!(new_root.leaves, [] as [(u64, u64); 0]);
+    assert_eq!(new_root.leaves.len(), 0);
     assert!(new_root.children.is_empty());
 }
 
@@ -2322,37 +1873,18 @@ fn test_hamt_remove_drops_child_that_becomes_fully_empty() {
     let leaf_d = find_different_key_with_root_slot(key, 2, leaf_b);
     let child_key = find_key_with_path_slots(key, 3, 7);
 
-    let child = Arc::new(HamtNode {
-        datamap: 1_u32 << 7,
-        nodemap: 0,
-        leaves: vec![(child_key, 30_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            1_u32 << 7,
-            0,
-            &[(child_key, 30_u64)],
-            &[],
-        ),
-    });
+    let child = rebuild_node(key, 1_u32 << 7, 0, vec![(child_key, 30_u64)], vec![]);
     let root_leaves = vec![(leaf_b, 10_u64), (leaf_d, 20_u64)];
     let root_children = vec![NodeRef::Resolved(child)];
-    let root = Arc::new(HamtNode {
-        datamap: (1_u32 << 1) | (1_u32 << 2),
-        nodemap: 1_u32 << 3,
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            (1_u32 << 1) | (1_u32 << 2),
-            1_u32 << 3,
-            &root_leaves,
-            &root_children,
-        ),
-        leaves: root_leaves,
-        children: root_children,
-    });
+    let root = rebuild_node(
+        key,
+        (1_u32 << 1) | (1_u32 << 2),
+        1_u32 << 3,
+        root_leaves,
+        root_children,
+    );
 
-    let mut resolver =
-        |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> { unreachable!() };
+    let mut resolver = unreachable_resolver();
     let (new_root, displaced) =
         crate::hamt::remove(&root, key, &child_key, &mut resolver).expect("remove should work");
 
@@ -2465,13 +1997,9 @@ fn test_build_hamt_uses_final_partial_hash_chunk() {
 
 #[test]
 fn test_diff_hamt_nodes_shortcut() {
-    let key = b"dummy_server_key";
-    let root_a = build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 200_u64)]).expect("build A");
-    let root_b = build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 250_u64)]).expect("build B");
+    let RootPair { root_a, root_b } = diff_pair_roots();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("no lazy children in tree")
-    };
+    let mut resolver = unreachable_resolver();
 
     let (added, removed) =
         crate::hamt::diff_hamt_nodes(&root_a, &root_b, &mut resolver).expect("diff should succeed");
@@ -2482,19 +2010,15 @@ fn test_diff_hamt_nodes_shortcut() {
     // Identical structural hash fast-path
     let (added_same, removed_same) =
         crate::hamt::diff_hamt_nodes(&root_a, &root_a, &mut resolver).expect("diff should succeed");
-    assert_eq!(added_same, [] as [(u64, u64); 0]);
-    assert_eq!(removed_same, [] as [(u64, u64); 0]);
+    assert_eq!(added_same.len(), 0);
+    assert_eq!(removed_same.len(), 0);
 }
 
 #[test]
 fn test_diff_node_hashes_root_only_change() {
-    let key = b"dummy_server_key";
-    let root_a = build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 200_u64)]).expect("build A");
-    let root_b = build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 250_u64)]).expect("build B");
+    let RootPair { root_a, root_b } = diff_pair_roots();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("no lazy children in tree")
-    };
+    let mut resolver = unreachable_resolver();
 
     let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
@@ -2507,19 +2031,16 @@ fn test_diff_node_hashes_root_only_change() {
     // Identical roots: nothing superseded, nothing new.
     let delta_same = crate::hamt::diff_node_hashes(&root_a, &root_a, &mut resolver)
         .expect("diff should succeed");
-    assert_eq!(delta_same.superseded_node_hashes, [] as [[u8; 32]; 0]);
-    assert_eq!(delta_same.new_node_hashes, [] as [[u8; 32]; 0]);
+    assert_eq!(delta_same.superseded_node_hashes.len(), 0);
+    assert_eq!(delta_same.new_node_hashes.len(), 0);
 }
 
 #[test]
 fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
     let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
-    let root_a = build_hamt(key, entries).expect("build A");
+    let root_a = entries_64_root();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("tree is fully resolved")
-    };
+    let mut resolver = unreachable_resolver();
 
     // Insert a new key: the new root and every node along the path to the
     // new leaf get a new structural hash; the old nodes on that path are
@@ -2537,8 +2058,8 @@ fn test_diff_node_hashes_tracks_insert_and_remove_spine() {
         .superseded_node_hashes
         .contains(&root_a.structural_hash));
     assert!(delta.new_node_hashes.contains(&root_b.structural_hash));
-    assert_ne!(delta.superseded_node_hashes, [] as [[u8; 32]; 0]);
-    assert_ne!(delta.new_node_hashes, [] as [[u8; 32]; 0]);
+    assert_ne!(delta.superseded_node_hashes.len(), 0);
+    assert_ne!(delta.new_node_hashes.len(), 0);
 
     assert_diff_is_gc_safe(
         &root_a,
@@ -2644,14 +2165,12 @@ fn test_diff_node_hashes_structural_hash_fast_path_without_ptr_eq() {
     assert!(!Arc::ptr_eq(&root_a, &root_b));
     assert_eq!(root_a.structural_hash, root_b.structural_hash);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("structural-hash equality should short-circuit before any resolve")
-    };
+    let mut resolver = unreachable_resolver();
 
     let delta = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect("diff should succeed");
-    assert_eq!(delta.superseded_node_hashes, [] as [[u8; 32]; 0]);
-    assert_eq!(delta.new_node_hashes, [] as [[u8; 32]; 0]);
+    assert_eq!(delta.superseded_node_hashes.len(), 0);
+    assert_eq!(delta.new_node_hashes.len(), 0);
 }
 
 #[test]
@@ -2661,61 +2180,31 @@ fn test_diff_node_hashes_resolves_lazy_children() {
     // A leaf-bearing subtree that will be referenced only lazily by both
     // roots, so any code path that forgets to resolve `NodeRef::Lazy` will
     // either panic (via the resolver below) or silently drop its hash.
-    let shared_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let shared_leaf = rebuild_node(key, 1, 0, vec![(1_u64, 100_u64)], vec![]);
     // A second subtree, unique to root_a, that will be resolved via the
     // `(true, false)` "whole subtree only on one side" arm.
-    let removed_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2_u64, 200_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
+    let removed_leaf = rebuild_node(key, 1, 0, vec![(2_u64, 200_u64)], vec![]);
     // A third subtree, unique to root_b, resolved via the `(false, true)` arm.
-    let added_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(3_u64, 300_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(3, 300)], &[]),
-    });
+    let added_leaf = rebuild_node(key, 1, 0, vec![(3_u64, 300_u64)], vec![]);
 
     let shared_lazy = NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash);
     let removed_lazy = NodeRef::<u64, u64>::Lazy(removed_leaf.structural_hash);
     let added_lazy = NodeRef::<u64, u64>::Lazy(added_leaf.structural_hash);
 
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b11,
-        leaves: vec![],
-        children: vec![shared_lazy.clone(), removed_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b11,
-            &[],
-            &[shared_lazy.clone(), removed_lazy.clone()],
-        ),
-    });
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b101,
-        leaves: vec![],
-        children: vec![shared_lazy.clone(), added_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b101,
-            &[],
-            &[shared_lazy.clone(), added_lazy.clone()],
-        ),
-    });
+    let root_a = rebuild_node(
+        key,
+        0,
+        0b11,
+        vec![],
+        vec![shared_lazy.clone(), removed_lazy.clone()],
+    );
+    let root_b = rebuild_node(
+        key,
+        0,
+        0b101,
+        vec![],
+        vec![shared_lazy.clone(), added_lazy.clone()],
+    );
 
     let mut resolved: Vec<StructuralHash> = Vec::new();
     let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
@@ -2756,28 +2245,9 @@ fn test_diff_node_hashes_resolves_lazy_children() {
 
 #[test]
 fn test_reachable_node_hashes_resolves_lazy_children() {
-    let key = b"dummy_server_key";
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let leaf_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![leaf_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            core::slice::from_ref(&leaf_lazy),
-        ),
-    });
+    let LazyLeafChild {
+        root, child: leaf, ..
+    } = lazy_leaf_root_1();
 
     let mut resolve_called = false;
     let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
@@ -2798,34 +2268,10 @@ fn test_reachable_node_hashes_resolves_lazy_children() {
 #[test]
 fn test_diff_node_hashes_propagates_resolver_error() {
     let key = b"dummy_server_key";
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let other_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2_u64, 200_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
+    let leaf = rebuild_node(key, 1, 0, vec![(1_u64, 100_u64)], vec![]);
+    let other_leaf = rebuild_node(key, 1, 0, vec![(2_u64, 200_u64)], vec![]);
     let child_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![child_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            core::slice::from_ref(&child_lazy),
-        ),
-    });
+    let root_a = internal_root(key, 0, child_lazy);
     let root_b = Arc::new(HamtNode {
         datamap: 1,
         nodemap: 0,
@@ -2872,11 +2318,12 @@ fn test_walk_reachable_node_hashes_shares_subtrees_across_roots() {
 
     let mut seen: BTreeSet<StructuralHash> = BTreeSet::new();
 
-    {
-        let mut mark = |hash: StructuralHash| seen.insert(hash);
-        crate::hamt::walk_reachable_node_hashes(&root_a, &mut resolver, &mut mark)
-            .expect("walk over root_a should succeed");
-    }
+    walk_into_seen(
+        &root_a,
+        &mut resolver,
+        &mut seen,
+        "walk over root_a should succeed",
+    );
     let total_after_a = seen.len();
     assert!(total_after_a > 1, "a 64-entry tree has more than one node");
 
@@ -2885,11 +2332,12 @@ fn test_walk_reachable_node_hashes_shares_subtrees_across_roots() {
     // the walk over root_a, and the walk must never call `resolver` (no
     // lazy children exist, but more importantly, it must never even
     // *attempt* to recurse into an already-marked subtree).
-    {
-        let mut mark = |hash: StructuralHash| seen.insert(hash);
-        crate::hamt::walk_reachable_node_hashes(&root_b, &mut resolver, &mut mark)
-            .expect("walk over root_b should succeed");
-    }
+    walk_into_seen(
+        &root_b,
+        &mut resolver,
+        &mut seen,
+        "walk over root_b should succeed",
+    );
     assert_eq!(
         seen.len(),
         total_after_a,
@@ -2910,27 +2358,9 @@ fn test_walk_reachable_node_hashes_skips_shared_lazy_child_without_resolving() {
     // A lazy subtree shared by both roots. If the walk ever resolves an
     // already-marked child (instead of checking `mark` on the child's hash
     // first), this resolver call is where that shows up.
-    let shared_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let unique_leaf_a = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2_u64, 200_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
-    let unique_leaf_b = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(3_u64, 300_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(3, 300)], &[]),
-    });
+    let shared_leaf = rebuild_node(key, 1, 0, vec![(1_u64, 100_u64)], vec![]);
+    let unique_leaf_a = rebuild_node(key, 1, 0, vec![(2_u64, 200_u64)], vec![]);
+    let unique_leaf_b = rebuild_node(key, 1, 0, vec![(3_u64, 300_u64)], vec![]);
 
     let shared_lazy = NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash);
     let unique_a_lazy = NodeRef::<u64, u64>::Lazy(unique_leaf_a.structural_hash);
@@ -2938,67 +2368,51 @@ fn test_walk_reachable_node_hashes_skips_shared_lazy_child_without_resolving() {
 
     // Two roots with genuinely different structural hashes (different
     // second child), each sharing the same first child subtree.
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b11,
-        leaves: vec![],
-        children: vec![shared_lazy.clone(), unique_a_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b11,
-            &[],
-            &[shared_lazy.clone(), unique_a_lazy.clone()],
-        ),
-    });
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b11,
-        leaves: vec![],
-        children: vec![shared_lazy.clone(), unique_b_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b11,
-            &[],
-            &[shared_lazy.clone(), unique_b_lazy.clone()],
-        ),
-    });
+    let root_a = rebuild_node(
+        key,
+        0,
+        0b11,
+        vec![],
+        vec![shared_lazy.clone(), unique_a_lazy.clone()],
+    );
+    let root_b = rebuild_node(
+        key,
+        0,
+        0b11,
+        vec![],
+        vec![shared_lazy.clone(), unique_b_lazy.clone()],
+    );
     assert_ne!(
         root_a.structural_hash, root_b.structural_hash,
         "roots must genuinely differ so root-level mark() can't short-circuit the whole walk"
     );
 
-    let mut shared_resolve_count = 0_usize;
-    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        if *hash == shared_leaf.structural_hash {
-            shared_resolve_count = shared_resolve_count.saturating_add(1);
-            Ok(shared_leaf.clone())
-        } else if *hash == unique_leaf_a.structural_hash {
-            Ok(unique_leaf_a.clone())
-        } else if *hash == unique_leaf_b.structural_hash {
-            Ok(unique_leaf_b.clone())
-        } else {
-            panic!("unexpected lazy resolution: {hash:?}")
-        }
-    };
+    let shared_resolve_count = core::cell::Cell::new(0_usize);
+    let mut resolver = shared_leaf_resolver(
+        shared_leaf.clone(),
+        unique_leaf_a.clone(),
+        Some(unique_leaf_b.clone()),
+        &shared_resolve_count,
+    );
 
     let mut seen: BTreeSet<StructuralHash> = BTreeSet::new();
-    {
-        let mut mark = |hash: StructuralHash| seen.insert(hash);
-        crate::hamt::walk_reachable_node_hashes(&root_a, &mut resolver, &mut mark)
-            .expect("walk over root_a should succeed");
-    }
-    {
-        let mut mark = |hash: StructuralHash| seen.insert(hash);
-        crate::hamt::walk_reachable_node_hashes(&root_b, &mut resolver, &mut mark)
-            .expect("walk over root_b should succeed");
-    }
+    walk_into_seen(
+        &root_a,
+        &mut resolver,
+        &mut seen,
+        "walk over root_a should succeed",
+    );
+    walk_into_seen(
+        &root_b,
+        &mut resolver,
+        &mut seen,
+        "walk over root_b should succeed",
+    );
 
     // The root-level hashes genuinely differ, so both roots get walked --
     // but the shared child must be resolved exactly once across both
     // walks, and the whole reachable set is root_a + root_b + 3 leaves.
-    assert_eq!(shared_resolve_count, 1);
+    assert_eq!(shared_resolve_count.get(), 1);
     assert!(seen.contains(&root_a.structural_hash));
     assert!(seen.contains(&root_b.structural_hash));
     assert!(seen.contains(&shared_leaf.structural_hash));
@@ -3009,13 +2423,9 @@ fn test_walk_reachable_node_hashes_skips_shared_lazy_child_without_resolving() {
 
 #[test]
 fn test_walk_reachable_node_hashes_root_already_seen_short_circuits() {
-    let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
-    let root = build_hamt(key, entries).expect("build root");
+    let root = entries_64_root();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("mark rejecting the root must prevent any resolver calls at all")
-    };
+    let mut resolver = unreachable_resolver();
     let mut mark = |_hash: StructuralHash| false;
 
     crate::hamt::walk_reachable_node_hashes(&root, &mut resolver, &mut mark)
@@ -3024,28 +2434,7 @@ fn test_walk_reachable_node_hashes_root_already_seen_short_circuits() {
 
 #[test]
 fn test_walk_reachable_node_hashes_propagates_resolver_error() {
-    let key = b"dummy_server_key";
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let leaf_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![leaf_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            core::slice::from_ref(&leaf_lazy),
-        ),
-    });
+    let LazyLeafChild { root, .. } = lazy_leaf_root_1();
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, &'static str> {
         Err("resolve failed")
@@ -3093,37 +2482,23 @@ fn build_deep_chain(depth: usize, tag: u8) -> Arc<HamtNode<u64, u64>> {
 fn test_reachable_node_hashes_rejects_excessive_depth() {
     let root = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chain is fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = crate::hamt::reachable_node_hashes(&root, &mut resolver)
         .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        crate::hamt::HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
 fn test_walk_reachable_node_hashes_rejects_excessive_depth() {
     let root = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chain is fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
     let mut mark = |_hash: StructuralHash| true;
 
     let err = crate::hamt::walk_reachable_node_hashes(&root, &mut resolver, &mut mark)
         .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        crate::hamt::HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
@@ -3131,31 +2506,20 @@ fn test_diff_node_hashes_rejects_excessive_depth() {
     // Two chains that differ (via distinct tags) at every level, so the
     // diff can never short-circuit on a matching structural_hash before it
     // recurses past HAMT_MAX_DEPTH.
-    let root_a = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
-    let root_b = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xBB);
+    let RootPair { root_a, root_b } = deep_diff_roots();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chains are fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = crate::hamt::diff_node_hashes(&root_a, &root_b, &mut resolver)
         .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        crate::hamt::HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
 fn test_isolate_delta_rejects_excessive_depth() {
-    let root_a = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
-    let root_b = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xBB);
+    let RootPair { root_a, root_b } = deep_diff_roots();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chains are fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = isolate_delta(
         &root_a,
@@ -3165,12 +2529,7 @@ fn test_isolate_delta_rejects_excessive_depth() {
         &mut resolver,
     )
     .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
@@ -3178,21 +2537,13 @@ fn test_diff_hamt_nodes_rejects_excessive_depth() {
     // Two chains that differ (via distinct tags) at every level, so the
     // diff can never short-circuit on a matching structural_hash before it
     // recurses past HAMT_MAX_DEPTH.
-    let root_a = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
-    let root_b = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xBB);
+    let RootPair { root_a, root_b } = deep_diff_roots();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chains are fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = crate::hamt::diff_hamt_nodes(&root_a, &root_b, &mut resolver)
         .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
@@ -3210,68 +2561,43 @@ fn test_diff_hamt_nodes_rejects_excessive_depth_via_collect_all_leaves() {
         structural_hash: [0xBB; 32],
     });
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chains are fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = crate::hamt::diff_hamt_nodes(&root_a, &root_b, &mut resolver).expect_err(
         "collect_all_leaves must reject a chain deeper than HAMT_MAX_DEPTH, not stack-overflow",
     );
-    assert_eq!(
-        err,
-        HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
 fn test_any_entry_rejects_excessive_depth() {
     let root = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chain is fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = root
         .any_entry(&mut resolver, &mut |_k, _v| Ok::<_, ()>(false))
         .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
 fn test_find_entry_rejects_excessive_depth() {
     let root = build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA);
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("chain is fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let err = root
         .find_entry(&mut resolver, &mut |_k, _v| Ok::<_, ()>(false))
         .expect_err("a chain deeper than HAMT_MAX_DEPTH must be rejected, not stack-overflow");
-    assert_eq!(
-        err,
-        HamtTraversalError::MaxDepthExceeded {
-            depth: HAMT_MAX_DEPTH
-        }
-    );
+    assert_max_depth_exceeded(&err);
 }
 
 #[test]
 fn test_reachable_node_hashes_matches_manual_walk() {
-    let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
-    let root = build_hamt(key, entries).expect("build root");
+    let root = entries_64_root();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("tree is fully resolved")
-    };
+    let mut resolver = unreachable_resolver();
 
     let hashes =
         crate::hamt::reachable_node_hashes(&root, &mut resolver).expect("walk should succeed");
@@ -3302,34 +2628,10 @@ fn test_diff_nodes_and_lazy_resolver() {
 
     // Create a few basic nodes containing 1 leaf each.
     // They will act as children to our test roots.
-    let leaf1 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let leaf2 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2, 200)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
-    let leaf3 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(3, 300)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(3, 300)], &[]),
-    });
-    let leaf4 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(4, 400)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(4, 400)], &[]),
-    });
+    let leaf1 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
+    let leaf2 = rebuild_node(key, 1, 0, vec![(2, 200)], vec![]);
+    let leaf3 = rebuild_node(key, 1, 0, vec![(3, 300)], vec![]);
+    let leaf4 = rebuild_node(key, 1, 0, vec![(4, 400)], vec![]);
 
     // Node A will have:
     // Slot 0: leaf1 (Resolved)
@@ -3339,19 +2641,13 @@ fn test_diff_nodes_and_lazy_resolver() {
     let child_a2 = NodeRef::Resolved(leaf2.clone());
     let child_a3_lazy = NodeRef::Lazy(leaf3.structural_hash);
 
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b0111,
-        leaves: vec![],
-        children: vec![child_a1.clone(), child_a2.clone(), child_a3_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b0111,
-            &[],
-            &[child_a1.clone(), child_a2.clone(), child_a3_lazy.clone()],
-        ),
-    });
+    let root_a = rebuild_node(
+        key,
+        0,
+        0b0111,
+        vec![],
+        vec![child_a1.clone(), child_a2.clone(), child_a3_lazy.clone()],
+    );
 
     // Node B will have:
     // Slot 0: leaf1 (Resolved - matches Node A)
@@ -3361,23 +2657,17 @@ fn test_diff_nodes_and_lazy_resolver() {
     let child_b2 = NodeRef::Resolved(leaf4.clone());
     let child_b4 = NodeRef::Resolved(leaf3.clone());
 
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b1011,
-        leaves: vec![],
-        children: vec![child_b1.clone(), child_b2.clone(), child_b4.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b1011,
-            &[],
-            &[child_b1.clone(), child_b2.clone(), child_b4.clone()],
-        ),
-    });
+    let root_b = rebuild_node(
+        key,
+        0,
+        0b1011,
+        vec![],
+        vec![child_b1.clone(), child_b2.clone(), child_b4.clone()],
+    );
 
     // Ensure lattice short-circuit does not fire
     let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let lattice_b = LtHash::from_lanes([1u16; 1024]);
 
     let mut resolve_called = false;
     let mut resolver = |hash: &StructuralHash| {
@@ -3464,46 +2754,12 @@ fn test_leaf_differences() {
     let key = b"dummy_server_key";
 
     // Node A will have leaves at slots 0, 1
-    let root_a = Arc::new(HamtNode {
-        datamap: 0b11,
-        nodemap: 0,
-        leaves: vec![(1, 100), (2, 200)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0b11,
-            0,
-            &[(1, 100), (2, 200)],
-            &[],
-        ),
-    });
+    let root_a = rebuild_node(key, 0b11, 0, vec![(1, 100), (2, 200)], vec![]);
 
     // Node B will have leaves at slots 1, 2
-    let root_b = Arc::new(HamtNode {
-        datamap: 0b110,
-        nodemap: 0,
-        leaves: vec![(2, 250), (3, 300)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0b110,
-            0,
-            &[(2, 250), (3, 300)],
-            &[],
-        ),
-    });
+    let root_b = rebuild_node(key, 0b110, 0, vec![(2, 250), (3, 300)], vec![]);
 
-    let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
-
-    let (added, removed) = isolate_delta(
-        &root_a,
-        &lattice_a,
-        &root_b,
-        &lattice_b,
-        &mut panic_resolver,
-    )
-    .unwrap();
+    let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
     // slot 0 (true, false): removed (1, 100)
     // slot 1 (true, true): differs, removed (2, 200) added (2, 250)
@@ -3520,70 +2776,332 @@ fn panic_resolver<K, V>(_hash: &StructuralHash) -> Result<Arc<HamtNode<K, V>>, (
     panic!("unexpected lazy");
 }
 
+fn unreachable_resolver<K, V>() -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<K, V>>, ()> {
+    panic_resolver::<K, V>
+}
+
+/// Diffs two `i32`-keyed roots with the canonical default/`[1; 1024]` lattices.
+struct IsolatedDelta {
+    added: Vec<(i32, i32)>,
+    removed: Vec<(i32, i32)>,
+}
+
+fn isolate_delta_default(root_a: &NodePtr<i32, i32>, root_b: &NodePtr<i32, i32>) -> IsolatedDelta {
+    let (added, removed) = isolate_delta(
+        root_a,
+        &LtHash::default(),
+        root_b,
+        &LtHash::from_lanes([1u16; 1024]),
+        &mut panic_resolver,
+    )
+    .unwrap();
+    IsolatedDelta { added, removed }
+}
+
+/// Removes `id` from a `u64`-keyed tree using the custom routing hash.
+fn remove_custom(
+    root: &NodePtr<u64, u64>,
+    key: &[u8],
+    id: u64,
+    resolver: &mut impl FnMut(&StructuralHash) -> Result<NodePtr<u64, u64>, ()>,
+) -> (NodePtr<u64, u64>, Option<u64>) {
+    crate::hamt::HamtMutator::new(|key: &u64| custom_routing_hash(*key), resolver)
+        .remove(root, key, &id)
+        .expect("custom remove should work")
+}
+
+fn internal_root<K, V>(key: &[u8], slot: usize, child: NodeRef<K, V>) -> Arc<HamtNode<K, V>>
+where
+    K: Hash + HamtCodec,
+    V: HamtCodec,
+{
+    rebuild_node(key, 0, 1_u32 << slot, vec![], vec![child])
+}
+
+fn build_root(key: &[u8], count: u64) -> Arc<HamtNode<u64, u64>> {
+    build_hamt(key, (0_u64..count).map(|i| (i, i))).expect("build root")
+}
+
+fn reachable_hashes(root: &Arc<HamtNode<u64, u64>>) -> Vec<StructuralHash> {
+    crate::hamt::reachable_node_hashes(root, &mut panic_resolver).expect("walk")
+}
+
+/// A single leaf-only node with a zeroed structural hash, as built by the
+/// mutation-context depth-guard tests.
+fn single_leaf_node(key: u64, value: u64) -> Arc<HamtNode<u64, u64>> {
+    Arc::new(HamtNode {
+        datamap: 1,
+        nodemap: 0,
+        leaves: vec![(key, value)],
+        children: vec![],
+        structural_hash: [0; 32],
+    })
+}
+
+/// A leaf-only child node with the given datamap and entries.
+fn leaf_child(key: &[u8], child_datamap: u32, leaves: Vec<(u64, u64)>) -> Arc<HamtNode<u64, u64>> {
+    rebuild_node(key, child_datamap, 0, leaves, vec![])
+}
+
+/// A root whose only child is `child_datamap`'s leaf node, left `Lazy`, plus
+/// that materialized child so callers can assert on / return it.
+struct LazyLeafChild {
+    root: Arc<HamtNode<u64, u64>>,
+    child: Arc<HamtNode<u64, u64>>,
+}
+
+fn lazy_leaf_child(
+    key: &[u8],
+    root_slot: usize,
+    child_datamap: u32,
+    leaves: Vec<(u64, u64)>,
+) -> LazyLeafChild {
+    let child = leaf_child(key, child_datamap, leaves);
+    let root = internal_root(
+        key,
+        root_slot,
+        NodeRef::<u64, u64>::Lazy(child.structural_hash),
+    );
+    LazyLeafChild { root, child }
+}
+
+/// A root holding a `Lazy` reference to a leaf node described only by its
+/// structural hash (the child itself is never materialized).
+fn lazy_leaf_hash_root(
+    key: &[u8],
+    root_slot: usize,
+    child_datamap: u32,
+    leaves: &[(u64, u64)],
+) -> Arc<HamtNode<u64, u64>> {
+    let hash = HamtNode::<u64, u64>::compute_structural_hash(key, child_datamap, 0, leaves, &[]);
+    internal_root(key, root_slot, NodeRef::<u64, u64>::Lazy(hash))
+}
+
+/// Resolver that asserts it is asked exactly for `child`'s structural hash,
+/// counts its invocations through `calls`, and returns a clone of `child`.
+fn single_child_resolver<'a>(
+    child: &'a Arc<HamtNode<u64, u64>>,
+    calls: &'a core::cell::Cell<usize>,
+) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, ()> + 'a {
+    move |hash| {
+        calls.set(calls.get().wrapping_add(1));
+        assert_eq!(hash, &child.structural_hash);
+        Ok(child.clone())
+    }
+}
+
+/// Two fully disjoint 64-entry trees, keyed so they share no node hashes at any
+/// level: `live` stands in for a still-referenced state group, `orphan` for one
+/// whose only root record was already deleted upstream.
+struct LiveAndOrphanRoots {
+    live: Arc<HamtNode<u64, u64>>,
+    orphan: Arc<HamtNode<u64, u64>>,
+}
+
+fn live_and_orphan_roots() -> LiveAndOrphanRoots {
+    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
+    LiveAndOrphanRoots {
+        live: build_hamt(b"live_key", live_entries).expect("build live root"),
+        orphan: build_hamt(b"orphan_key", orphan_entries).expect("build orphan root"),
+    }
+}
+
+/// The `dummy_server_key` + `(query, 42)` lazy child shared by the search and
+/// visit lazy-resolution tests.
+struct QueryLazyChild {
+    key: &'static [u8],
+    query: u64,
+    root: Arc<HamtNode<u64, u64>>,
+    child: Arc<HamtNode<u64, u64>>,
+}
+
+fn query_lazy_child() -> QueryLazyChild {
+    let key = b"dummy_server_key";
+    let query = find_key_with_path_slots(key, 3, 7);
+    let LazyLeafChild { root, child } = lazy_leaf_child(key, 3, 1_u32 << 7, vec![(query, 42_u64)]);
+    QueryLazyChild {
+        key,
+        query,
+        root,
+        child,
+    }
+}
+
+/// A 10-entry tree built with the linear custom key hash.
+fn linear_hash_root() -> Arc<HamtNode<u64, u64>> {
+    let initial: Vec<(u64, u64)> = (0_u64..10).map(|i| (i, i.wrapping_mul(10))).collect();
+    crate::hamt::build_hamt_with_key_hash(b"dummy_server_key", initial, linear_key_hash)
+        .expect("build with custom hash should work")
+}
+
+/// The two-entry `{1: 10, 2: 20}` tree used by the basic insert/remove tests.
+fn two_entry_root() -> Arc<HamtNode<u64, u64>> {
+    build_hamt(b"dummy_server_key", vec![(1_u64, 10_u64), (2_u64, 20_u64)])
+        .expect("build should work")
+}
+
+/// Two single-leaf roots differing only in key 2's value.
+struct RootPair {
+    root_a: Arc<HamtNode<u64, u64>>,
+    root_b: Arc<HamtNode<u64, u64>>,
+}
+
+fn diff_pair_roots() -> RootPair {
+    let key = b"dummy_server_key";
+    RootPair {
+        root_a: build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 200_u64)]).expect("build A"),
+        root_b: build_hamt(key, vec![(1_u64, 100_u64), (2_u64, 250_u64)]).expect("build B"),
+    }
+}
+
+/// A 64-entry root with values `i * 10`.
+fn entries_64_root() -> Arc<HamtNode<u64, u64>> {
+    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
+    build_hamt(b"dummy_server_key", entries).expect("build A")
+}
+
+/// A root whose only child is a `Lazy` single-entry leaf keyed 1, plus the
+/// materialized child.
+fn lazy_leaf_root_1() -> LazyLeafChild {
+    let key = b"dummy_server_key";
+    let leaf = rebuild_node(key, 1, 0, vec![(1_u64, 100_u64)], vec![]);
+    let root = internal_root(key, 0, NodeRef::<u64, u64>::Lazy(leaf.structural_hash));
+    LazyLeafChild { root, child: leaf }
+}
+
+/// Two chains that differ at every level and recurse past `HAMT_MAX_DEPTH`.
+fn deep_diff_roots() -> RootPair {
+    RootPair {
+        root_a: build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xAA),
+        root_b: build_deep_chain(HAMT_MAX_DEPTH.saturating_add(3), 0xBB),
+    }
+}
+
+/// Asserts `err` is the `HAMT_MAX_DEPTH` guard error.
+fn assert_max_depth_exceeded<E>(err: &HamtTraversalError<E>)
+where
+    E: core::fmt::Debug + PartialEq,
+{
+    assert_eq!(
+        err,
+        &HamtTraversalError::MaxDepthExceeded {
+            depth: HAMT_MAX_DEPTH
+        }
+    );
+}
+
+/// Walks `root`, recording visited hashes into `seen`.
+fn walk_into_seen<F, E>(
+    root: &Arc<HamtNode<u64, u64>>,
+    resolver: &mut F,
+    seen: &mut BTreeSet<StructuralHash>,
+    expect_msg: &str,
+) where
+    F: FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, E>,
+    E: core::fmt::Debug,
+{
+    let mut mark = |hash: StructuralHash| seen.insert(hash);
+    crate::hamt::walk_reachable_node_hashes(root, resolver, &mut mark).expect(expect_msg);
+}
+
+/// The shared live/orphan fixture, its reachable-hash sets, and their union.
+struct LiveOrphanUniverse {
+    root_live: Arc<HamtNode<u64, u64>>,
+    expected_live_hashes: BTreeSet<StructuralHash>,
+    expected_orphan_hashes: BTreeSet<StructuralHash>,
+    universe: Vec<StructuralHash>,
+}
+
+fn live_orphan_universe() -> LiveOrphanUniverse {
+    let LiveAndOrphanRoots {
+        live: root_live,
+        orphan: root_orphan,
+    } = live_and_orphan_roots();
+    let mut resolver = unreachable_resolver();
+    let expected_live_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
+            .expect("live walk should succeed")
+            .into_iter()
+            .collect();
+    let expected_orphan_hashes: BTreeSet<StructuralHash> =
+        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
+            .expect("orphan walk should succeed")
+            .into_iter()
+            .collect();
+    let universe: Vec<StructuralHash> = expected_live_hashes
+        .iter()
+        .copied()
+        .chain(expected_orphan_hashes.iter().copied())
+        .collect();
+    LiveOrphanUniverse {
+        root_live,
+        expected_live_hashes,
+        expected_orphan_hashes,
+        universe,
+    }
+}
+
+/// The reachable hashes of an 8-entry `dummy_server_key` root.
+fn root8_hashes() -> Vec<StructuralHash> {
+    reachable_hashes(&build_root(b"dummy_server_key", 8))
+}
+
+/// Resolver that counts resolutions of `shared_leaf` and serves the unique
+/// leaves (optionally a second one).
+fn shared_leaf_resolver(
+    shared_leaf: Arc<HamtNode<u64, u64>>,
+    unique_leaf_a: Arc<HamtNode<u64, u64>>,
+    unique_leaf_b: Option<Arc<HamtNode<u64, u64>>>,
+    shared_resolve_count: &core::cell::Cell<usize>,
+) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, ()> + '_ {
+    move |hash| {
+        if *hash == shared_leaf.structural_hash {
+            shared_resolve_count.set(shared_resolve_count.get().saturating_add(1));
+            Ok(shared_leaf.clone())
+        } else if *hash == unique_leaf_a.structural_hash {
+            Ok(unique_leaf_a.clone())
+        } else if unique_leaf_b
+            .as_ref()
+            .is_some_and(|b| *hash == b.structural_hash)
+        {
+            Ok(unique_leaf_b.as_ref().expect("checked above").clone())
+        } else {
+            panic!("unexpected lazy resolution: {hash:?}")
+        }
+    }
+}
+
+/// The 5-byte v1 node header (magic + wire version) used to hand-build
+/// malformed node buffers in the codec/descend corruption tests.
+fn v1_header_prefix() -> Vec<u8> {
+    vec![
+        crate::hamt::codec::HAMT_NODE_MAGIC[0],
+        crate::hamt::codec::HAMT_NODE_MAGIC[1],
+        crate::hamt::codec::HAMT_NODE_MAGIC[2],
+        crate::hamt::codec::HAMT_NODE_MAGIC[3],
+        crate::hamt::codec::HAMT_WIRE_VERSION,
+    ]
+}
+
 #[test]
 fn test_collect_all_leaves_recursion() {
     let key = b"dummy_server_key";
 
     // Build a subtree: root -> internal -> leaf
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let leaf = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
-    let internal = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::Resolved(leaf.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::Resolved(leaf.clone())],
-        ),
-    });
+    let internal = rebuild_node(key, 0, 1, vec![], vec![NodeRef::Resolved(leaf.clone())]);
 
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::Resolved(internal.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::Resolved(internal.clone())],
-        ),
-    });
+    let root_a = rebuild_node(key, 0, 1, vec![], vec![NodeRef::Resolved(internal.clone())]);
 
     // root_b has nothing in slot 0. So root_a's slot 0 will be completely removed,
     // triggering collect_all_leaves on internal, which then recurses into its children (leaf).
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0,
-        leaves: vec![],
-        children: vec![],
-        structural_hash: HamtNode::<i32, i32>::compute_structural_hash(key, 0, 0, &[], &[]),
-    });
+    let root_b = rebuild_node::<i32, i32>(key, 0, 0, vec![], vec![]);
 
-    let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
-    let (added, removed) = isolate_delta(
-        &root_a,
-        &lattice_a,
-        &root_b,
-        &lattice_b,
-        &mut panic_resolver,
-    )
-    .unwrap();
-
-    assert_eq!(added, [] as [(i32, i32); 0]);
+    assert_eq!(added.len(), 0);
     assert_eq!(removed.len(), 1);
     assert!(removed.contains(&(1, 100)));
 }
@@ -3597,63 +3115,17 @@ fn test_collect_all_leaves_recursion_added_side() {
     // exercises.
     let key = b"dummy_server_key";
 
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let leaf = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
-    let internal = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::Resolved(leaf.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::Resolved(leaf.clone())],
-        ),
-    });
+    let internal = rebuild_node(key, 0, 1, vec![], vec![NodeRef::Resolved(leaf.clone())]);
 
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![NodeRef::Resolved(internal.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            &[NodeRef::Resolved(internal.clone())],
-        ),
-    });
+    let root_b = rebuild_node(key, 0, 1, vec![], vec![NodeRef::Resolved(internal.clone())]);
 
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0,
-        leaves: vec![],
-        children: vec![],
-        structural_hash: HamtNode::<i32, i32>::compute_structural_hash(key, 0, 0, &[], &[]),
-    });
+    let root_a = rebuild_node::<i32, i32>(key, 0, 0, vec![], vec![]);
 
-    let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let IsolatedDelta { added, removed } = isolate_delta_default(&root_a, &root_b);
 
-    let (added, removed) = isolate_delta(
-        &root_a,
-        &lattice_a,
-        &root_b,
-        &lattice_b,
-        &mut panic_resolver,
-    )
-    .unwrap();
-
-    assert_eq!(removed, [] as [(i32, i32); 0]);
+    assert_eq!(removed.len(), 0);
     assert_eq!(added.len(), 1);
     assert!(added.contains(&(1, 100)));
 }
@@ -3671,38 +3143,26 @@ fn test_structural_hash_builder_hasher() {
 fn test_diff_nodes_fast_paths() {
     let key = b"dummy_server_key";
 
-    let node1 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let node1 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
-    let node2 = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let node2 = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
     let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let lattice_b = LtHash::from_lanes([1u16; 1024]);
 
     // -- Arc pointer equality --
     // node1 and node1 are the same Arc allocation.
     let (added1, removed1) =
         isolate_delta(&node1, &lattice_a, &node1, &lattice_b, &mut panic_resolver).unwrap();
-    assert_eq!(added1, [] as [(i32, i32); 0]);
-    assert_eq!(removed1, [] as [(i32, i32); 0]);
+    assert_eq!(added1.len(), 0);
+    assert_eq!(removed1.len(), 0);
 
     // -- Structural hash equality --
     // node1 and node2 are different Arcs, but have the exact same structural hash.
     let (added2, removed2) =
         isolate_delta(&node1, &lattice_a, &node2, &lattice_b, &mut panic_resolver).unwrap();
-    assert_eq!(added2, [] as [(i32, i32); 0]);
-    assert_eq!(removed2, [] as [(i32, i32); 0]);
+    assert_eq!(added2.len(), 0);
+    assert_eq!(removed2.len(), 0);
 }
 
 #[test]
@@ -3712,30 +3172,18 @@ fn test_hamt_node_persisted_round_trip() {
     let key = b"dummy_server_key";
 
     // Build a HamtNode with leaves and children
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1, 100)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let leaf = rebuild_node(key, 1, 0, vec![(1, 100)], vec![]);
 
-    let original = HamtNode {
-        datamap: 0b10,
-        nodemap: 0b1,
-        leaves: vec![(2, 200)],
-        children: vec![NodeRef::Resolved(leaf.clone())],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0b10,
-            0b1,
-            &[(2, 200)],
-            &[NodeRef::Resolved(leaf.clone())],
-        ),
-    };
+    let original = rebuild_node(
+        key,
+        0b10,
+        0b1,
+        vec![(2, 200)],
+        vec![NodeRef::Resolved(leaf.clone())],
+    );
 
     // 1. Convert to PersistedInternalNode
-    let persisted: PersistedInternalNode<i32, i32> = (&original).into();
+    let persisted: PersistedInternalNode<i32, i32> = original.as_ref().into();
 
     // 2. Encode to bytes
     let encoded = persisted.encode_v1();
@@ -3774,14 +3222,12 @@ fn test_unreachable_node_hashes_reports_only_the_orphan() {
     // still-referenced state group, `root_orphan` for one whose only root
     // record was already deleted upstream (the case this function exists to
     // find).
-    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
-    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
-    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
-    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+    let LiveAndOrphanRoots {
+        live: root_live,
+        orphan: root_orphan,
+    } = live_and_orphan_roots();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("both trees are fully resolved, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let expected_orphan_hashes: BTreeSet<StructuralHash> =
         crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
@@ -3825,31 +3271,14 @@ fn test_reachability_audit_partitions_universe_and_agrees_with_unreachable_node_
     // exact complement of `unreachable` within `universe`, and must agree
     // with what `unreachable_node_hashes` reports for the same inputs (it
     // is defined as a thin wrapper over `node_reachability_audit`).
-    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
-    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
-    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
-    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+    let LiveOrphanUniverse {
+        root_live,
+        expected_live_hashes,
+        expected_orphan_hashes,
+        universe,
+    } = live_orphan_universe();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("both trees are fully resolved, no lazy children")
-    };
-
-    let expected_live_hashes: BTreeSet<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
-            .expect("live walk should succeed")
-            .into_iter()
-            .collect();
-    let expected_orphan_hashes: BTreeSet<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
-            .expect("orphan walk should succeed")
-            .into_iter()
-            .collect();
-
-    let universe: Vec<StructuralHash> = expected_live_hashes
-        .iter()
-        .copied()
-        .chain(expected_orphan_hashes.iter().copied())
-        .collect();
+    let mut resolver = unreachable_resolver();
 
     let audit =
         crate::hamt::node_reachability_audit([root_live.clone()], universe.clone(), &mut resolver)
@@ -3894,31 +3323,14 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     // indexes are mapped back through `IndexedUniverse`, must agree exactly
     // with the `StructuralHash`-keyed `node_reachability_audit` result on the
     // same inputs.
-    let live_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(10))).collect();
-    let orphan_entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
-    let root_live = build_hamt(b"live_key", live_entries).expect("build live root");
-    let root_orphan = build_hamt(b"orphan_key", orphan_entries).expect("build orphan root");
+    let LiveOrphanUniverse {
+        root_live,
+        expected_live_hashes,
+        expected_orphan_hashes,
+        universe,
+    } = live_orphan_universe();
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("both trees are fully resolved, no lazy children")
-    };
-
-    let expected_live_hashes: BTreeSet<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
-            .expect("live walk should succeed")
-            .into_iter()
-            .collect();
-    let expected_orphan_hashes: BTreeSet<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root_orphan, &mut resolver)
-            .expect("orphan walk should succeed")
-            .into_iter()
-            .collect();
-
-    let universe: Vec<StructuralHash> = expected_live_hashes
-        .iter()
-        .copied()
-        .chain(expected_orphan_hashes.iter().copied())
-        .collect();
+    let mut resolver = unreachable_resolver();
 
     let bitmap_audit = crate::hamt::bitmap_node_reachability_audit(
         [root_live.clone()],
@@ -3931,7 +3343,7 @@ fn test_bitmap_reachability_audit_agrees_with_reachability_audit() {
     assert!((&bitmap_audit.reachable & &bitmap_audit.unreachable).is_empty());
     let mut recombined = bitmap_audit.reachable.clone();
     recombined |= &bitmap_audit.unreachable;
-    let all_indices: roaring::RoaringBitmap =
+    let all_indices: crate::bitmap::Bitmap =
         (0..u32::try_from(universe.len()).expect("small test universe")).collect();
     assert_eq!(recombined, all_indices);
 
@@ -3986,9 +3398,7 @@ fn test_reachability_audit_dedups_duplicate_unreachable_hashes() {
     let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
     let root_live = build_hamt(b"live_key", entries).expect("build live root");
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("fully resolved tree, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let live_hashes: BTreeSet<StructuralHash> =
         crate::hamt::reachable_node_hashes(&root_live, &mut resolver)
@@ -4061,7 +3471,7 @@ fn test_indexed_universe_assigns_stable_dense_indices_and_collapses_duplicates()
         3,
         "duplicate hash must not inflate the count"
     );
-    assert!(!universe.is_empty());
+    assert!(!universe.is_empty(), "universe should be non-empty");
 
     let idx1 = universe.index_of(&h1).expect("h1 was indexed");
     let idx2 = universe.index_of(&h2).expect("h2 was indexed");
@@ -4289,13 +3699,8 @@ fn test_bitmap_reachability_audit_dedupes_shared_hash_missing_from_universe() {
     // walk — proving the outside-universe fallback set is doing real dedup,
     // not just being populated and ignored.
     let key = b"outside_universe_key";
-    let shared_leaf: Arc<HamtNode<u64, u64>> = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
+    let shared_leaf: Arc<HamtNode<u64, u64>> =
+        rebuild_node(key, 1, 0, vec![(1_u64, 100_u64)], vec![]);
 
     // root_a and root_b each keep one leaf of their own (in different slots,
     // so their structural hashes differ) alongside a shared reference to the
@@ -4373,72 +3778,32 @@ fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
     // both roots reference `shared_leaf`, so it must never show up as
     // unreachable, and the resolver must only be asked to resolve it once
     // across the whole multi-root audit.
-    let shared_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let unique_leaf_a = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(2_u64, 200_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(2, 200)], &[]),
-    });
+    let shared_leaf = rebuild_node(key, 1, 0, vec![(1_u64, 100_u64)], vec![]);
+    let unique_leaf_a = rebuild_node(key, 1, 0, vec![(2_u64, 200_u64)], vec![]);
     // An orphan leaf that neither root references at all.
-    let orphan_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(4_u64, 400_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(4, 400)], &[]),
-    });
+    let orphan_leaf = rebuild_node(key, 1, 0, vec![(4_u64, 400_u64)], vec![]);
 
     let shared_lazy = NodeRef::<u64, u64>::Lazy(shared_leaf.structural_hash);
     let unique_a_lazy = NodeRef::<u64, u64>::Lazy(unique_leaf_a.structural_hash);
 
-    let root_a = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 0b11,
-        leaves: vec![],
-        children: vec![shared_lazy.clone(), unique_a_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            0b11,
-            &[],
-            &[shared_lazy.clone(), unique_a_lazy.clone()],
-        ),
-    });
+    let root_a = rebuild_node(
+        key,
+        0,
+        0b11,
+        vec![],
+        vec![shared_lazy.clone(), unique_a_lazy.clone()],
+    );
     // root_b only references the shared child, wrapped so its own hash
     // differs from root_a's.
-    let root_b = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![shared_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            core::slice::from_ref(&shared_lazy),
-        ),
-    });
+    let root_b = internal_root(key, 0, shared_lazy);
 
-    let mut shared_resolve_count = 0_usize;
-    let mut resolver = |hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        if *hash == shared_leaf.structural_hash {
-            shared_resolve_count = shared_resolve_count.saturating_add(1);
-            Ok(shared_leaf.clone())
-        } else if *hash == unique_leaf_a.structural_hash {
-            Ok(unique_leaf_a.clone())
-        } else {
-            panic!("unexpected lazy resolution: {hash:?}")
-        }
-    };
+    let shared_resolve_count = core::cell::Cell::new(0_usize);
+    let mut resolver = shared_leaf_resolver(
+        shared_leaf.clone(),
+        unique_leaf_a.clone(),
+        None,
+        &shared_resolve_count,
+    );
 
     let universe = [
         root_a.structural_hash,
@@ -4458,7 +3823,8 @@ fn test_unreachable_node_hashes_shares_subtrees_across_roots() {
         "only the never-referenced leaf should be reported unreachable"
     );
     assert_eq!(
-        shared_resolve_count, 1,
+        shared_resolve_count.get(),
+        1,
         "the shared child must be resolved once across both roots, not once per root"
     );
 }
@@ -4472,9 +3838,7 @@ fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
         children: vec![],
         structural_hash: [0xEE; 32],
     });
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("no roots means nothing is ever walked")
-    };
+    let mut resolver = unreachable_resolver::<u64, u64>();
 
     let universe = [root.structural_hash];
     let unreachable = crate::hamt::audit::unreachable_node_hashes([], universe, &mut resolver)
@@ -4488,28 +3852,9 @@ fn test_unreachable_node_hashes_empty_roots_reports_entire_universe() {
 
 #[test]
 fn test_unreachable_node_hashes_propagates_resolver_error_without_partial_result() {
-    let key = b"dummy_server_key";
-    let leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(1_u64, 100_u64)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(1, 100)], &[]),
-    });
-    let leaf_lazy = NodeRef::<u64, u64>::Lazy(leaf.structural_hash);
-    let root = Arc::new(HamtNode {
-        datamap: 0,
-        nodemap: 1,
-        leaves: vec![],
-        children: vec![leaf_lazy.clone()],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0,
-            1,
-            &[],
-            core::slice::from_ref(&leaf_lazy),
-        ),
-    });
+    let LazyLeafChild {
+        root, child: leaf, ..
+    } = lazy_leaf_root_1();
 
     let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, &'static str> {
         Err("resolve failed")
@@ -4602,7 +3947,7 @@ fn assert_delta_matches_oracle(root_a: &Arc<HamtNode<u32, u32>>, root_b: &Arc<Ha
     let (mut want_added, mut want_removed) = oracle_delta(&leaves_a, &leaves_b);
 
     let lattice_a = LtHash::default();
-    let lattice_b = LtHash([1u16; 1024]);
+    let lattice_b = LtHash::from_lanes([1u16; 1024]);
     let (mut got_added, mut got_removed) =
         isolate_delta(root_a, &lattice_a, root_b, &lattice_b, &mut infallible)
             .expect("isolate_delta should succeed against lazy-free fixtures");
@@ -4629,34 +3974,10 @@ fn assert_delta_matches_oracle(root_a: &Arc<HamtNode<u32, u32>>, root_b: &Arc<Ha
 fn test_isolate_delta_boundary_straddling_class_order_invariant() {
     let key = b"order_invariance_boundary";
 
-    let child_a_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(30_u32, 3000_u32)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(30, 3000)], &[]),
-    });
-    let child_b_leaf = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(31_u32, 3100_u32)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(31, 3100)], &[]),
-    });
-    let only_a_child = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(40_u32, 4000_u32)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(40, 4000)], &[]),
-    });
-    let only_b_child = Arc::new(HamtNode {
-        datamap: 1,
-        nodemap: 0,
-        leaves: vec![(50_u32, 5000_u32)],
-        children: vec![],
-        structural_hash: HamtNode::compute_structural_hash(key, 1, 0, &[(50, 5000)], &[]),
-    });
+    let child_a_leaf = rebuild_node(key, 1, 0, vec![(30_u32, 3000_u32)], vec![]);
+    let child_b_leaf = rebuild_node(key, 1, 0, vec![(31_u32, 3100_u32)], vec![]);
+    let only_a_child = rebuild_node(key, 1, 0, vec![(40_u32, 4000_u32)], vec![]);
+    let only_b_child = rebuild_node(key, 1, 0, vec![(50_u32, 5000_u32)], vec![]);
 
     // datamap slot 0: differing value (both classes) -> removed(0,100)/added(0,101)
     // datamap slot 1: only in A -> removed(1,200)
@@ -4664,79 +3985,43 @@ fn test_isolate_delta_boundary_straddling_class_order_invariant() {
     // nodemap slot 3: differing child (both) -> removed(30,3000)/added(31,3100)
     // nodemap slot 4: only in A -> removed(40,4000)
     // nodemap slot 5: only in B -> added(50,5000)
-    let root_a = Arc::new(HamtNode {
-        datamap: 0b011,
-        nodemap: 0b011 << 3,
-        leaves: vec![(0_u32, 100_u32), (1_u32, 200_u32)],
-        children: vec![
+    let root_a = rebuild_node(
+        key,
+        0b011,
+        0b011 << 3,
+        vec![(0_u32, 100_u32), (1_u32, 200_u32)],
+        vec![
             NodeRef::Resolved(child_a_leaf.clone()),
             NodeRef::Resolved(only_a_child.clone()),
         ],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0b011,
-            0b011 << 3,
-            &[(0, 100), (1, 200)],
-            &[
-                NodeRef::Resolved(child_a_leaf.clone()),
-                NodeRef::Resolved(only_a_child.clone()),
-            ],
-        ),
-    });
-    let root_b = Arc::new(HamtNode {
-        datamap: 0b101,
-        nodemap: 0b101 << 3,
-        leaves: vec![(0_u32, 101_u32), (2_u32, 300_u32)],
-        children: vec![
+    );
+    let root_b = rebuild_node(
+        key,
+        0b101,
+        0b101 << 3,
+        vec![(0_u32, 101_u32), (2_u32, 300_u32)],
+        vec![
             NodeRef::Resolved(child_b_leaf.clone()),
             NodeRef::Resolved(only_b_child.clone()),
         ],
-        structural_hash: HamtNode::compute_structural_hash(
-            key,
-            0b101,
-            0b101 << 3,
-            &[(0, 101), (2, 300)],
-            &[
-                NodeRef::Resolved(child_b_leaf.clone()),
-                NodeRef::Resolved(only_b_child.clone()),
-            ],
-        ),
-    });
+    );
 
     assert_delta_matches_oracle(&root_a, &root_b);
 }
 
-/// Deterministic xorshift64* PRNG, matching the idiom already used in
-/// `tests/differential_harness.rs` (Phase B harness).
-struct Rng(u64);
+#[path = "../../tests/support/deterministic_rng.rs"]
+mod deterministic_rng;
+use deterministic_rng::Rng;
 
 impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed | 1)
-    }
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// Returns a value in `0..n`, computed entirely in `u64` and narrowed
-    /// back to `u32` via a checked conversion. `n` is always a small,
-    /// compile-time-bounded constant at call sites in this module (well
-    /// under `u32::MAX`), so `self.next() % u64::from(n)` is itself `< n`
-    /// and the narrowing conversion below cannot fail; `expect` documents
-    /// that invariant instead of silently discarding a truncation via a
-    /// cast or a clippy allow.
-    fn below(&mut self, n: u32) -> u32 {
-        let n64 = u64::from(n);
+    /// Returns a value in `0..n` using checked conversion rather than narrowing
+    /// the generator output implicitly.
+    fn below_u32(&mut self, n: u32) -> u32 {
         let r64 = self
             .next()
-            .checked_rem(n64)
-            .expect("n64 = u64::from(n: u32) is 0 only if n is 0; no call site passes n = 0");
-        u32::try_from(r64).expect("r64 < n64 = u64::from(u32), so it always fits back in u32")
+            .checked_rem(u64::from(n))
+            .expect("no call site passes n = 0");
+        u32::try_from(r64).expect("r64 < u64::from(n: u32), so it fits in u32")
     }
 }
 
@@ -4753,15 +4038,15 @@ fn test_isolate_delta_order_invariant_randomized() {
         let key = format!("order_invariance_random_{trial}");
         let key_bytes = key.as_bytes();
 
-        let n_a = 1 + rng.below(24);
-        let n_b = 1 + rng.below(24);
+        let n_a = 1 + rng.below_u32(24);
+        let n_b = 1 + rng.below_u32(24);
         let key_space = 40_u32;
 
         let entries_a: DeltaEntries = (0..n_a)
-            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .map(|_| (rng.below_u32(key_space), rng.below_u32(1000)))
             .collect();
         let entries_b: DeltaEntries = (0..n_b)
-            .map(|_| (rng.below(key_space), rng.below(1000)))
+            .map(|_| (rng.below_u32(key_space), rng.below_u32(1000)))
             .collect();
 
         // Later entries for the same key win (build_hamt inserts in order),
@@ -4794,7 +4079,7 @@ fn test_isolate_delta_order_invariant_randomized() {
 
         let (mut want_added, mut want_removed) = oracle_delta(&map_a, &map_b);
         let lattice_a = LtHash::default();
-        let lattice_b = LtHash([1u16; 1024]);
+        let lattice_b = LtHash::from_lanes([1u16; 1024]);
         let (mut got_added, mut got_removed) =
             isolate_delta(&root_a, &lattice_a, &root_b, &lattice_b, &mut infallible)
                 .expect("isolate_delta should succeed against lazy-free random fixtures");
@@ -4829,11 +4114,7 @@ fn test_isolate_delta_order_invariant_randomized() {
 fn test_refcount_table_apply_new_increments() {
     use crate::hamt::gc::RefcountTable;
 
-    let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
-    let root = build_hamt(key, entries).expect("build root");
-    let hashes: Vec<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    let hashes = root8_hashes();
 
     let mut table = RefcountTable::new();
     assert!(table.is_empty());
@@ -4856,11 +4137,7 @@ fn test_refcount_table_apply_new_increments() {
 fn test_refcount_table_apply_superseded_decrements_and_reports_zeroed() {
     use crate::hamt::gc::RefcountTable;
 
-    let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
-    let root = build_hamt(key, entries).expect("build root");
-    let hashes: Vec<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    let hashes = root8_hashes();
 
     let mut table = RefcountTable::new();
     table.apply_new(&hashes);
@@ -4934,10 +4211,8 @@ fn test_refcount_table_apply_superseded_underflow_is_atomic() {
     use alloc::string::ToString;
 
     let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i)).collect();
-    let root = build_hamt(key, entries).expect("build root");
-    let hashes: Vec<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    let root = build_root(key, 64);
+    let hashes = reachable_hashes(&root);
     assert!(hashes.len() >= 2, "need at least 2 hashes for this test");
 
     let mut table = RefcountTable::new();
@@ -4986,8 +4261,7 @@ fn test_refcount_table_apply_superseded_repeated_hash_in_one_batch() {
     use crate::hamt::gc::RefcountTable;
 
     let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..4).map(|i| (i, i)).collect();
-    let root = build_hamt(key, entries).expect("build root");
+    let root = build_root(key, 4);
     let hash = root.structural_hash;
 
     let mut table = RefcountTable::new();
@@ -5016,10 +4290,8 @@ fn test_refcount_table_bootstrap_seeds_counts_per_occurrence() {
     use crate::hamt::gc::RefcountTable;
 
     let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..4).map(|i| (i, i)).collect();
-    let root = build_hamt(key, entries).expect("build root");
-    let hashes: Vec<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
+    let root = build_root(key, 4);
+    let hashes = reachable_hashes(&root);
 
     let mut table = RefcountTable::new();
     // Bootstrapping from 3 roots that all reference the same tree (as a
@@ -5048,9 +4320,7 @@ fn test_refcount_table_end_to_end_with_diff_node_hashes_matches_reachability() {
     let entries: Vec<(u64, u64)> = (0_u64..64).map(|i| (i, i.wrapping_mul(7))).collect();
     let root_a = build_hamt(key, entries).expect("build root_a");
 
-    let mut resolver = |_hash: &StructuralHash| -> Result<Arc<HamtNode<u64, u64>>, ()> {
-        unreachable!("fully resolved tree, no lazy children")
-    };
+    let mut resolver = unreachable_resolver();
 
     let (root_b, _displaced) =
         insert(&root_a, key, 1000_u64, 9999_u64, &mut resolver).expect("insert should succeed");
@@ -5114,11 +4384,9 @@ fn test_refcount_debug_guard_catches_branching_hazard() {
     use crate::hamt::gc::RefcountTable;
 
     let key = b"dummy_server_key";
-    let entries: Vec<(u64, u64)> = (0_u64..8).map(|i| (i, i)).collect();
-    let root = build_hamt(key, entries).expect("build root");
-    let hashes: Vec<StructuralHash> =
-        crate::hamt::reachable_node_hashes(&root, &mut panic_resolver).expect("walk");
-    assert_ne!(hashes, [] as [[u8; 32]; 0]);
+    let root = build_root(key, 8);
+    let hashes = reachable_hashes(&root);
+    assert_ne!(hashes.len(), 0);
 
     // Simulate: `apply_superseded` reported `hashes[0]` as zeroed, but it is
     // in fact still reachable from a different, still-live root (the
@@ -5484,7 +4752,7 @@ fn test_persist_chain_overwrite_then_revert() {
 
     assert_eq!(steps[0].displaced, Some(100_u64));
     assert_ne!(steps[0].root_hash, root_0.structural_hash);
-    assert_ne!(steps[0].created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+    assert_ne!(steps[0].created.len(), 0);
 
     assert_eq!(steps[1].displaced, Some(200_u64));
     // Step 2 restored state to exact root_0
@@ -5529,7 +4797,7 @@ fn test_hamt_deep_split_mutation() {
         let (new_root, _, created) =
             persist_mutation(&root, key, i, Some(u64::from(i) * 10), &mut no_resolver)
                 .expect("persist mutation");
-        assert_ne!(created, [] as [([u8; 32], std::vec::Vec<u8>); 0]);
+        assert_ne!(created.len(), 0);
         root = new_root;
     }
 
@@ -5638,14 +4906,8 @@ fn test_descend_level_rejects_corruption() {
     let req_hash = crate::hamt::key_path_hash(key, &42_u32);
 
     // 1. Truncated buffer: returns Decode error
-    let truncated_buf = vec![
-        crate::hamt::codec::HAMT_NODE_MAGIC[0],
-        crate::hamt::codec::HAMT_NODE_MAGIC[1],
-        crate::hamt::codec::HAMT_NODE_MAGIC[2],
-        crate::hamt::codec::HAMT_NODE_MAGIC[3],
-        crate::hamt::codec::HAMT_WIRE_VERSION,
-        0x00,
-    ];
+    let mut truncated_buf = v1_header_prefix();
+    truncated_buf.push(0x00);
     let res =
         descend_level::<u32, u64, _>(key, &[([0; 32], &truncated_buf, 0, &[req_hash])], |k| {
             crate::hamt::key_path_hash(key, k)
@@ -5658,13 +4920,7 @@ fn test_descend_level_rejects_corruption() {
     );
 
     // 2. Overlapping datamap & nodemap: returns Decode error
-    let mut corrupt_header = vec![
-        crate::hamt::codec::HAMT_NODE_MAGIC[0],
-        crate::hamt::codec::HAMT_NODE_MAGIC[1],
-        crate::hamt::codec::HAMT_NODE_MAGIC[2],
-        crate::hamt::codec::HAMT_NODE_MAGIC[3],
-        crate::hamt::codec::HAMT_WIRE_VERSION,
-    ]; // current node kind and version
+    let mut corrupt_header = v1_header_prefix(); // current node kind and version
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // datamap bit 0
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // nodemap bit 0 (overlap!)
     corrupt_header.extend_from_slice(&1_u32.to_le_bytes()); // leaves count 1

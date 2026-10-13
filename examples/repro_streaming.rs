@@ -268,7 +268,7 @@ fn cross_check_merges(
             ev.prev_events.len()
         );
         let mut parent_maps: Vec<
-            imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String>,
+            rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String>,
         > = Vec::new();
         let mut parent_failed = false;
         for pe in &ev.prev_events {
@@ -289,7 +289,7 @@ fn cross_check_merges(
                     if present { "present" } else { "absent" }
                 );
             }
-            let om: imbl::OrdMap<_, _> = m
+            let om: rezzy::PersistentOrdMap<_, _> = m
                 .iter()
                 .map(|((t, sk), v)| {
                     (
@@ -308,7 +308,7 @@ fn cross_check_merges(
         }
         if let Some(missing) = parent_maps
             .iter()
-            .flat_map(imbl::OrdMap::values)
+            .flat_map(rezzy::PersistentOrdMap::values)
             .find(|id| !lean_events.contains_key(*id))
         {
             println!("  skipping: parent state references unknown event {missing}");

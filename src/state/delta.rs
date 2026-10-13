@@ -21,10 +21,10 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-pub use super::lthash::{compute_state_hash, LtHash};
+use super::lthash::compute_state_hash;
 
 /// Which phase of state resolution produced a delta.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ResolvePhase {
     /// Power events: `m.room.create`, `m.room.power_levels`, `m.room.join_rules`,
     /// bans, and kicks. Sorted by reverse topological order (Kahn's algorithm).
@@ -38,7 +38,6 @@ pub enum ResolvePhase {
 /// [`resolve_iterative_sort_with_deltas`](crate::resolve_iterative_sort_with_deltas) emits one of
 /// these for every conflicted event that is auth-checked, regardless of whether
 /// it was accepted or rejected.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K = String> {
     /// The event that was auth-checked.
     pub event_id: Id,
@@ -54,12 +53,16 @@ pub struct ResolutionDelta<Id: crate::basespec::rezzy_types::EventId = String, K
 }
 
 /// A single state delta entry — an addition, modification, or deletion.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
+#[derive(Debug, PartialEq, Eq)]
+pub struct StateDelta<Id, K = String>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+{
     /// The event type (e.g. `"m.room.member"`).
     pub event_type: String,
     /// The state key (e.g. `"@alice:example.com"` or `""`).
-    pub state_key: String,
+    pub state_key: K,
     /// The new event ID, or `None` if this key was deleted.
     pub event_id: Option<Id>,
 }
@@ -73,10 +76,14 @@ pub struct StateDelta<Id: crate::basespec::rezzy_types::EventId = String> {
 ///
 /// If the two states are identical, returns an empty `Vec`.
 #[must_use]
-pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
-    parent: &crate::state::at::SharedState<Id, String>,
-    current: &crate::state::at::SharedState<Id, String>,
-) -> Vec<StateDelta<Id>> {
+pub fn compute_state_delta<Id, K>(
+    parent: &crate::state::at::SharedState<Id, K>,
+    current: &crate::state::at::SharedState<Id, K>,
+) -> Vec<StateDelta<Id, K>>
+where
+    Id: crate::basespec::rezzy_types::EventId,
+    K: crate::basespec::rezzy_types::StateKey + Clone,
+{
     let mut deltas = Vec::new();
 
     // Additions and modifications
@@ -107,6 +114,23 @@ pub fn compute_state_delta<Id: crate::basespec::rezzy_types::EventId>(
     deltas
 }
 
+/// Applies a single delta entry to `state`: inserts `event_id` when present,
+/// otherwise removes the addressed slot.
+fn apply_delta_to_state<Id: crate::basespec::rezzy_types::EventId>(
+    state: &mut crate::state::at::SharedState<Id>,
+    delta: &StateDelta<Id>,
+) {
+    let key = (
+        crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
+        delta.state_key.clone(),
+    );
+    if let Some(ref event_id) = delta.event_id {
+        state.insert(key, event_id.clone());
+    } else {
+        state.remove(&key);
+    }
+}
+
 /// Applies a list of deltas to a base state, producing the reconstructed state.
 ///
 /// - Entries with `event_id = Some(id)` are inserted/overwritten.
@@ -118,15 +142,7 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 ) -> crate::state::at::SharedState<Id> {
     let mut result = base.clone();
     for delta in deltas {
-        let key = (
-            crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
-            delta.state_key.clone(),
-        );
-        if let Some(ref event_id) = delta.event_id {
-            result.insert(key, event_id.clone());
-        } else {
-            result.remove(&key);
-        }
+        apply_delta_to_state(&mut result, delta);
     }
     result
 }
@@ -136,6 +152,7 @@ pub fn apply_state_delta<Id: crate::basespec::rezzy_types::EventId>(
 /// Returns `Err` with a static message if the input is not exactly 64 ASCII
 /// hex characters. This rejects non-ASCII UTF-8 up front, preventing panics
 /// from slicing inside multibyte character boundaries.
+#[cfg(test)]
 fn decode_hex_32(s: &str) -> Result<[u8; 32], &'static str> {
     if s.len() != 64 {
         return Err("expected 64-character hex string");
@@ -155,58 +172,6 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], &'static str> {
     Ok(bytes)
 }
 
-pub mod hex_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// # Errors
-    /// Returns an error if the hex string fails to serialize.
-    pub fn serialize<S: Serializer>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
-        let mut hex = alloc::string::String::with_capacity(64);
-        for b in bytes {
-            use core::fmt::Write;
-            write!(hex, "{b:02x}").expect("String formatting is infallible");
-        }
-        serializer.serialize_str(&hex)
-    }
-
-    /// # Errors
-    /// Returns an error if the string is not exactly 64 ASCII hex characters.
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
-        let s = alloc::string::String::deserialize(deserializer)?;
-        super::decode_hex_32(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-pub mod hex_serde_opt {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// # Errors
-    /// Returns an error if the underlying hex string fails to serialize.
-    pub fn serialize<S: Serializer>(
-        bytes: &Option<[u8; 32]>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match bytes {
-            Some(b) => super::hex_serde::serialize(b, serializer),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    /// # Errors
-    /// Returns an error if the string is present but is not exactly 64 ASCII hex characters.
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<[u8; 32]>, D::Error> {
-        let opt = Option::<alloc::string::String>::deserialize(deserializer)?;
-        match opt {
-            Some(s) => super::decode_hex_32(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
-        }
-    }
-}
-
 /// Maximum number of delta hops before a full snapshot is inserted (default: 100,
 /// configurable: true).
 ///
@@ -222,13 +187,10 @@ pub const MAX_DELTA_CHAIN_HOPS: usize = 100;
 /// the checkpoint stores the full state map as `snapshot` instead of a delta.
 /// Readers walk backwards from any checkpoint, applying deltas, until they
 /// hit a snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompactedCheckpoint<Id: crate::basespec::rezzy_types::EventId = String> {
     /// 256-bit hash of the state map at this point.
-    #[serde(with = "hex_serde")]
     pub state_hash: [u8; 32],
     /// Hash of the parent checkpoint (if any).
-    #[serde(with = "hex_serde_opt")]
     pub parent_hash: Option<[u8; 32]>,
     /// The event ID that produced this checkpoint.
     pub event_id: Id,
@@ -343,15 +305,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
             let mut state = snapshot.clone();
             while let Some(deltas) = delta_stack.pop() {
                 for delta in deltas {
-                    let key = (
-                        crate::basespec::event_types::EventType::from(delta.event_type.as_str()),
-                        delta.state_key.clone(),
-                    );
-                    if let Some(ref event_id) = delta.event_id {
-                        state.insert(key, event_id.clone());
-                    } else {
-                        state.remove(&key);
-                    }
+                    apply_delta_to_state(&mut state, delta);
                 }
             }
             return Some(state);
@@ -392,7 +346,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
 ///
 /// # Returns
 ///
-/// A `imbl::OrdMap<usize, state_map>` keyed by the requested indices. Missing
+/// A persistent ordered map keyed by the requested indices. Missing
 /// entries indicate broken chains or out-of-bounds indices.
 ///
 /// # Panics
@@ -403,7 +357,7 @@ pub fn reconstruct_state_at<Id: crate::basespec::rezzy_types::EventId>(
 pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     checkpoints: &[CompactedCheckpoint<Id>],
     target_indices: &[usize],
-) -> imbl::OrdMap<usize, crate::state::at::SharedState<Id>> {
+) -> crate::state::PersistentOrdMap<usize, crate::state::at::SharedState<Id>> {
     use crate::HashMap;
 
     let mut sorted_targets: Vec<usize> = target_indices
@@ -415,7 +369,7 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     sorted_targets.dedup();
 
     if sorted_targets.is_empty() {
-        return imbl::OrdMap::new();
+        return crate::state::PersistentOrdMap::new();
     }
 
     // Backward-only parent lookup: prefer immediate predecessor, fall back to
@@ -445,7 +399,7 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
     }
 
     let mut known_states = HashMap::new();
-    let mut results = imbl::OrdMap::new();
+    let mut results = crate::state::PersistentOrdMap::new();
 
     // Iterate forward only through the required indices
     for idx in required_indices {
@@ -494,14 +448,40 @@ mod tests {
     type StateMap = crate::state::at::SharedState<String>;
     type ResolvedStates = Vec<(String, StateMap)>;
 
-    #[test]
-    fn test_roundtrip_identity() {
+    /// A two-entry state shared by several round-trip fixtures.
+    fn base_state() -> StateMap {
         let mut state = StateMap::new();
         state.insert(("m.room.create".into(), String::new()), "$1".into());
         state.insert(
             ("m.room.member".into(), "@alice:example.com".into()),
             "$2".into(),
         );
+        state
+    }
+
+    /// Builds `n` cumulative pre-resolved states (event `$i` carries members
+    /// `@user_1` through `@user_i`).
+    fn build_states(n: usize) -> ResolvedStates {
+        (1..=n)
+            .map(|i| {
+                let mut state = StateMap::new();
+                for j in 1..=i {
+                    state.insert(
+                        (
+                            "m.room.member".into(),
+                            alloc::format!("@user_{j}:example.com"),
+                        ),
+                        alloc::format!("${j}"),
+                    );
+                }
+                (alloc::format!("${i}"), state)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_roundtrip_identity() {
+        let state = base_state();
 
         let delta = compute_state_delta(&state, &state);
         assert!(
@@ -512,12 +492,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_add_modify_delete() {
-        let mut parent = StateMap::new();
-        parent.insert(("m.room.create".into(), String::new()), "$1".into());
-        parent.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
-            "$2".into(),
-        );
+        let parent = base_state();
 
         let mut current = StateMap::new();
         current.insert(
@@ -542,12 +517,7 @@ mod tests {
 
     #[test]
     fn test_deletion_roundtrip() {
-        let mut parent = StateMap::new();
-        parent.insert(("m.room.create".into(), String::new()), "$1".into());
-        parent.insert(
-            ("m.room.member".into(), "@alice:example.com".into()),
-            "$2".into(),
-        );
+        let parent = base_state();
 
         // Current state has alice removed
         let mut current = StateMap::new();
@@ -564,24 +534,10 @@ mod tests {
     #[test]
     fn test_compaction_inserts_snapshots() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes a SHAKE256 XOF expansion per item, making large `N` values
+        // `LtHash` computes a BLAKE3 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Build 35 pre-resolved states — should trigger snapshots at 0, 10, 20, 30
-        let states: ResolvedStates = (1..=35)
-            .map(|i| {
-                let mut state = StateMap::new();
-                for j in 1..=i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(35);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(10));
         assert_eq!(checkpoints.len(), 35);
@@ -629,24 +585,10 @@ mod tests {
     #[test]
     fn test_reconstruct_state_at() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // `LtHash` computes a BLAKE3 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=45` to ensure fast tests.
         // Build 45 pre-resolved states — will have snapshots at 0, 10, 20, 30, 40
-        let states: ResolvedStates = (1..=45)
-            .map(|i| {
-                let mut state = StateMap::new();
-                for j in 1..=i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(45);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(10));
 
@@ -684,32 +626,10 @@ mod tests {
     #[test]
     fn test_compacted_delta_chain_from_resolved_snapshots() {
         // NOTE: This test creates `O(N^2)` state items as it builds the DAG.
-        // `LtHash` computes 64 SHA-256 iterations per item, making large `N` values
+        // `LtHash` computes a BLAKE3 XOF expansion per item, making large `N` values
         // extremely slow in debug builds. We keep `N=35` to ensure fast tests.
         // Create 35 sequential resolved states
-        let states: ResolvedStates = (1..=35)
-            .map(|i| {
-                let mut state = StateMap::new();
-                state.insert(
-                    (
-                        "m.room.member".into(),
-                        alloc::format!("@user_{i}:example.com"),
-                    ),
-                    alloc::format!("${i}"),
-                );
-                // Keep previous entries too
-                for j in 1..i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(35);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states.clone(), Some(10));
 
@@ -750,21 +670,7 @@ mod tests {
 
     #[test]
     fn test_reconstruct_state_at_by_event_id_lookup() {
-        let states: ResolvedStates = (1..=10)
-            .map(|i| {
-                let mut state = StateMap::new();
-                for j in 1..=i {
-                    state.insert(
-                        (
-                            "m.room.member".into(),
-                            alloc::format!("@user_{j}:example.com"),
-                        ),
-                        alloc::format!("${j}"),
-                    );
-                }
-                (alloc::format!("${i}"), state)
-            })
-            .collect();
+        let states = build_states(10);
 
         let checkpoints = compute_compacted_delta_chain_from_resolved(states, Some(100));
 
@@ -905,51 +811,9 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_serde_coverage() {
-        // Covers `hex_serde`, `hex_serde_opt`, and `LtHash::default()`
-        let _def = LtHash::default();
-
-        let cp: CompactedCheckpoint<String> = CompactedCheckpoint {
-            state_hash: [0xab; 32],
-            parent_hash: Some([0xcd; 32]),
-            event_id: "$1".into(),
-            deltas: alloc::vec![],
-            snapshot: None,
-        };
-
-        let serialized = serde_json::to_string(&cp).unwrap();
-        let deserialized: CompactedCheckpoint<String> = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(cp, deserialized);
-
-        let cp_none: CompactedCheckpoint<String> = CompactedCheckpoint {
-            state_hash: [0xab; 32],
-            parent_hash: None,
-            event_id: "$2".into(),
-            deltas: alloc::vec![],
-            snapshot: None,
-        };
-        let serialized_none = serde_json::to_string(&cp_none).unwrap();
-        let deserialized_none: CompactedCheckpoint<String> =
-            serde_json::from_str(&serialized_none).unwrap();
-        assert_eq!(cp_none, deserialized_none);
-
-        // Test error conditions
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"deadbeef","parent_hash":null,"event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","parent_hash":null,"event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"deadbeef","event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
-        assert!(serde_json::from_str::<CompactedCheckpoint<String>>(
-            r#"{"state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parent_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","event_id":"$1","deltas":[],"snapshot":null}"#
-        ).is_err());
-
+    fn test_checkpoint_hex_validation() {
+        // Checkpoint hashes use fixed-width hexadecimal strings at persistence boundaries.
+        let _def = crate::incremental::LtHash::default();
         // Non-ASCII but exactly 64 bytes in length (32 copies of 'ä', which is 2 bytes each)
         let non_ascii_64_bytes = "ääääääääääääääääääääääääääääääää";
         assert_eq!(non_ascii_64_bytes.len(), 64);

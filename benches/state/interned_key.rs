@@ -48,10 +48,15 @@
 )]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use rezzy::{compute_state_at, compute_state_at_batch, InternedKey, LeanEvent, StateResVersion};
+use rezzy::{
+    compute_state_at, compute_state_at_batch, EventId, InternedKey, JsonValue, LeanEvent, StateKey,
+    StateResVersion,
+};
+
+use crate::common::{join_rules_event, member_event, new_room_with_power_levels};
 
 /// A flat `u32` index into an interned string arena — the C-style key: `Copy`,
 /// no atomic refcount, no per-clone allocation, integer compare/hash. Ids are
@@ -132,7 +137,7 @@ fn str_to_id() -> HashMap<String, InternId> {
 fn to_u32_events(
     events: &HashMap<String, LeanEvent>,
     str_to_id: &HashMap<String, InternId>,
-) -> HashMap<String, LeanEvent<String, serde_json::Value, InternId>> {
+) -> HashMap<String, LeanEvent<String, JsonValue, InternId>> {
     events
         .iter()
         .map(|(id, ev)| {
@@ -156,85 +161,32 @@ fn to_u32_events(
         .collect()
 }
 
+/// Inserts the public `m.room.join_rules` event for a room whose
+/// power-levels event is `pl_id`, and returns its id.
+fn insert_join_rules(events: &mut HashMap<String, LeanEvent>, ts: &mut u64, pl_id: &str) -> String {
+    let join_rules_id = "$join_rules".to_string();
+    events.insert(
+        join_rules_id.clone(),
+        join_rules_event(
+            join_rules_id.clone(),
+            {
+                *ts += 1;
+                *ts
+            },
+            vec![pl_id.to_string()],
+            vec![pl_id.to_string()],
+            2,
+        ),
+    );
+    join_rules_id
+}
+
 /// Builds `create -> power_levels` followed by a linear chain of `member_count`
 /// `m.room.member` events, each with a distinct `state_key` (the target user).
 /// Returns the event map plus the IDs of a spread of member events to resolve.
 fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) {
-    let mut events = HashMap::new();
-    let mut ts: u64 = 0;
-
-    let create_id = "$create".to_string();
-    events.insert(
-        create_id.clone(),
-        LeanEvent {
-            event_id: create_id.clone(),
-            event_type: "m.room.create".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "creator": "@creator:example.org" }),
-            prev_events: Vec::new(),
-            auth_events: Vec::new(),
-            depth: 0,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
-
-    let pl_id = "$power_levels".to_string();
-    events.insert(
-        pl_id.clone(),
-        LeanEvent {
-            event_id: pl_id.clone(),
-            event_type: "m.room.power_levels".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "users_default": 50 }),
-            prev_events: vec![create_id.clone()],
-            // V2.1+ (this bench uses `StateResVersion::V2_1` throughout)
-            // forbids citing `m.room.create` in `auth_events` (rule 2.4) --
-            // create is implicit, not cited. Citing it here made this fixture
-            // invalid under the version the bench actually resolves against.
-            auth_events: Vec::new(),
-            depth: 1,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
-
-    let join_rules_id = "$join_rules".to_string();
-    events.insert(
-        join_rules_id.clone(),
-        LeanEvent {
-            event_id: join_rules_id.clone(),
-            event_type: "m.room.join_rules".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "join_rule": "public" }),
-            prev_events: vec![pl_id.clone()],
-            auth_events: vec![pl_id.clone()],
-            depth: 2,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
+    let (mut events, mut ts, _create_id, pl_id) = new_room_with_power_levels();
+    let join_rules_id = insert_join_rules(&mut events, &mut ts, &pl_id);
 
     // Without a public `m.room.join_rules`, the default join rule is
     // `invite`, so a fresh join with no prior invite would be rejected --
@@ -249,33 +201,29 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
         let user = format!("@user{i}:example.org");
         events.insert(
             id.clone(),
-            LeanEvent {
-                event_id: id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(user.clone()),
-                power_level: 0,
-                origin_server_ts: {
+            member_event(
+                id.clone(),
+                user.clone(),
+                user,
+                "join",
+                0,
+                {
                     ts += 1;
                     ts
                 },
-                sender: user,
-                content: serde_json::json!({ "membership": "join" }),
-                prev_events: vec![prev.clone()],
+                vec![prev.clone()],
                 // For `i == 0`, `prev` is `join_rules_id` itself (the loop's
                 // initial value) -- citing it twice would be a duplicate.
                 // Dedup so the first member cites power_levels + join_rules
                 // once each, and later members additionally cite the
                 // previous member event.
-                auth_events: if prev == join_rules_id {
+                if prev == join_rules_id {
                     vec![pl_id.clone(), join_rules_id.clone()]
                 } else {
                     vec![pl_id.clone(), join_rules_id.clone(), prev.clone()]
                 },
                 depth,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+            ),
         );
         // Resolve a spread of targets so the batch path engages the parallel
         // lattice fold over a wide slice of non-power events.
@@ -299,54 +247,7 @@ fn build_room(member_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) 
 /// real power-comparison / mainline-ordering auth-check machinery on every
 /// key -- not just structural dedup.
 fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>, Vec<String>) {
-    let mut events = HashMap::new();
-    let mut ts: u64 = 0;
-
-    let create_id = "$create".to_string();
-    events.insert(
-        create_id.clone(),
-        LeanEvent {
-            event_id: create_id.clone(),
-            event_type: "m.room.create".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "creator": "@creator:example.org" }),
-            prev_events: Vec::new(),
-            auth_events: Vec::new(),
-            depth: 0,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
-
-    let pl_id = "$power_levels".to_string();
-    events.insert(
-        pl_id.clone(),
-        LeanEvent {
-            event_id: pl_id.clone(),
-            event_type: "m.room.power_levels".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "users_default": 50 }),
-            prev_events: vec![create_id.clone()],
-            auth_events: Vec::new(),
-            depth: 1,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
+    let (mut events, mut ts, _create_id, pl_id) = new_room_with_power_levels();
 
     // Branch A below is a self-join (`sender == state_key`, `membership:
     // "join"`), which `check_join_rules` only admits for a non-creator
@@ -354,31 +255,7 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
     // `m.room.join_rules` event in state) is `invite`, which would reject
     // every branch-A event and collapse the intended two-way conflict into
     // a one-sided ban. Publish the room so both branches actually compete.
-    let join_rules_id = "$join_rules".to_string();
-    events.insert(
-        join_rules_id.clone(),
-        LeanEvent {
-            event_id: join_rules_id.clone(),
-            event_type: "m.room.join_rules".to_string(),
-            state_key: Some(String::new()),
-            power_level: 100,
-            origin_server_ts: {
-                ts += 1;
-                ts
-            },
-            sender: "@creator:example.org".to_string(),
-            content: serde_json::json!({ "join_rule": "public" }),
-            prev_events: vec![pl_id.clone()],
-            // V2.1+ (this bench uses `StateResVersion::V2_1` throughout)
-            // forbids citing `m.room.create` in `auth_events` (rule 2.4) --
-            // matching the power_levels event above, which likewise omits it.
-            auth_events: vec![pl_id.clone()],
-            depth: 2,
-            rejected: false,
-            soft_fail: false,
-            room_id: None,
-        },
-    );
+    let join_rules_id = insert_join_rules(&mut events, &mut ts, &pl_id);
 
     let mut tip = join_rules_id.clone();
     let mut depth: u64 = 3;
@@ -397,45 +274,37 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
 
         events.insert(
             a_id.clone(),
-            LeanEvent {
-                event_id: a_id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(user.clone()),
-                power_level: 0,
-                origin_server_ts: {
+            member_event(
+                a_id.clone(),
+                user.clone(),
+                user.clone(),
+                "join",
+                0,
+                {
                     ts += 1;
                     ts
                 },
-                sender: user.clone(),
-                content: serde_json::json!({ "membership": "join" }),
-                prev_events: vec![tip.clone()],
-                auth_events: branch_auth.clone(),
+                vec![tip.clone()],
+                branch_auth.clone(),
                 depth,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+            ),
         );
         events.insert(
             b_id.clone(),
-            LeanEvent {
-                event_id: b_id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(user.clone()),
-                power_level: 0,
-                origin_server_ts: {
+            member_event(
+                b_id.clone(),
+                user.clone(),
+                "@creator:example.org".to_string(),
+                "ban",
+                0,
+                {
                     ts += 1;
                     ts
                 },
-                sender: "@creator:example.org".to_string(),
-                content: serde_json::json!({ "membership": "ban" }),
-                prev_events: vec![tip.clone()],
-                auth_events: branch_auth,
+                vec![tip.clone()],
+                branch_auth,
                 depth,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+            ),
         );
 
         depth += 1;
@@ -447,24 +316,20 @@ fn build_conflicting_room(conflict_count: usize) -> (HashMap<String, LeanEvent>,
         let merge_user = format!("@merge{i}:example.org");
         events.insert(
             merge_id.clone(),
-            LeanEvent {
-                event_id: merge_id.clone(),
-                event_type: "m.room.member".to_string(),
-                state_key: Some(merge_user.clone()),
-                power_level: 0,
-                origin_server_ts: {
+            member_event(
+                merge_id.clone(),
+                merge_user.clone(),
+                merge_user,
+                "join",
+                0,
+                {
                     ts += 1;
                     ts
                 },
-                sender: merge_user,
-                content: serde_json::json!({ "membership": "join" }),
-                prev_events: vec![a_id.clone(), b_id.clone()],
-                auth_events: vec![pl_id.clone(), join_rules_id.clone()],
+                vec![a_id.clone(), b_id.clone()],
+                vec![pl_id.clone(), join_rules_id.clone()],
                 depth,
-                rejected: false,
-                soft_fail: false,
-                room_id: None,
-            },
+            ),
         );
 
         if i == 0
@@ -503,6 +368,196 @@ fn measure(label: &str, reps: usize, f: impl Fn()) -> Duration {
 // answering the same question. Run `cargo bench --bench rezzy -- interned_lookup`
 // for that comparison.
 
+/// Re-keys a resolved state map by `(event_type, state_key)` strings, so maps
+/// with different key representations can be compared.
+fn to_string_keyed<T, K>(
+    state: impl IntoIterator<Item = ((T, K), String)>,
+) -> std::collections::BTreeMap<(String, String), String>
+where
+    T: ToString,
+    K: AsRef<str>,
+{
+    state
+        .into_iter()
+        .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
+        .collect()
+}
+
+/// Asserts the interned-`u32` path resolves to the same state as the
+/// `String`-keyed path, keyed back to strings.
+fn assert_u32_matches_string(
+    events: &HashMap<String, LeanEvent>,
+    u32_events: &HashMap<String, LeanEvent<String, JsonValue, InternId>>,
+    last: &String,
+    context: &str,
+) {
+    let str_state = compute_state_at::<String, JsonValue, String, _, String>(
+        last,
+        events,
+        StateResVersion::V2_1,
+        &String::new(),
+    )
+    .unwrap_or_else(|| panic!("{context} (String)"));
+    let u32_state = compute_state_at::<String, JsonValue, String, _, InternId>(
+        last,
+        u32_events,
+        StateResVersion::V2_1,
+        &InternId::default(),
+    )
+    .unwrap_or_else(|| panic!("{context} (u32)"));
+    let str_keyed = to_string_keyed(str_state);
+    let u32_keyed = to_string_keyed(u32_state);
+    assert_eq!(
+        u32_keyed, str_keyed,
+        "u32-interned resolution must match String resolution"
+    );
+}
+
+type Fixture = (usize, HashMap<String, LeanEvent>, Vec<String>);
+
+/// Rebuilds a room with event ids (`event_id`, `prev_events`, `auth_events`,
+/// map keys) as `I` and state keys as `K`. Done once, outside timing.
+fn convert<I, K>(
+    events: &HashMap<String, LeanEvent>,
+    mk_id: impl Fn(&str) -> I,
+    mk_k: impl Fn(&str) -> K,
+) -> HashMap<I, LeanEvent<I, JsonValue, K>>
+where
+    I: Eq + std::hash::Hash,
+{
+    events
+        .values()
+        .map(|ev| {
+            let id = mk_id(&ev.event_id);
+            let converted = LeanEvent {
+                event_id: mk_id(&ev.event_id),
+                event_type: ev.event_type.clone(),
+                state_key: ev.state_key.as_deref().map(&mk_k),
+                power_level: ev.power_level,
+                origin_server_ts: ev.origin_server_ts,
+                sender: ev.sender.clone(),
+                content: ev.content.clone(),
+                prev_events: ev.prev_events.iter().map(|e| mk_id(e)).collect(),
+                auth_events: ev.auth_events.iter().map(|e| mk_id(e)).collect(),
+                depth: ev.depth,
+                rejected: ev.rejected,
+                soft_fail: ev.soft_fail,
+                room_id: ev.room_id.clone(),
+            };
+            (id, converted)
+        })
+        .collect()
+}
+
+/// Mean ms/run of one resolution variant.
+fn run_variant<I, K>(
+    events: &HashMap<I, LeanEvent<I, JsonValue, K>>,
+    targets: &[String],
+    empty: &K,
+    reps: usize,
+    batch: bool,
+) -> f64
+where
+    I: EventId + std::borrow::Borrow<str>,
+    K: StateKey,
+    for<'q> (rezzy::basespec::event_types::EventType, K):
+        std::borrow::Borrow<dyn rezzy::auth::StateKeyDyn + 'q>,
+{
+    let refs: Vec<&str> = targets.iter().map(String::as_str).collect();
+    let last = *refs.last().unwrap();
+    let f = || {
+        if batch {
+            let r = compute_state_at_batch(&refs, events, StateResVersion::V2_1, empty);
+            assert_eq!(r.len(), refs.len());
+            std::hint::black_box(&r);
+        } else {
+            let st = compute_state_at::<I, JsonValue, str, _, K>(
+                last,
+                events,
+                StateResVersion::V2_1,
+                empty,
+            )
+            .expect("must resolve");
+            std::hint::black_box(st.len());
+        }
+    };
+    f();
+    f();
+    let start = Instant::now();
+    for _ in 0..reps {
+        f();
+    }
+    start.elapsed().as_secs_f64() * 1000.0 / reps as f64
+}
+
+/// Four-way matrix: {String, InternedKey} keys x {String, Arc<str>} event ids,
+/// plus `Shared` (`intern_events`: one Arc per id/key, reused everywhere).
+/// All conversion happens before timing. Reports ms/run and ratio to
+/// String/String.
+fn run_id_matrix(rooms: &[Fixture], conflict_rooms: &[Fixture]) {
+    println!();
+    println!("=== key x event-id representation matrix (ms/run; ratio vs String/String) ===");
+    let cases = rooms
+        .iter()
+        .map(|f| ("linear", f, true))
+        .chain(rooms.iter().map(|f| ("linear", f, false)))
+        .chain(conflict_rooms.iter().map(|f| ("conflict", f, false)));
+    for (kind, (n, events, targets), batch) in cases {
+        let reps = match (kind, *n) {
+            ("linear", 100) => 2_000,
+            ("linear", 1_000) | ("conflict", 500) => 50,
+            ("conflict", 50) => 500,
+            ("conflict", _) => 2,
+            _ => 5,
+        };
+        let mode = if batch { "batch " } else { "serial" };
+        let ss = run_variant(
+            &convert(events, |s| s.to_owned(), |s| s.to_owned()),
+            targets,
+            &String::new(),
+            reps,
+            batch,
+        );
+        let is = run_variant(
+            &convert(events, |s| s.to_owned(), |s| InternedKey::new(s)),
+            targets,
+            &InternedKey::default(),
+            reps,
+            batch,
+        );
+        let sa = run_variant(
+            &convert(events, |s| Arc::<str>::from(s), |s| s.to_owned()),
+            targets,
+            &String::new(),
+            reps,
+            batch,
+        );
+        let ia = run_variant(
+            &convert(events, |s| Arc::<str>::from(s), |s| InternedKey::new(s)),
+            targets,
+            &InternedKey::default(),
+            reps,
+            batch,
+        );
+        // Realistic ingest: one shared Arc per event id / state key.
+        let sh = run_variant(
+            &rezzy::intern_events(events.values().cloned()),
+            targets,
+            &InternedKey::default(),
+            reps,
+            batch,
+        );
+        println!(
+            "  {kind:<8} {mode} n={n:<5} String/String {ss:>9.3}  Interned/String {is:>9.3} ({:.2}x)  \
+             String/Arc {sa:>9.3} ({:.2}x)  Interned/Arc {ia:>9.3} ({:.2}x)  Shared {sh:>9.3} ({:.2}x)",
+            is / ss,
+            sa / ss,
+            ia / ss,
+            sh / ss,
+        );
+    }
+}
+
 pub fn run() {
     println!("=== full resolution bench (compute_state_at / compute_state_at_batch) ===");
     let sizes = [100usize, 1_000, 5_000];
@@ -536,54 +591,32 @@ pub fn run() {
     for (n, events, targets) in &rooms {
         let target_refs: Vec<&str> = targets.iter().map(String::as_str).collect();
 
-        let interned: HashMap<String, LeanEvent<String, serde_json::Value, InternedKey>> = events
+        let interned: HashMap<String, LeanEvent<String, JsonValue, InternedKey>> = events
             .iter()
             .map(|(id, ev)| (id.clone(), ev.clone().into_interned_state_key()))
             .collect();
-        let u32_events: HashMap<String, LeanEvent<String, serde_json::Value, InternId>> =
+        let u32_events: HashMap<String, LeanEvent<String, JsonValue, InternId>> =
             to_u32_events(events, &str_to_id);
 
         // Correctness gate: the interned-u32 path must resolve to the *same*
         // state as String (keyed back to strings), so the perf number isn't
         // measuring a silently-wrong ordering/default() path.
         let last = targets.last().unwrap();
-        let str_state = compute_state_at::<String, serde_json::Value, String, _, String>(
-            last,
-            events,
-            StateResVersion::V2_1,
-            &String::new(),
-        )
-        .expect("last member must resolve (String)");
-        let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
-            last,
-            &u32_events,
-            StateResVersion::V2_1,
-            &InternId::default(),
-        )
-        .expect("last member must resolve (u32)");
-        let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
-            .into_iter()
-            .map(|((et, k), id)| ((et.to_string(), k), id))
-            .collect();
-        let u32_keyed: std::collections::BTreeMap<(String, String), String> = u32_state
-            .into_iter()
-            .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
-            .collect();
-        assert_eq!(
-            u32_keyed, str_keyed,
-            "u32-interned resolution must match String resolution"
-        );
+        assert_u32_matches_string(events, &u32_events, last, "last member must resolve");
 
         println!("--- room size: {n} members, {} targets ---", targets.len());
         // Fewer reps at larger sizes to keep wall-clock bounded.
         let reps = match n {
             100 => 2_000,
-            1_000 => 300,
-            _ => 100,
+            1_000 => 50,
+            // One 5,000-member batch resolution is already about a second;
+            // five samples per variant keeps this diagnostic bench useful
+            // without turning a filtered run into a several-minute wait.
+            _ => 5,
         };
 
         // Batch path (engages the parallel lattice fold under default `std`).
-        let batch_str = measure(&format!("batch  String    n={n}"), reps, || {
+        let batch_str = measure(&format!("batch    String       n={n}"), reps, || {
             let result =
                 compute_state_at_batch(&target_refs, events, StateResVersion::V2_1, &String::new());
             assert_eq!(
@@ -593,7 +626,7 @@ pub fn run() {
             );
             std::hint::black_box(&result);
         });
-        let batch_interned = measure(&format!("batch  InternedKey n={n}"), reps, || {
+        let batch_interned = measure(&format!("batch    InternedKey  n={n}"), reps, || {
             let result = compute_state_at_batch(
                 &target_refs,
                 &interned,
@@ -607,7 +640,7 @@ pub fn run() {
             );
             std::hint::black_box(&result);
         });
-        let batch_u32 = measure(&format!("batch  u32 InternId n={n}"), reps, || {
+        let batch_u32 = measure(&format!("batch    u32 InternId n={n}"), reps, || {
             let result = compute_state_at_batch(
                 &target_refs,
                 &u32_events,
@@ -624,8 +657,8 @@ pub fn run() {
 
         // Serial (cache-free) control at the last (deepest) member.
         let last = target_refs.last().copied().unwrap();
-        let ser_str = measure(&format!("serial String    n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, String>(
+        let ser_str = measure(&format!("serial   String       n={n}"), reps, || {
+            let state = compute_state_at::<String, JsonValue, str, _, String>(
                 last,
                 events,
                 StateResVersion::V2_1,
@@ -634,8 +667,8 @@ pub fn run() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
-        let ser_interned = measure(&format!("serial InternedKey n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, InternedKey>(
+        let ser_interned = measure(&format!("serial   InternedKey  n={n}"), reps, || {
+            let state = compute_state_at::<String, JsonValue, str, _, InternedKey>(
                 last,
                 &interned,
                 StateResVersion::V2_1,
@@ -644,8 +677,8 @@ pub fn run() {
             .expect("last member must resolve");
             std::hint::black_box(state.len());
         });
-        let ser_u32 = measure(&format!("serial u32 InternId n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
+        let ser_u32 = measure(&format!("serial   u32 InternId n={n}"), reps, || {
+            let state = compute_state_at::<String, JsonValue, str, _, InternId>(
                 last,
                 &u32_events,
                 StateResVersion::V2_1,
@@ -660,19 +693,19 @@ pub fn run() {
         let ser_delta = ser_interned.as_secs_f64() - ser_str.as_secs_f64();
         let ser_delta_u32 = ser_u32.as_secs_f64() - ser_str.as_secs_f64();
         println!(
-            "  batch  InternedKey vs String: {batch_delta:+.1}ms total ({:+.1}%)",
+            "  batch    InternedKey  vs String: {batch_delta:+.1}ms total ({:+.1}%)",
             batch_delta / batch_str.as_secs_f64() * 100.0
         );
         println!(
-            "  batch  u32 InternId vs String: {batch_delta_u32:+.1}ms total ({:+.1}%)",
+            "  batch    u32 InternId vs String: {batch_delta_u32:+.1}ms total ({:+.1}%)",
             batch_delta_u32 / batch_str.as_secs_f64() * 100.0
         );
         println!(
-            "  serial InternedKey vs String: {ser_delta:+.1}ms total ({:+.1}%)",
+            "  serial   InternedKey  vs String: {ser_delta:+.1}ms total ({:+.1}%)",
             ser_delta / ser_str.as_secs_f64() * 100.0
         );
         println!(
-            "  serial u32 InternId vs String: {ser_delta_u32:+.1}ms total ({:+.1}%)",
+            "  serial   u32 InternId vs String: {ser_delta_u32:+.1}ms total ({:+.1}%)",
             ser_delta_u32 / ser_str.as_secs_f64() * 100.0
         );
     }
@@ -687,41 +720,18 @@ pub fn run() {
 
         // Correctness gate, same discipline as the linear-room bench above:
         // the interned-u32 path must resolve to the same winners as String.
-        let str_state = compute_state_at::<String, serde_json::Value, String, _, String>(
-            last,
-            events,
-            StateResVersion::V2_1,
-            &String::new(),
-        )
-        .expect("last merge event must resolve (String)");
-        let u32_state = compute_state_at::<String, serde_json::Value, String, _, InternId>(
-            last,
-            &u32_events,
-            StateResVersion::V2_1,
-            &InternId::default(),
-        )
-        .expect("last merge event must resolve (u32)");
-        let str_keyed: std::collections::BTreeMap<(String, String), String> = str_state
-            .into_iter()
-            .map(|((et, k), id)| ((et.to_string(), k), id))
-            .collect();
-        let u32_keyed: std::collections::BTreeMap<(String, String), String> = u32_state
-            .into_iter()
-            .map(|((et, k), id)| ((et.to_string(), k.as_ref().to_string()), id))
-            .collect();
-        assert_eq!(
-            u32_keyed, str_keyed,
-            "u32-interned conflict resolution must match String resolution"
-        );
+        assert_u32_matches_string(events, &u32_events, last, "last merge event must resolve");
 
         println!("--- {n} conflicts ({} events) ---", events.len());
         let reps = match n {
             50 => 500,
             500 => 50,
-            _ => 10,
+            // The 2,000-conflict fixture contains 6,003 events; two timed
+            // samples are enough to keep the diagnostic bench bounded.
+            _ => 2,
         };
-        let str_dur = measure(&format!("conflict String    n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, String>(
+        let str_dur = measure(&format!("conflict String       n={n}"), reps, || {
+            let state = compute_state_at::<String, JsonValue, str, _, String>(
                 last,
                 events,
                 StateResVersion::V2_1,
@@ -731,7 +741,7 @@ pub fn run() {
             std::hint::black_box(state.len());
         });
         let u32_dur = measure(&format!("conflict u32 InternId n={n}"), reps, || {
-            let state = compute_state_at::<String, serde_json::Value, str, _, InternId>(
+            let state = compute_state_at::<String, JsonValue, str, _, InternId>(
                 last,
                 &u32_events,
                 StateResVersion::V2_1,
@@ -746,4 +756,6 @@ pub fn run() {
             delta / str_dur.as_secs_f64() * 100.0
         );
     }
+
+    run_id_matrix(&rooms, &conflict_rooms);
 }

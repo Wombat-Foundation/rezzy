@@ -1,4 +1,4 @@
-//! Compares `LtHash` (MSC4500 homomorphic state hash, `rezzy::state::LtHash`)
+//! Compares `LtHash` (MSC4500 homomorphic state hash, `rezzy::incremental::LtHash`)
 //! against *two* non-homomorphic baselines for incremental state
 //! progression: after every single state-map mutation (insert / overwrite /
 //! remove), what does it cost to produce an up-to-date state hash?
@@ -36,50 +36,15 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use rezzy::state::LtHash;
-use sha2::{Digest, Sha256};
-
-struct Xorshift128 {
-    state: [u64; 2],
-}
-
-impl Xorshift128 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: [seed ^ 0x9E37_79B9_7F4A_7C15, seed.wrapping_add(1) | 1],
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state[0];
-        let y = self.state[1];
-        self.state[0] = y;
-        x ^= x << 23;
-        x ^= x >> 17;
-        x ^= y ^ (y >> 26);
-        self.state[1] = x;
-        x.wrapping_add(y)
-    }
-}
-
-type StateKey = (String, String); // (event_type, state_key)
+use crate::common::{
+    apply_state_op, apply_state_op_lthash, generate_state_ops, generate_unique_entries, lthash_of,
+    random_member_key, sha256_sorted_hash, xor_fold_sha256, StateKey, Xorshift128,
+};
 
 fn make_entries(n: usize, seed: u64) -> Vec<(StateKey, String)> {
-    let mut rng = Xorshift128::new(seed);
-    let mut entries = Vec::with_capacity(n);
-    let mut used = std::collections::HashSet::new();
-    while entries.len() < n {
-        let uid = rng.next_u64() % 1_000_000;
-        let key = (
-            "m.room.member".to_string(),
-            format!("@user{uid}:example.org"),
-        );
-        if used.insert(key.clone()) {
-            let event_id = format!("$event{}:example.org", rng.next_u64());
-            entries.push((key, event_id));
-        }
-    }
-    entries
+    generate_unique_entries(n, seed, random_member_key, |rng| {
+        format!("$event{}:example.org", rng.next_u64())
+    })
 }
 
 fn canonical_row(event_type: &str, state_key: &str, event_id: &str) -> Vec<u8> {
@@ -98,16 +63,14 @@ fn canonical_row(event_type: &str, state_key: &str, event_id: &str) -> Vec<u8> {
 /// so producing a canonical hash means collecting every entry and sorting
 /// it fresh each time before feeding it through SHA-256 sequentially.
 fn conduwuit_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
-    let mut rows: Vec<Vec<u8>> = state
-        .iter()
-        .map(|((event_type, state_key), event_id)| canonical_row(event_type, state_key, event_id))
-        .collect();
-    rows.sort_unstable();
-    let mut hasher = Sha256::new();
-    for row in &rows {
-        hasher.update(row);
-    }
-    hasher.finalize().into()
+    sha256_sorted_hash(
+        state
+            .iter()
+            .map(|((event_type, state_key), event_id)| {
+                canonical_row(event_type, state_key, event_id)
+            })
+            .collect(),
+    )
 }
 
 /// Synapse-style: `O(S)`. Order-independent by construction (XOR-fold of
@@ -115,15 +78,11 @@ fn conduwuit_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
 /// sort is needed — but still a full recompute over every entry each
 /// mutation, not an incremental update against a running accumulator.
 fn synapse_style_hash(state: &HashMap<StateKey, String>) -> [u8; 32] {
-    let mut acc = [0u8; 32];
-    for ((event_type, state_key), event_id) in state {
-        let row = canonical_row(event_type, state_key, event_id);
-        let digest: [u8; 32] = Sha256::digest(&row).into();
-        for (a, d) in acc.iter_mut().zip(digest.iter()) {
-            *a ^= d;
-        }
-    }
-    acc
+    xor_fold_sha256(
+        state.iter().map(|((event_type, state_key), event_id)| {
+            canonical_row(event_type, state_key, event_id)
+        }),
+    )
 }
 
 /// Applies `steps` sequential mutations (mix of new-key inserts, overwrites
@@ -137,53 +96,16 @@ fn bench_incremental_hash(n: usize, steps: usize) {
     let base_entries = make_entries(n, 0x5EED_0000 + n as u64);
     let mut state: HashMap<StateKey, String> = base_entries.into_iter().collect();
 
-    let mut lt = LtHash::ZERO;
-    for ((event_type, state_key), event_id) in &state {
-        lt.insert(event_type, state_key, event_id);
-    }
+    let mut lt = lthash_of(&state);
 
     let mut rng = Xorshift128::new(0xBEEF);
     let existing_keys: Vec<StateKey> = state.keys().cloned().collect();
-    enum Op {
-        Insert(StateKey, String),
-        Overwrite(StateKey, String),
-        Remove(StateKey),
-    }
-    let mut ops = Vec::with_capacity(steps);
-    for _ in 0..steps {
-        let roll = rng.next_u64() % 10;
-        if roll < 6 {
-            let key = (
-                "m.room.member".to_string(),
-                format!("@user{}:example.org", rng.next_u64()),
-            );
-            ops.push(Op::Insert(
-                key,
-                format!("$event{}:example.org", rng.next_u64()),
-            ));
-        } else if roll < 9 {
-            let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
-            ops.push(Op::Overwrite(
-                key,
-                format!("$event{}:example.org", rng.next_u64()),
-            ));
-        } else {
-            let key = existing_keys[(rng.next_u64() as usize) % existing_keys.len()].clone();
-            ops.push(Op::Remove(key));
-        }
-    }
+    let ops = generate_state_ops(&mut rng, &existing_keys, steps);
 
     let mut conduwuit_state = state.clone();
     let conduwuit_start = Instant::now();
     for op in &ops {
-        match op {
-            Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                conduwuit_state.insert(k.clone(), v.clone());
-            }
-            Op::Remove(k) => {
-                conduwuit_state.remove(k);
-            }
-        }
+        apply_state_op(&mut conduwuit_state, op);
         std::hint::black_box(conduwuit_style_hash(&conduwuit_state));
     }
     let conduwuit_elapsed = conduwuit_start.elapsed();
@@ -191,34 +113,14 @@ fn bench_incremental_hash(n: usize, steps: usize) {
     let mut synapse_state = state.clone();
     let synapse_start = Instant::now();
     for op in &ops {
-        match op {
-            Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                synapse_state.insert(k.clone(), v.clone());
-            }
-            Op::Remove(k) => {
-                synapse_state.remove(k);
-            }
-        }
+        apply_state_op(&mut synapse_state, op);
         std::hint::black_box(synapse_style_hash(&synapse_state));
     }
     let synapse_elapsed = synapse_start.elapsed();
 
     let lt_start = Instant::now();
     for op in &ops {
-        match op {
-            Op::Insert(k, v) | Op::Overwrite(k, v) => {
-                if let Some(old) = state.insert(k.clone(), v.clone()) {
-                    lt.replace(&k.0, &k.1, &old, v);
-                } else {
-                    lt.insert(&k.0, &k.1, v);
-                }
-            }
-            Op::Remove(k) => {
-                if let Some(old) = state.remove(k) {
-                    lt.remove(&k.0, &k.1, &old);
-                }
-            }
-        }
+        apply_state_op_lthash(&mut state, &mut lt, op);
         std::hint::black_box(lt.digest());
     }
     let lt_elapsed = lt_start.elapsed();
@@ -233,7 +135,7 @@ fn bench_incremental_hash(n: usize, steps: usize) {
         (synapse_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     println!(
-        "  LtHash (O(1), lattice add/sub + BLAKE2b digest) (n={n}): {:.1} ns/op",
+        "  LtHash (O(1), lattice add/sub + BLAKE3 digest) (n={n}): {:.1} ns/op",
         (lt_elapsed.as_nanos() as f64) / f64::from(op_count)
     );
     report_speedup("conduwuit-style", conduwuit_elapsed, lt_elapsed);

@@ -17,8 +17,8 @@ TMP2=$(mktemp).json
 
 # Extract, sort, and filter essential fields for each event in the state array
 # Essential fields: event_id, type, state_key, content
-cat "$JSON1" | jq -S '.state | map({event_id, type, state_key, content}) | sort_by(.event_id)' >"$TMP1"
-cat "$JSON2" | jq -S '.state | map({event_id, type, state_key, content}) | sort_by(.event_id)' >"$TMP2"
+jq -S '.state | map({event_id, type, state_key, content}) | sort_by(.event_id)' "$JSON1" >"$TMP1"
+jq -S '.state | map({event_id, type, state_key, content}) | sort_by(.event_id)' "$JSON2" >"$TMP2"
 
 if ! diff -u "$TMP1" "$TMP2"; then
 	echo "Error: Resolved state differs between $JSON1 and $JSON2"

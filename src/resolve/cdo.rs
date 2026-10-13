@@ -71,11 +71,13 @@
 use crate::basespec::event_types::{
     MEM_INVITE, MEM_JOIN, M_ROOM_JOIN_RULES, M_ROOM_MEMBER, M_ROOM_POWER_LEVELS,
 };
-use crate::basespec::rezzy_types::LeanEvent;
+use crate::basespec::rezzy_types::{EventContent, EventId, LeanEvent};
 use crate::HashMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 use core::cmp::Ordering;
+use core::hash::BuildHasher;
 
 /// Returns `true` if `possible_ancestor_id` is an ancestor of `child_id`.
 ///
@@ -83,13 +85,13 @@ use core::cmp::Ordering;
 /// `child_id == possible_ancestor_id`, which is `true` regardless of
 /// context membership.
 #[must_use]
-pub fn is_ancestor<Id, C: Clone, Q, S: core::hash::BuildHasher, K>(
+pub fn is_ancestor<Id, C: Clone, Q, S: BuildHasher, K>(
     child_id: &Q,
     possible_ancestor_id: &Q,
     context: &HashMap<Id, LeanEvent<Id, C, K>, S>,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId + core::borrow::Borrow<Q>,
+    Id: EventId + Borrow<Q>,
     Q: ?Sized + Eq + core::hash::Hash + Ord,
 {
     if child_id == possible_ancestor_id {
@@ -135,7 +137,7 @@ const WORDS_PER_CHUNK: usize = 8;
 #[cfg(not(target_feature = "avx512f"))]
 const WORDS_PER_CHUNK: usize = 4;
 
-fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
+fn compute_cdo_bit_masks_chunk<Id, C, S: BuildHasher, K>(
     admin_chunk: &[Id],
     id_to_idx: &HashMap<Id, usize, S>,
     sorted_events: &[(usize, &LeanEvent<Id, C, K>)],
@@ -144,7 +146,7 @@ fn compute_cdo_bit_masks_chunk<Id, C, S: core::hash::BuildHasher, K>(
     and_masks: &mut [u64],
     desc_masks: &mut [u64],
 ) where
-    Id: crate::basespec::rezzy_types::EventId,
+    Id: EventId,
 {
     and_masks.fill(0);
     desc_masks.fill(0);
@@ -239,9 +241,9 @@ fn build_adjacency_structures<'a, Id, C: Clone, S1, S2, K>(
     auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> AdjacencyStructures<'a, Id, C, K>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    Id: EventId,
+    S1: BuildHasher,
+    S2: BuildHasher,
 {
     let mut relevant_ids = crate::FastSet::default();
     let mut visited = crate::FastSet::default();
@@ -379,12 +381,12 @@ struct PrioritizedEvents<Id> {
     priority_pos: HashMap<Id, usize>,
 }
 
-fn prioritize_events<Id, C: crate::basespec::rezzy_types::EventContent + Clone, S1, K>(
+fn prioritize_events<Id, C: EventContent + Clone, S1, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
 ) -> PrioritizedEvents<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    S1: core::hash::BuildHasher,
+    Id: EventId,
+    S1: BuildHasher,
     K: AsRef<str>,
 {
     let admin_events_to_sort: Vec<&LeanEvent<Id, C, K>> = conflicted_events
@@ -431,30 +433,54 @@ where
 /// by an unrelated lockdown) and `test_anomaly_06b_mod_membership_evaporation`
 /// (a join into a still-public room dropped by a later, independent-branch
 /// lockdown, cascading to drop everything auth'd through that join).
+/// Borrowed pair of event maps consulted while resolving `auth_events`
+/// references: `conflicted_events` take precedence over `auth_context`.
+struct AuthLookups<'a, Id, C, K, S1, S2> {
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+}
+
+/// Yields the events cited by `auth_events`, preferring `conflicted_events`
+/// over `auth_context` and skipping ids present in neither.
+fn cited_auth_events<'a, Id, C, K, S1, S2>(
+    auth_events: &'a [Id],
+    conflicted_events: &'a HashMap<Id, LeanEvent<Id, C, K>, S1>,
+    auth_context: &'a HashMap<Id, LeanEvent<Id, C, K>, S2>,
+) -> impl Iterator<Item = &'a LeanEvent<Id, C, K>> + 'a
+where
+    Id: Eq + core::hash::Hash + 'a,
+    S1: BuildHasher + 'a,
+    S2: BuildHasher + 'a,
+    C: 'a,
+    K: 'a,
+{
+    auth_events
+        .iter()
+        .filter_map(move |aid| conflicted_events.get(aid).or_else(|| auth_context.get(aid)))
+}
+
 fn join_has_prior_authorization<Id, C, K, S1, S2>(
     join_ev: &LeanEvent<Id, C, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    lookups: &AuthLookups<'_, Id, C, K, S1, S2>,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
     K: AsRef<str>,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
 {
-    join_ev.auth_events.iter().any(|aid| {
-        conflicted_events
-            .get(aid)
-            .or_else(|| auth_context.get(aid))
-            .is_some_and(|ev| {
-                let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
-                    && ev.state_key.as_ref().map(K::as_ref) == Some(join_ev.sender.as_str())
-                    && matches!(ev.get_membership(), Some(MEM_INVITE | MEM_JOIN));
-                let cites_non_lockdown_join_rules =
-                    ev.event_type == M_ROOM_JOIN_RULES && !ev.is_lockdown();
-                cites_prior_membership || cites_non_lockdown_join_rules
-            })
+    cited_auth_events(
+        &join_ev.auth_events,
+        lookups.conflicted_events,
+        lookups.auth_context,
+    )
+    .any(|ev| {
+        let cites_prior_membership = ev.event_type == M_ROOM_MEMBER
+            && ev.state_key.as_ref().map(K::as_ref) == Some(join_ev.sender.as_str())
+            && matches!(ev.get_membership(), Some(MEM_INVITE | MEM_JOIN));
+        let cites_non_lockdown_join_rules = ev.event_type == M_ROOM_JOIN_RULES && !ev.is_lockdown();
+        cites_prior_membership || cites_non_lockdown_join_rules
     })
 }
 
@@ -474,50 +500,49 @@ where
 /// `test_cdo_demotion_does_not_dominate_pre_demotion_authorized_action`.
 fn sender_has_pre_demotion_pl<Id, C, K, S1, S2>(
     target_ev: &LeanEvent<Id, C, K>,
-    conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
-    auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
+    lookups: &AuthLookups<'_, Id, C, K, S1, S2>,
 ) -> bool
 where
-    Id: crate::basespec::rezzy_types::EventId,
-    C: crate::basespec::rezzy_types::EventContent,
+    Id: EventId,
+    C: EventContent,
     K: AsRef<str>,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    S1: BuildHasher,
+    S2: BuildHasher,
 {
-    target_ev.auth_events.iter().any(|aid| {
-        conflicted_events
-            .get(aid)
-            .or_else(|| auth_context.get(aid))
-            .is_some_and(|ev| {
-                if ev.event_type != M_ROOM_POWER_LEVELS {
-                    return false;
-                }
-                // Effective PL: explicit `users[sender]` wins; else
-                // `users_default`; else 0.
-                let explicit = ev.get_user_power_level(target_ev.sender.as_str());
-                let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
+    cited_auth_events(
+        &target_ev.auth_events,
+        lookups.conflicted_events,
+        lookups.auth_context,
+    )
+    .any(|ev| {
+        if ev.event_type != M_ROOM_POWER_LEVELS {
+            return false;
+        }
+        // Effective PL: explicit `users[sender]` wins; else
+        // `users_default`; else 0.
+        let explicit = ev.get_user_power_level(target_ev.sender.as_str());
+        let effective = explicit.or_else(|| ev.get_users_default()).unwrap_or(0);
 
-                // Required PL for the target event type under *this* PL event.
-                // Uses the shared helper to stay in sync with auth checks.
-                let required = crate::auth::pl_threshold_for_event(
-                    ev,
-                    &target_ev.event_type,
-                    target_ev
-                        .state_key
-                        .as_ref()
-                        .map(core::convert::AsRef::as_ref),
-                );
+        // Required PL for the target event type under *this* PL event.
+        // Uses the shared helper to stay in sync with auth checks.
+        let required = crate::auth::pl_threshold_for_event(
+            ev,
+            &target_ev.event_type,
+            target_ev
+                .state_key
+                .as_ref()
+                .map(core::convert::AsRef::as_ref),
+        );
 
-                effective >= required
-            })
+        effective >= required
     })
 }
 
 fn process_direct_domination_chunks<
     Id,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
+    C: EventContent + Clone,
+    S1: BuildHasher,
+    S2: BuildHasher,
     K,
 >(
     adj: &AdjacencyStructures<'_, Id, C, K>,
@@ -526,7 +551,7 @@ fn process_direct_domination_chunks<
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> BTreeSet<Id>
 where
-    Id: crate::basespec::rezzy_types::EventId,
+    Id: EventId,
     K: AsRef<str>,
 {
     let n = adj.sorted_events.len();
@@ -596,14 +621,18 @@ where
                                     && !(admin_ev.is_lockdown()
                                         && join_has_prior_authorization(
                                             target_ev,
-                                            conflicted_events,
-                                            auth_context,
+                                            &AuthLookups {
+                                                conflicted_events,
+                                                auth_context,
+                                            },
                                         ))
                                     && !(admin_ev.is_demotion()
                                         && sender_has_pre_demotion_pl(
                                             target_ev,
-                                            conflicted_events,
-                                            auth_context,
+                                            &AuthLookups {
+                                                conflicted_events,
+                                                auth_context,
+                                            },
                                         ));
                                 if dominates {
                                     dropped_ids.insert((*event_id).clone());
@@ -632,23 +661,15 @@ where
 ///    and sort all events by priority.
 /// 3. **Chunk-process** — compute ancestor/descendant bitmasks in SWAR chunks
 ///    and mark dominated events.
-// jscpd:ignore-start
 #[must_use]
-pub fn apply_cdo_filter<
-    Id,
-    C: crate::basespec::rezzy_types::EventContent + Clone,
-    S1: core::hash::BuildHasher,
-    S2: core::hash::BuildHasher,
-    K,
->(
+pub fn apply_cdo_filter<Id, C: EventContent + Clone, S1: BuildHasher, S2: BuildHasher, K>(
     conflicted_events: &HashMap<Id, LeanEvent<Id, C, K>, S1>,
     auth_context: &HashMap<Id, LeanEvent<Id, C, K>, S2>,
 ) -> HashMap<Id, LeanEvent<Id, C, K>>
 where
-    Id: crate::basespec::rezzy_types::EventId,
+    Id: EventId,
     K: AsRef<str> + Clone,
 {
-    // jscpd:ignore-end
     let adj = build_adjacency_structures(conflicted_events, auth_context);
     let prioritized = prioritize_events(conflicted_events);
     let dropped_ids =

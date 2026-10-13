@@ -1,4 +1,8 @@
-# Rezzy V2.1.1 and MSC4242 security comparison
+# Historical V2.1.1 and MSC4242 security comparison
+
+> **Status:** This is a design and test-history document. Rezzy currently
+> supports state-resolution V1 only; V2, V2.1.1, and V2.2 are not shipped
+> implementations.
 
 This note records what the traversal tests in `tests/unit/test_traversal.rs`
 actually establish, how that compares with the local Complement MSC4242 suite
@@ -11,7 +15,7 @@ exercise an in-process resolver. Complement is an integration suite run against
 one concrete homeserver. MSC4242 is still proposed and `V2.1.1` is
 Rezzy-private: it is not a Matrix-specified room version.
 
-## Terms and current implementation status
+## Terms and historical implementation status
 
 - **Stock V2.1 / room version 12** is Rezzy's MSC4297 implementation.
 - **V2.1.1 / `12.1`** is an experimental Rezzy-only variant. It has a

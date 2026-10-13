@@ -1,14 +1,28 @@
 use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
-    Engine as _,
+    Engine,
 };
-use rezzy::reconcile::{
+use rezzy_recon::{
     verify_residual, AlgebraicError, ElementHash, EventIdFormat, RoomAccumulator, SyndromeSketch,
     MAX_LOCAL_SKETCH_DECODE_CAPACITY, MAX_SKETCH_CAPACITY,
 };
 
 fn event_id(bytes: [u8; 32]) -> String {
-    format!("${}", URL_SAFE_NO_PAD.encode(bytes))
+    let mut encoded = [0_u8; 64];
+    let length = URL_SAFE_NO_PAD.encode_slice(bytes, &mut encoded).unwrap();
+    format!("${}", core::str::from_utf8(&encoded[..length]).unwrap())
+}
+
+fn encode(engine: &impl Engine, bytes: impl AsRef<[u8]>) -> String {
+    let mut encoded = [0_u8; 64];
+    let length = engine.encode_slice(bytes, &mut encoded).unwrap();
+    core::str::from_utf8(&encoded[..length]).unwrap().to_owned()
+}
+
+fn decode(engine: &impl Engine, encoded: &str) -> ([u8; 64], usize) {
+    let mut decoded = [0_u8; 64];
+    let length = engine.decode_slice(encoded, &mut decoded).unwrap();
+    (decoded, length)
 }
 
 #[test]
@@ -18,9 +32,9 @@ fn generic_digest32_feeds_all_resident_layers() {
     let first = ElementHash::from_digest32(first_bytes);
     let second = ElementHash::from_digest32(second_bytes);
 
-    assert_eq!(first.h128, 0x0001_0203_0405_0607_0809_0a0b_0c0d_0e0f);
+    assert_eq!(first.h128, 0x1011_1213_1415_1617_1819_1a1b_1c1d_1e1f);
     assert_eq!(first.h64, 0x0001_0203_0405_0607);
-    assert_eq!(second.h128, 0xfffe_fdfc_fbfa_f9f8_f7f6_f5f4_f3f2_f1f0);
+    assert_eq!(second.h128, 0xefee_edec_ebea_e9e8_e7e6_e5e4_e3e2_e1e0);
     assert_eq!(second.h64, 0xfffe_fdfc_fbfa_f9f8);
 
     let mut accumulator = RoomAccumulator::new();
@@ -44,21 +58,20 @@ fn matrix_hash_derived_event_ids_use_decoded_digest32() {
 }
 
 #[test]
-fn legacy_ids_use_the_full_sha256_digest() {
+fn opaque_bytes_use_sha256() {
     let digest = [
         0xa2, 0xd4, 0x1f, 0x14, 0x4e, 0x8e, 0xcf, 0x9f, 0xf5, 0x00, 0x4f, 0xe8, 0xcb, 0xc6, 0x01,
         0xb4, 0x39, 0xe4, 0x51, 0x7c, 0x1a, 0x05, 0xf0, 0x8f, 0x47, 0x17, 0x54, 0xd4, 0x63, 0x0d,
         0x70, 0xc8,
     ];
-    let hash =
-        ElementHash::from_matrix_event_id("$opaque:example.org", EventIdFormat::Legacy).unwrap();
+    let hash = ElementHash::from_opaque_bytes(b"$opaque:example.org");
     assert_eq!(hash, ElementHash::from_digest32(digest));
 }
 
 #[test]
 fn room_v3_event_ids_use_standard_base64() {
     let bytes = [0xfb_u8; 32];
-    let event_id = format!("${}", STANDARD_NO_PAD.encode(bytes));
+    let event_id = format!("${}", encode(&STANDARD_NO_PAD, bytes));
     assert!(event_id.contains('+') || event_id.contains('/'));
     let hash = ElementHash::from_matrix_event_id(&event_id, EventIdFormat::V3).unwrap();
     assert_eq!(hash.h128, u128::from_be_bytes([0xfb; 16]));
@@ -93,14 +106,14 @@ fn sketch_wire_format_matches_libminisketch_64_bit_serialization() {
     sketch.toggle(1_u64 << 63).unwrap();
     sketch.toggle(u64::MAX).unwrap();
 
-    let wire = URL_SAFE_NO_PAD.decode(sketch.encode()).unwrap();
+    let (wire, wire_length) = decode(&URL_SAFE_NO_PAD, &sketch.encode());
     // Generated independently with minisketch's tests/pyminisketch.py GF(2^64) reference.
     assert_eq!(
-        wire,
-        [
+        &wire[..wire_length],
+        &[
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0xfd, 0x32, 0x33, 0x33, 0x33, 0x33,
             0x33, 0x93,
-        ]
+        ][..]
     );
     assert_eq!(SyndromeSketch::decode(2, &sketch.encode()).unwrap(), sketch);
 }
@@ -148,7 +161,7 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         ElementHash::from_matrix_event_id("$AQ", EventIdFormat::V4Plus),
         Err(AlgebraicError::InvalidEventId)
     );
-    let overlong_hash = format!("${}", URL_SAFE_NO_PAD.encode([0_u8; 33]));
+    let overlong_hash = format!("${}", encode(&URL_SAFE_NO_PAD, [0_u8; 33]));
     for format in [EventIdFormat::V3, EventIdFormat::V4Plus] {
         assert_eq!(
             ElementHash::from_matrix_event_id(&overlong_hash, format),
@@ -168,7 +181,7 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         Err(AlgebraicError::InvalidBase64)
     );
     assert_eq!(
-        RoomAccumulator::decode_digest(&URL_SAFE_NO_PAD.encode([0_u8; 15])),
+        RoomAccumulator::decode_digest(&encode(&URL_SAFE_NO_PAD, [0_u8; 15])),
         Err(AlgebraicError::InvalidDigestLength)
     );
     assert_eq!(
@@ -203,7 +216,7 @@ fn algebraic_wire_and_capacity_errors_are_rejected() {
         Err(AlgebraicError::InvalidBase64)
     );
     assert_eq!(
-        SyndromeSketch::decode(2, &URL_SAFE_NO_PAD.encode([0_u8; 8])),
+        SyndromeSketch::decode(2, &encode(&URL_SAFE_NO_PAD, [0_u8; 8])),
         Err(AlgebraicError::InvalidSketchLength)
     );
     assert_eq!(
@@ -227,8 +240,8 @@ fn accumulator_residual_is_the_digest_xor() {
 
 #[test]
 fn multi_round_bucket_transition_flow() {
-    use rezzy::reconcile::triage::MAX_BUCKET_SKETCH_CAPACITY;
-    use rezzy::{
+    use rezzy_recon::triage::MAX_BUCKET_SKETCH_CAPACITY;
+    use rezzy_recon::{
         BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, ClientAction, ReconciliationClient,
     };
 
@@ -293,6 +306,7 @@ fn multi_round_bucket_transition_flow() {
         final_action,
         ClientAction::ResolveRoots {
             roots: vec![10, 20, 30, 40],
+            ladder_failed: vec![],
         }
     );
 }

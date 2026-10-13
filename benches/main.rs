@@ -75,6 +75,18 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "db",
+        name: "state_backend_fast",
+        description: "imbl vs PersistentOrdMap with equivalent Arc-backed key/value types",
+        run_fn: db::state_backend_fast::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
+        name: "state_key_repr",
+        description: "PersistentOrdMap String vs InternedKey keys and String vs Arc<str> values",
+        run_fn: db::state_key_repr::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
         name: "state_groups",
         description: "HAMT content-addressed state groups vs delta-chain storage",
         run_fn: db::state_groups::run,
@@ -93,6 +105,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "db",
+        name: "bitmap_vs_roaring",
+        description: "In-tree Bitmap vs roaring (build, set ops, iterate, DAG accumulation)",
+        run_fn: db::bitmap_vs_roaring::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
         name: "hamt_audit_bitmap",
         description: "HAMT node reachability audit bitmap operations",
         run_fn: db::hamt_audit_bitmap::run,
@@ -103,6 +121,18 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
         name: "lthash",
         description: "MSC4500 LtHash incremental state hash vs non-homomorphic baselines",
         run_fn: math::lthash::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
+        name: "lthash_comprehensive",
+        description: "BLAKE3 LtHash single, batch, bulk, and expansion cost breakdown",
+        run_fn: math::lthash_comprehensive::run,
+    },
+    BenchmarkEntry {
+        domain: "math",
+        name: "lthash_backends",
+        description: "LtHash primitive stacks plus SHA-512-CTR / AES-256-CTR expansion candidates",
+        run_fn: math::lthash_backends::run,
     },
     BenchmarkEntry {
         domain: "math",

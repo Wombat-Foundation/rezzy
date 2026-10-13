@@ -1,5 +1,10 @@
 # Auth Rules Audit — rezzy vs Matrix Spec
 
+> **Implementation scope:** Rezzy currently supports state-resolution V1 only.
+> The later Matrix room-version rows below document the specification and
+> ongoing design/test coverage; they do not mean that V2, V2.1, V2.2, or V3
+> state resolution is currently shipped or supported.
+
 Cross-version compliance audit of rezzy's `check_auth` against the Matrix spec
 authorization rules. Three distinct rule sets exist:
 
@@ -120,14 +125,14 @@ authorization rules. Three distinct rule sets exist:
 
 <!-- markdownlint-disable MD013 -->
 
-| Check                                                             | Versions | rezzy | Notes                                                         |
-| ----------------------------------------------------------------- | -------- | ----- | ------------------------------------------------------------- |
-| `event_id` must be `$`-prefixed                                   | all      | [x]   | `InvalidSyntax`                                               |
-| `sender` MXID localpart charset                                   | all      | [x]   | Added this session                                            |
-| `depth` bounds (`MAX_SAFE_JSON_INTEGER`)                          | all      | [x]   | 2^53−1 accepted as valid ceiling                              |
-| 255-byte hard limit: `event_id`/`sender`/`event_type`/`state_key` | V11+     | [x]   | Synapse parity (`strict_event_byte_limits_room_versions`)     |
-| 255-byte limit pre-v11                                            | V1–V10   | [~]   | Warn only (`eprintln!`, `std` feature only), never hard-fails |
-| Reject unrecognised `content.room_version` (m.room.create only)   | all      | [x]   | Fixed — see audit rule 1.3 above                              |
+| Check                                                             | Versions | rezzy | Notes                                                                                   |
+| ----------------------------------------------------------------- | -------- | ----- | --------------------------------------------------------------------------------------- |
+| `event_id` must be `$`-prefixed                                   | all      | [x]   | `InvalidSyntax`                                                                         |
+| `sender` MXID localpart charset                                   | all      | [~]   | Warn only for historical (uppercase/Unicode) IDs; hard-fail only on structural breakage |
+| `depth` bounds (`MAX_SAFE_JSON_INTEGER`)                          | all      | [x]   | 2^53−1 accepted as valid ceiling                                                        |
+| 255-byte hard limit: `event_id`/`sender`/`event_type`/`state_key` | V11+     | [x]   | Synapse parity (`strict_event_byte_limits_room_versions`)                               |
+| 255-byte limit pre-v11                                            | V1–V10   | [~]   | Warn only (`eprintln!`, `std` feature only), never hard-fails                           |
+| Reject unrecognised `content.room_version` (m.room.create only)   | all      | [x]   | Fixed — see audit rule 1.3 above                                                        |
 
 <!-- markdownlint-enable MD013 -->
 

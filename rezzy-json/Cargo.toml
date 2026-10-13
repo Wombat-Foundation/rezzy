@@ -1,0 +1,18 @@
+[package]
+name = "rezzy-json"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+description = "Small alloc-only JSON value, parser, and canonical writer for Rezzy."
+keywords = ["json", "canonical-json", "matrix"]
+categories = ["encoding"]
+
+[dependencies]
+ryu.workspace = true
+
+[lints]
+workspace = true

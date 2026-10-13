@@ -25,8 +25,8 @@ use crate::utils::parse_jsonl_events;
 pub fn build_unconflicted_state_from_ids(
     auth_context: &HashMap<String, LeanEvent>,
     event_ids: &[&str],
-) -> imbl::OrdMap<(rezzy::basespec::event_types::EventType, String), String> {
-    let mut unconflicted = imbl::OrdMap::new();
+) -> rezzy::PersistentOrdMap<(rezzy::basespec::event_types::EventType, String), String> {
+    let mut unconflicted = rezzy::PersistentOrdMap::new();
 
     for event_id in event_ids {
         let ev = auth_context

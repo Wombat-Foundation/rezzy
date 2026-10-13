@@ -1,6 +1,5 @@
 use rezzy_recon::{
-    build_bucket_sketches, ElementHash, EventIdFormat, ReconciliationClient, RemoteDigest,
-    ResidentKernel,
+    build_bucket_sketches, ElementHash, ReconciliationClient, RemoteDigest, ResidentKernel,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -16,7 +15,7 @@ fn load_uuids(filename: &str) -> (ResidentKernel, Vec<ElementHash>) {
         if uuid == "$" {
             continue;
         }
-        let hash = ElementHash::from_matrix_event_id(&uuid, EventIdFormat::Legacy).unwrap();
+        let hash = ElementHash::from_opaque_bytes(uuid.as_bytes());
         resident.insert(hash).unwrap();
         elements.push(hash);
     }

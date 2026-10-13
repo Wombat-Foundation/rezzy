@@ -61,54 +61,54 @@ autobenches = false
 autotests = false
 
 [package.metadata.cargo-machete]
-ignored = ["idna_adapter", "zeroize"]
+ignored = ["zeroize"]
 
 [workspace]
 resolver = "2"
 members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
 
 [workspace.package]
-version = "0.6.0-rc.0"
+version = "0.6.0-rc.1"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.88"
 authors = ["Shane Jaroch <chown_tee@proton.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gamesguru/rezzy"
 
 [workspace.dependencies]
-rezzy = { path = ".", version = "0.6.0-rc.0" }
-rezzy-cli = { path = "rezzy-cli", version = "0.6.0-rc.0" }
-rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.0" }
-rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.0" }
+rezzy = { path = ".", version = "0.6.0-rc.1", default-features = false }
+rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.1" }
+rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1" }
 
-base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
-blake2 = { version = "0.10", default-features = false }
-hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
-imbl = { version = "3.0", default-features = false }
-roaring = { version = "0.10", default-features = false }
+base64 = { version = "0.23", default-features = false }
+blake3 = { version = "1.5", default-features = false }
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
 ryu = { version = "1.0", default-features = false }
-sha2 = { version = "0.10", default-features = false }
-sha3 = { version = "0.10", default-features = false }
-simd-json = { version = "=0.14.3", default-features = false, features = ["runtime-detection", "swar-number-parsing"] }
+sha2 = { version = "0.11", default-features = false }
 
 # CLI-only
-clap = { version = "=4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
-clap_complete = { version = "=4.5.48", default-features = false }
+clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
+clap_complete = { version = "4.5.48", default-features = false }
 mimalloc = { version = "0.1.52" }
-ureq = { version = "2.9", default-features = false }
+ureq = { version = "3", default-features = false }
 
 # Signing
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "batch"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+ed25519-zebra = { version = "5", default-features = false }
+getrandom = { version = "0.4", default-features = false }
+rpassword = "7.5"
 
 # Dev dependencies
-insta = "1.47.2"
-rand_08 = { package = "rand", version = "0.8" }
-similar = "2.7.0"
-test-case = "3.3.1"
-test-log = "0.2.20"
-zeroize = "=1.8.1"
 
 [workspace.lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+unused_must_use = "deny"
+rust_2024_incompatible_pat = "warn"
+missing_docs = "warn"
+elided_lifetimes_in_paths = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
 unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(coverage)",
@@ -119,8 +119,12 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(has_avx512_support)",
     "cfg(has_avx512_host_support)",
 ] }
+[workspace.lints.rustdoc]
+all = "warn"
 
 [workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
@@ -135,6 +139,17 @@ arithmetic_side_effects = "warn"
 undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 get_unwrap = "warn"
+semicolon_if_nothing_returned = "warn"
+match_bool = "warn"
+needless_pass_by_value = "warn"
+
+# Known project-wide exceptions.
+redundant_pub_crate = "allow"
+too_long_first_doc_paragraph = "allow"
+unused_peekable = "allow"
+tuple_array_conversions = "allow"
+transmute_undefined_repr = "allow"
+cognitive_complexity = "allow"
 
 [[bin]]
 name = "regen-oracles"
@@ -146,49 +161,44 @@ default = ["std"]
 std = []
 cli = ["std", "dep:clap"]
 regen = ["std"]
-signing = ["signing-dalek"]
-signing-dalek = ["dep:ed25519-dalek"]
+# Backend-agnostic signature verification (`SignatureVerifier`, `verify_event_signatures`).
+signing-core = []
+signing = ["signing-consensus"]
+signing-consensus = ["signing-core", "dep:ed25519-zebra"]
 stress = []
 hashing = []
 unstable-refcount-gc = []
 
 [dependencies]
 rezzy-json.workspace = true
+rezzy-recon.workspace = true
 
 base64.workspace = true
-blake2.workspace = true
+blake3.workspace = true
 hashbrown.workspace = true
-imbl.workspace = true
-roaring.workspace = true
 sha2.workspace = true
-sha3.workspace = true
 
 # Optional
 clap = { workspace = true, optional = true }
-ed25519-dalek = { workspace = true, optional = true }
+ed25519-zebra = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
 hashbrown.workspace = true
-imbl.workspace = true
-insta.workspace = true
-rand_08.workspace = true
-rezzy-recon.workspace = true
-roaring.workspace = true
 sha2.workspace = true
-simd-json.workspace = true
-similar.workspace = true
-test-case.workspace = true
-test-log.workspace = true
-zeroize.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(coverage)",
     "cfg(coverage_nightly)",
     "cfg(tarpaulin)",
     "cfg(has_res_submodule)",
+    "cfg(tarpaulin_include)",
+    "cfg(has_avx512_support)",
+    "cfg(has_avx512_host_support)",
 ] }
 
 [lints.clippy]
@@ -206,6 +216,10 @@ arithmetic_side_effects = "warn"
 undocumented_unsafe_blocks = "warn"
 dbg_macro = "warn"
 get_unwrap = "warn"
+
+[[test]]
+name = "test_zero_alloc"
+path = "tests/test_zero_alloc.rs"
 
 [[test]]
 name = "unit"
@@ -233,6 +247,7 @@ required-features = ["cli"]
 
 [profile.release-max-perf]
 inherits = "release"
+opt-level = 2
 strip = "symbols"
 lto = "fat"
 codegen-units = 1

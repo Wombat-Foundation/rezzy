@@ -32,6 +32,24 @@
 #[path = "../utils/mod.rs"]
 mod utils;
 
+/// Parameterized tests: `cases!(body_fn: name = arg, ...)` expands to
+/// `mod body_fn { #[test] fn name() { super::body_fn(arg) } ... }`, so each
+/// case is reported separately (`body_fn::name`) without a proc-macro crate.
+macro_rules! cases {
+    ($body:ident: $($name:ident = $arg:expr),+ $(,)?) => {
+        mod $body {
+            #[allow(unused_imports)]
+            use super::*;
+            $(
+                #[test]
+                fn $name() {
+                    super::$body($arg)
+                }
+            )+
+        }
+    };
+}
+
 mod utils_extra;
 
 mod differential_harness;
