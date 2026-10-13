@@ -3,7 +3,7 @@ name: Rust Docs
 
 on:
   push:
-    branches: ["master", "dev"]
+    branches: ["master"]
   workflow_dispatch:
 
 permissions:
@@ -18,14 +18,9 @@ env:
 
 jobs:
   docs:
-    if: github.ref_name == 'master' || github.ref_name == 'dev'
+    if: github.ref_name == 'master'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: dev
-          path: dev
-
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: master
@@ -36,9 +31,6 @@ jobs:
 
       - name: Build rustdoc for master
         run: make -C master doc
-
-      - name: Build rustdoc for dev
-        run: make -C dev doc
 
       - name: Prepare flat deploy directory
         run: |
@@ -60,7 +52,6 @@ jobs:
             find "$dst" \( -name '*.html' -o -name '*.js' \) -print0 | xargs -0 sed -i 's|rezzy/index\.html|index.html|g'
           }
           prepare master/target/doc _site
-          prepare dev/target/doc _site/dev
 
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
