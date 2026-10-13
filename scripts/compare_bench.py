@@ -18,6 +18,12 @@ regressed by at least `--failure-margin` (default 85%), warns above
 `--warning-margin` (default 50%), notices above `--notice-margin` (default 10%),
 and writes the running best (the fastest value seen for each label) to `--out`.
 
+Regressions whose absolute delta is below `--min-absolute-delta` (default
+0.05ms) are ignored entirely. Shared-CI jitter on single-digit-microsecond
+microbenches can exceed 85% relative while being a few microseconds of absolute
+noise; the floor keeps those from permanently failing the job while still
+ratcheting a new best when one is set.
+
 When the runner prints benchmark section headers, they are included in each
 metric key so equal operation names from separate benchmarks do not collide.
 
@@ -109,9 +115,20 @@ def parse_args() -> argparse.Namespace:
         default=0.85,
         help="fail at or above this regression fraction (default 85%%)",
     )
+    ap.add_argument(
+        "--min-absolute-delta",
+        type=float,
+        default=0.05,
+        help="ignore regressions whose absolute delta is below this many "
+        "milliseconds (default 0.05ms = 50us)",
+    )
     args = ap.parse_args()
     if not 0.0 < args.notice_margin < args.warning_margin < args.failure_margin:
-        ap.error("margins must satisfy 0 < notice-margin < warning-margin < failure-margin")
+        ap.error(
+            "margins must satisfy 0 < notice-margin < warning-margin < failure-margin"
+        )
+    if args.min_absolute_delta < 0.0:
+        ap.error("min-absolute-delta must be >= 0")
     return args
 
 
@@ -149,6 +166,7 @@ def compare_metrics(
     notice_margin: float,
     warning_margin: float,
     failure_margin: float,
+    min_absolute_delta: float,
 ) -> tuple[dict[str, float], list[str], list[str], list[str]]:
     """Update best values and classify regressions as notices, warnings, or failures."""
     suffix_counts = legacy_label_counts(current)
@@ -161,11 +179,20 @@ def compare_metrics(
         if prior is None:
             new_best[label] = value
             continue
+        if value < prior:
+            new_best[label] = value
+            continue
+        delta = value - prior
+        # Sub-floor deltas are pure runner jitter on microbenches: skip
+        # classification entirely (the new-best ratchet above already ran).
+        if delta < min_absolute_delta:
+            continue
         increase = (
             value / prior - 1.0 if prior > 0 else (float("inf") if value > 0 else 0.0)
         )
         message = (
-            f"{label}: {value:.4f}ms is {increase * 100:.1f}% above best {prior:.4f}ms"
+            f"{label}: {value:.4f}ms is {increase * 100:.1f}% above best "
+            f"{prior:.4f}ms (+{delta:.4f}ms)"
         )
         if increase >= failure_margin:
             failures.append(message)
@@ -173,8 +200,6 @@ def compare_metrics(
             warnings.append(message)
         elif increase > notice_margin:
             notices.append(message)
-        if value < prior:
-            new_best[label] = value
     return new_best, notices, warnings, failures
 
 
@@ -231,7 +256,12 @@ def main() -> int:
         return 1
     best = load_best(args.best)
     new_best, notices, warnings, failures = compare_metrics(
-        current, best, args.notice_margin, args.warning_margin, args.failure_margin
+        current,
+        best,
+        args.notice_margin,
+        args.warning_margin,
+        args.failure_margin,
+        args.min_absolute_delta,
     )
     write_best(args.out, new_best)
     report_results(current, best, notices, warnings, failures)
