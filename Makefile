@@ -120,7 +120,13 @@ endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	cd benches/ && direnv exec . sh -c '$$CARGO bench --profile release --benches'
+	@set -o pipefail; \
+	output=$$(mktemp); \
+	trap 'rm -f "$$output"' EXIT; \
+	(cd benches/ && direnv exec . sh -c '$$CARGO bench --profile release --benches') 2>&1 | tee "$$output"; \
+	status=$$?; \
+	if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
+	python3 scripts/record_bench.py --current "$$output" --out benches/bench-results.csv
 
 
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
