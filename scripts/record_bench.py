@@ -11,15 +11,16 @@ from pathlib import Path
 
 from compare_bench import extract
 
-
 FIELDS = ("timestamp_utc", "revision", "branch", "metric", "milliseconds")
 
 
 def git_value(*args: str) -> str:
+    """Return trimmed output from a Git command."""
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
 def main() -> int:
+    """Append this successful benchmark run to the CSV history."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current", required=True, help="captured benchmark output")
     parser.add_argument(
@@ -38,7 +39,7 @@ def main() -> int:
     needs_header = not output.exists() or output.stat().st_size == 0
 
     with output.open("a", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=FIELDS)
+        writer = csv.DictWriter(stream, fieldnames=FIELDS, lineterminator="\n")
         if needs_header:
             writer.writeheader()
         for metric, milliseconds in sorted(metrics.items()):
