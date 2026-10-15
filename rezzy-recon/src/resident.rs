@@ -170,7 +170,9 @@ impl ResidentKernel {
 }
 
 const fn strata_identifier(hash: ElementHash) -> u64 {
-    // GF(2^64) reserves zero, so this aliases Q3=0 with Q3=1.
+    // PinSketch requires nonzero identifiers. This makes the sole alias in
+    // the strata estimator (Q3=0 and Q3=1); a resulting estimate miss is
+    // recovered by the independent h64 bucket tree.
     let q3 = hash.q3;
     if q3 == 0 {
         1

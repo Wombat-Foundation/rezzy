@@ -136,7 +136,9 @@ pub struct ElementHash {
     /// First non-zero 64-bit chunk of the element digest (network byte order),
     /// falling back to 1 if all four 64-bit chunks are zero.
     pub h64: u64,
-    /// Second 64-bit digest chunk (bytes 8..16), with zero mapped to 1, for strata placement.
+    /// Second 64-bit digest chunk (bytes 8..16) for strata placement. Zero maps
+    /// to 1 because `PinSketch` identifiers must be nonzero; this aliases Q3=0
+    /// with Q3=1 in the estimator only. Tree extraction still uses `h64`.
     pub q3: u64,
 }
 

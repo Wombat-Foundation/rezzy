@@ -925,6 +925,10 @@ impl ReconciliationClient {
     /// `ceil(1.5 * estimate) + 4`, with `concurrency_headroom` added on top.
     /// Requests that exceed local policy are capped and ask for a bucket
     /// summary so the next exchange can localize the difference.
+    /// If strata estimation saturates or exhausts its bounded work budget,
+    /// selection starts with one depth-0 bucket at the protocol capacity. The
+    /// `h64` tree can then split an oversized bucket without trusting that
+    /// estimate; estimator failure alone does not force an extremity transfer.
     #[must_use]
     pub fn select_action(
         self,
@@ -951,7 +955,15 @@ impl ReconciliationClient {
             crate::triage::MAX_STRATA_FACTOR_WORK,
         ) {
             Ok(estimate) => estimate.delta.max(count_delta),
-            Err(_) => return ClientAction::ExtremityDiff,
+            // If the estimator exhausts its work budget, it cannot size a
+            // first-round sketch safely. Start with bounded root extraction
+            // and let bucket decoding localize any over-capacity region.
+            Err(_) => {
+                return ClientAction::BucketSketches {
+                    requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY,)],
+                    accumulated_roots: alloc::vec::Vec::new(),
+                };
+            }
         };
 
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
