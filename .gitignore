@@ -10,6 +10,7 @@
 target/
 .gemini/
 .env
+.env.*
 .tmp*
 *.zip
 *.tar.*

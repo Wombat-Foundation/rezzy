@@ -1357,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_overflow_falls_back_to_extremity_diff() {
+    fn capacity_overflow_starts_root_bucket_extraction() {
         let client = ReconciliationClient::default();
         assert_eq!(
             client.select_action(
@@ -1371,7 +1371,10 @@ mod tests {
                 },
                 usize::MAX,
             ),
-            ClientAction::ExtremityDiff
+            ClientAction::BucketSketches {
+                requests: vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
+                accumulated_roots: vec![],
+            }
         );
     }
 
