@@ -32,10 +32,11 @@ impl Xorshift128Hash {
         let high = self.next();
         let low = self.next();
         let h64 = self.next() | 1;
+        let q3 = self.next();
         ElementHash {
             h128: (u128::from(high) << 64) | u128::from(low),
             h64,
-            q3: self.next() | 1,
+            q3: if q3 == 0 { 1 } else { q3 },
         }
     }
 }

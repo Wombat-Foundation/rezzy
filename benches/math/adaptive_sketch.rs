@@ -245,7 +245,14 @@ fn simulate_strategy(
                 requests: next_requests,
                 accumulated_roots: _,
             } => requests = next_requests,
-            ClientAction::ResolveRoots { roots, .. } => {
+            ClientAction::ResolveRoots {
+                roots,
+                ladder_failed,
+            } => {
+                assert!(
+                    ladder_failed.is_empty(),
+                    "exchange abandoned prefixes: {ladder_failed:?}"
+                );
                 assert_eq!(
                     BTreeSet::from_iter(roots),
                     expected,
@@ -275,10 +282,11 @@ fn generate_concentrated(
     let mut remote = base.to_vec();
     for index in 0..delta {
         let h64 = (generator.next() ^ (index as u64).wrapping_mul(0x1_0000)) | 1;
+        let q3 = generator.next();
         remote.push(ElementHash {
             h128: u128::from(generator.next()) << 64 | u128::from(h64),
             h64,
-            q3: generator.next() | 1,
+            q3: if q3 == 0 { 1 } else { q3 },
         });
     }
     (base.to_vec(), remote)
