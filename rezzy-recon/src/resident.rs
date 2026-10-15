@@ -16,7 +16,7 @@ pub const STRATA_COUNT: usize = 32;
 pub const STRATUM_CAPACITY: usize = 8;
 
 /// Version tag leading [`ResidentKernel::to_bytes`] output.
-pub const RESIDENT_FORMAT_VERSION: u8 = 1;
+pub const RESIDENT_FORMAT_VERSION: u8 = 2;
 /// Exact byte length of a serialized [`ResidentKernel`].
 pub const RESIDENT_SERIALIZED_LEN: usize = 1 + 16 + 8 + STRATA_COUNT * STRATUM_CAPACITY * 8;
 
@@ -149,7 +149,7 @@ impl ResidentKernel {
             return Err(AlgebraicError::ZeroShortIdentifier);
         }
         self.accumulator.insert(hash)?;
-        toggle_stratum(&mut self.strata, hash.h64);
+        toggle_stratum(&mut self.strata, strata_identifier(hash));
         Ok(())
     }
 
@@ -164,8 +164,18 @@ impl ResidentKernel {
             return Err(AlgebraicError::ZeroShortIdentifier);
         }
         self.accumulator.remove(hash)?;
-        toggle_stratum(&mut self.strata, hash.h64);
+        toggle_stratum(&mut self.strata, strata_identifier(hash));
         Ok(())
+    }
+}
+
+const fn strata_identifier(hash: ElementHash) -> u64 {
+    // GF(2^64) reserves zero, so this aliases Q3=0 with Q3=1.
+    let q3 = hash.q3;
+    if q3 == 0 {
+        1
+    } else {
+        q3
     }
 }
 
@@ -186,7 +196,7 @@ mod tests {
     use super::*;
 
     const fn hash(h128: u128, h64: u64) -> ElementHash {
-        ElementHash { h128, h64 }
+        ElementHash { h128, h64, q3: h64 }
     }
 
     #[test]

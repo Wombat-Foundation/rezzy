@@ -35,6 +35,7 @@ impl Xorshift128Hash {
         ElementHash {
             h128: (u128::from(high) << 64) | u128::from(low),
             h64,
+            q3: self.next() | 1,
         }
     }
 }

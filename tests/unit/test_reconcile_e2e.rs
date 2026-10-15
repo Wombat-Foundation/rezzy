@@ -457,11 +457,13 @@ fn colliding_h64_is_narrowed_not_the_whole_frame() {
     let twin = ElementHash {
         h128: collided.h128 ^ 0xdead_beef,
         h64: collided.h64,
+        q3: collided.q3,
     };
     // In the opposite top-level half, so the first split separates it.
     let extra = ElementHash {
         h128: generator.hash().h128,
         h64: collided.h64 ^ (1_u64 << 63),
+        q3: 1,
     };
     let local = Side::new(shared.clone());
     let remote = Side::new([shared, vec![twin, extra]].concat());
@@ -502,6 +504,7 @@ fn collision_in_one_bucket_leaves_siblings_resolved() {
     let twin = ElementHash {
         h128: collided.h128 ^ 0xdead_beef,
         h64: collided.h64,
+        q3: collided.q3,
     };
     let local = Side::new([shared.clone(), local_extra.clone()].concat());
     let remote = Side::new([shared, remote_extra.clone(), vec![twin]].concat());
@@ -556,11 +559,13 @@ fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
     let y = ElementHash {
         h128: x.h128 ^ 0xfeed_face,
         h64: x.h64,
+        q3: x.q3,
     };
     // An honest remote-only element in the same node as the colliding pair.
     let z = ElementHash {
         h128: generator.hash().h128,
         h64: x.h64 ^ 1,
+        q3: 1,
     };
     remote_extra.push(z);
 
@@ -633,11 +638,13 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
     let y = ElementHash {
         h128: x.h128 ^ 0xfeed_face,
         h64: x.h64,
+        q3: x.q3,
     };
     // An honest remote-only element in the same half as the pair.
     remote_extra.push(ElementHash {
         h128: generator.hash().h128,
         h64: x.h64 ^ (1_u64 << 62),
+        q3: 1,
     });
 
     let local = Side::new([shared.clone(), local_extra.clone(), vec![x]].concat());

@@ -278,6 +278,7 @@ fn generate_concentrated(
         remote.push(ElementHash {
             h128: u128::from(generator.next()) << 64 | u128::from(h64),
             h64,
+            q3: generator.next() | 1,
         });
     }
     (base.to_vec(), remote)

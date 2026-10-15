@@ -28,14 +28,14 @@ use alloc::collections::VecDeque;
 // `ElementHash::from_digest32`'s doc comment in algebraic.rs for the
 // precondition and the placement-key fix under consideration for
 // 4511-C) could otherwise exhaust on a crafted bucket, forcing
-// `ClientAction::ExtremityDiff` for that region every time two servers
+// room-wide extremity discovery for that region every time two servers
 // reconcile it -- bounded (falls back rather than hanging), but not free,
 // and the cost recurs across sessions, not just the one under attack.
 //
 // `BucketExchange::advance`'s no-progress detection (see its doc comment,
 // `MAX_NO_PROGRESS_ROUNDS`) now closes the round-budget half of this: it
-// caps the damage from riding out all 20 rounds down to ~3, purely
-// client-side, no wire change, no MSC. It does not fix the exposure
+// caps the retry rounds down to ~3 and reports only the failed prefixes,
+// purely client-side, with no wire change or MSC. It does not fix the exposure
 // itself -- the underlying bucket can still be found and re-targeted on
 // the next reconciliation, since placement is still predictable -- only
 // the placement-key redesign above (still open, tracked against 4511-C)
@@ -141,8 +141,9 @@ pub enum ClientAction {
 }
 
 /// Consecutive no-progress rounds (see `BucketExchange::advance`'s doc
-/// comment) tolerated before bailing to `ClientAction::ExtremityDiff`
-/// early, instead of riding out the full `max_rounds` budget. Small and
+/// comment) tolerated before returning the unresolved nodes in
+/// `ClientAction::ResolveRoots::ladder_failed`, instead of using the full
+/// `max_rounds` budget. Small and
 /// fixed rather than configurable: this is a cheap circuit breaker, not a
 /// policy knob, and a caller that wants a different threshold can still
 /// reach it via `max_rounds` itself.
@@ -546,8 +547,29 @@ impl BucketExchange {
         self.pending.len()
     }
 
+    fn record_ladder_failed(&mut self, node: (u8, u64)) {
+        if self
+            .ladder_failed
+            .iter()
+            .any(|&existing| covers(existing, node))
+        {
+            return;
+        }
+        self.ladder_failed
+            .retain(|&existing| !covers(node, existing));
+        self.ladder_failed.push(node);
+        self.ladder_failed.sort_unstable();
+    }
+
+    fn partial_action(&self) -> ClientAction {
+        ClientAction::ResolveRoots {
+            roots: self.accumulated_roots.clone(),
+            ladder_failed: self.ladder_failed.clone(),
+        }
+    }
+
     fn drain_pending_round(&mut self) -> Result<VecDeque<BucketRequest>, ClientAction> {
-        if self.rounds_emitted.saturating_add(1) >= self.max_rounds {
+        if self.rounds_emitted >= self.max_rounds {
             return Err(ClientAction::ExtremityDiff);
         }
 
@@ -581,7 +603,7 @@ impl BucketExchange {
     /// The planner keeps deferred children in a pending frontier rather than aborting when a
     /// single round hits the per-round bucket cap.
     ///
-    /// Detects lack of progress and bails to [`ClientAction::ExtremityDiff`]
+    /// Detects lack of progress and returns failed nodes through `ladder_failed`
     /// after a few consecutive rounds of it (an internal, unexported
     /// constant), rather than
     /// always riding out the full `max_rounds` budget. `retry_or_split_bucket`
@@ -637,12 +659,17 @@ impl BucketExchange {
         } else {
             self.no_progress_rounds = 0;
         }
-        if self.no_progress_rounds >= MAX_NO_PROGRESS_ROUNDS {
-            return ClientAction::ExtremityDiff;
-        }
-
         for success in successful_buckets {
             self.accumulated_roots.extend(success.roots);
+        }
+        if self.no_progress_rounds >= MAX_NO_PROGRESS_ROUNDS {
+            for (depth, prefix) in failed_buckets {
+                self.record_ladder_failed((depth, prefix));
+            }
+            while let Some(request) = self.pending.pop_front() {
+                self.record_ladder_failed((request.depth, request.prefix));
+            }
+            return self.partial_action();
         }
 
         let Ok(resolved_count) = u64::try_from(self.accumulated_roots.len()) else {
@@ -664,11 +691,15 @@ impl BucketExchange {
             let Ok(next_requests) =
                 retry_failed_bucket(previous_requests, depth, prefix, share, force_split)
             else {
-                return ClientAction::ExtremityDiff;
+                self.record_ladder_failed((depth, prefix));
+                continue;
             };
             self.pending.extend(next_requests);
             if self.pending.len() > self.max_pending_requests {
-                return ClientAction::ExtremityDiff;
+                while let Some(request) = self.pending.pop_front() {
+                    self.record_ladder_failed((request.depth, request.prefix));
+                }
+                return self.partial_action();
             }
         }
 
@@ -684,7 +715,10 @@ impl BucketExchange {
         }
 
         let Ok(requests) = self.drain_pending_round() else {
-            return ClientAction::ExtremityDiff;
+            while let Some(request) = self.pending.pop_front() {
+                self.record_ladder_failed((request.depth, request.prefix));
+            }
+            return self.partial_action();
         };
 
         ClientAction::BucketSketches {
@@ -921,7 +955,10 @@ impl ReconciliationClient {
         };
 
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
-            return ClientAction::ExtremityDiff;
+            return ClientAction::BucketSketches {
+                requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
+                accumulated_roots: alloc::vec::Vec::new(),
+            };
         }
 
         if let Some(threshold) = self.gate_threshold {
@@ -1100,6 +1137,7 @@ mod tests {
         ElementHash {
             h128: wide,
             h64: short,
+            q3: short,
         }
     }
 
@@ -1120,6 +1158,7 @@ mod tests {
                 .insert(ElementHash {
                     h128: u128::from(value),
                     h64: value,
+                    q3: value,
                 })
                 .unwrap();
         }
@@ -1622,11 +1661,10 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            action,
-            ClientAction::ExtremityDiff,
-            "a persistently stalled split must bail to ExtremityDiff, not keep splitting: \
-             stopped after {rounds} rounds"
+        assert!(
+            matches!(&action, ClientAction::ResolveRoots { ladder_failed, .. } if !ladder_failed.is_empty()),
+            "a persistently stalled split must return localized fallback prefixes, not keep splitting: \
+             stopped after {rounds} rounds: {action:?}"
         );
         assert!(
             rounds <= MAX_NO_PROGRESS_ROUNDS.saturating_add(2),

@@ -128,18 +128,16 @@ pub enum EventIdFormat {
     V4Plus,
 }
 
-/// The two truncations of a reconciled element's canonical 32-byte digest.
+/// Digest-derived values used for accumulator, tree, and strata placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ElementHash {
-    /// Last 128 bits (bytes 16..32), interpreted in network byte order.
-    ///
-    /// Drawn from bytes disjoint from `h64` so the integrity residual stays
-    /// independent of placement (the `h64` scan only reaches these bytes when
-    /// the first two 8-byte chunks are zero).
+    /// Last 128 digest bits (bytes 16..32), interpreted in network byte order.
     pub h128: u128,
     /// First non-zero 64-bit chunk of the element digest (network byte order),
     /// falling back to 1 if all four 64-bit chunks are zero.
     pub h64: u64,
+    /// Second 64-bit digest chunk (bytes 8..16), with zero mapped to 1, for strata placement.
+    pub q3: u64,
 }
 
 impl ElementHash {
@@ -218,9 +216,16 @@ impl ElementHash {
             })
             .find(|value| *value != 0)
             .unwrap_or(1);
+        let mut q3_bytes = [0; 8];
+        q3_bytes.copy_from_slice(&digest[8..16]);
+        let q3 = match u64::from_be_bytes(q3_bytes) {
+            0 => 1,
+            value => value,
+        };
         Self {
             h128: u128::from_be_bytes(wide),
             h64,
+            q3,
         }
     }
 
@@ -759,6 +764,7 @@ mod tests {
         digest[31] = 9;
         let hash = ElementHash::from_digest32(digest);
         assert_eq!(hash.h64, 7);
+        assert_eq!(hash.q3, 7);
         assert_eq!(hash.h128, 9);
     }
 
@@ -766,6 +772,7 @@ mod tests {
         ElementHash {
             h128: u128::from(seed) << 120,
             h64: u64::from(seed) << 56,
+            q3: u64::from(seed) << 56,
         }
     }
 

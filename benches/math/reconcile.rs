@@ -33,6 +33,7 @@ fn hash(index: u64) -> ElementHash {
     ElementHash {
         h128: u128::from(h64) << 64 | u128::from(index),
         h64,
+        q3: index | 1,
     }
 }
 
