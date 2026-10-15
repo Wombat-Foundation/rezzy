@@ -16,7 +16,7 @@ pub const STRATA_COUNT: usize = 32;
 pub const STRATUM_CAPACITY: usize = 8;
 
 /// Version tag leading [`ResidentKernel::to_bytes`] output.
-pub const RESIDENT_FORMAT_VERSION: u8 = 2;
+pub const RESIDENT_FORMAT_VERSION: u8 = 1;
 /// Exact byte length of a serialized [`ResidentKernel`].
 pub const RESIDENT_SERIALIZED_LEN: usize = 1 + 16 + 8 + STRATA_COUNT * STRATUM_CAPACITY * 8;
 

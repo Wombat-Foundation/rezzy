@@ -15,7 +15,7 @@ target/
 *.zip
 *.tar.*
 /*.txt
-matrix-spec-txt/
+*.pdf
 
 # cargo
 *cov
