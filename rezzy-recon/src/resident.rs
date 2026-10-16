@@ -9,6 +9,8 @@ use super::{
     algebraic::{AlgebraicError, ElementHash, RoomAccumulator},
     gf64,
 };
+use alloc::{string::String, vec::Vec};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 /// Number of estimator strata.
 pub const STRATA_COUNT: usize = 32;
@@ -192,10 +194,100 @@ fn toggle_stratum(strata: &mut [[u64; STRATUM_CAPACITY]; STRATA_COUNT], value: u
     }
 }
 
+/// Byte length of one wire-encoded stratum (`STRATUM_CAPACITY` little-endian `u64`s).
+const STRATUM_WIRE_BYTES: usize = STRATUM_CAPACITY * 8;
+/// Unpadded base64url length of one wire-encoded stratum.
+const STRATUM_WIRE_CHARS: usize = (STRATUM_WIRE_BYTES * 4).div_ceil(3);
+
+/// Encodes strata for the wire: one unpadded base64url string per stratum,
+/// each the stratum's coordinates as little-endian `u64`s.
+///
+/// # Panics
+/// Never in practice: the output buffer is sized for the encoding.
+#[must_use]
+pub fn encode_strata(strata: &[[u64; STRATUM_CAPACITY]; STRATA_COUNT]) -> Vec<String> {
+    strata
+        .iter()
+        .map(|stratum| {
+            let mut bytes = [0_u8; STRATUM_WIRE_BYTES];
+            for (chunk, coordinate) in bytes.chunks_exact_mut(8).zip(stratum) {
+                chunk.copy_from_slice(&coordinate.to_le_bytes());
+            }
+            let mut out = [0_u8; STRATUM_WIRE_CHARS];
+            let length = URL_SAFE_NO_PAD
+                .encode_slice(bytes, &mut out)
+                .expect("buffer holds the encoded stratum");
+            String::from_utf8(out[..length].to_vec()).expect("base64 output is ASCII")
+        })
+        .collect()
+}
+
+/// Decodes strata produced by [`encode_strata`] (or a compatible responder).
+///
+/// # Errors
+/// Returns [`AlgebraicError::InvalidSketchLength`] when `encoded` does not hold
+/// exactly [`STRATA_COUNT`] entries or an entry has the wrong length, and
+/// [`AlgebraicError::InvalidBase64`] when an entry is not unpadded base64url.
+///
+/// # Panics
+/// Panics only if an internal 8-byte chunk conversion fails, which cannot happen.
+pub fn decode_strata<S: AsRef<str>>(
+    encoded: &[S],
+) -> Result<[[u64; STRATUM_CAPACITY]; STRATA_COUNT], AlgebraicError> {
+    if encoded.len() != STRATA_COUNT {
+        return Err(AlgebraicError::InvalidSketchLength);
+    }
+    let mut strata = [[0; STRATUM_CAPACITY]; STRATA_COUNT];
+    for (stratum, entry) in strata.iter_mut().zip(encoded) {
+        let entry = entry.as_ref();
+        if entry.len() != STRATUM_WIRE_CHARS {
+            return Err(AlgebraicError::InvalidSketchLength);
+        }
+        let mut bytes = [0_u8; STRATUM_WIRE_BYTES];
+        let length = URL_SAFE_NO_PAD
+            .decode_slice(entry, &mut bytes)
+            .map_err(|_| AlgebraicError::InvalidBase64)?;
+        if length != STRATUM_WIRE_BYTES {
+            return Err(AlgebraicError::InvalidSketchLength);
+        }
+        for (coordinate, chunk) in stratum.iter_mut().zip(bytes.chunks_exact(8)) {
+            *coordinate = u64::from_le_bytes(chunk.try_into().unwrap());
+        }
+    }
+    Ok(strata)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strata_wire_round_trips_and_rejects_malformed() {
+        let mut strata = [[0_u64; STRATUM_CAPACITY]; STRATA_COUNT];
+        for (i, stratum) in strata.iter_mut().enumerate() {
+            for (j, c) in stratum.iter_mut().enumerate() {
+                *c = ((i as u64) << 56) | ((j as u64 + 1) * 0x0123_4567_89ab_cdef);
+            }
+        }
+        let encoded = encode_strata(&strata);
+        assert_eq!(encoded.len(), STRATA_COUNT);
+        assert!(encoded.iter().all(|e| e.len() == STRATUM_WIRE_CHARS));
+        assert_eq!(decode_strata(&encoded), Ok(strata));
+        assert_eq!(
+            decode_strata(&encoded[1..]),
+            Err(AlgebraicError::InvalidSketchLength)
+        );
+        let mut short = encoded.clone();
+        short[3].pop();
+        assert_eq!(
+            decode_strata(&short),
+            Err(AlgebraicError::InvalidSketchLength)
+        );
+        let mut bad = encoded;
+        bad[3].replace_range(0..1, "+");
+        assert_eq!(decode_strata(&bad), Err(AlgebraicError::InvalidBase64));
+    }
 
     const fn hash(h128: u128, h64: u64) -> ElementHash {
         ElementHash { h128, h64, q3: h64 }

@@ -5,13 +5,15 @@
 
 //! Requester-side MSC0501 reconciliation decisions and verification over MSC4521 digests.
 
-use super::resident::{ResidentKernel, STRATA_COUNT, STRATUM_CAPACITY};
+use super::resident::{decode_strata, ResidentKernel, STRATA_COUNT, STRATUM_CAPACITY};
 use super::triage::{
     bucket_range_start, BucketDecodeBatch, BucketRequest, NodeSummary,
     MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY, SATURATED_DELTA_ESTIMATE,
 };
 use super::verify::Classified;
-use super::{AlgebraicError, ElementHash, SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY};
+use super::{
+    AlgebraicError, ElementHash, RoomAccumulator, SyndromeSketch, MAX_LOCAL_SKETCH_DECODE_CAPACITY,
+};
 use alloc::collections::VecDeque;
 
 /// Baseline policy limit for maximum reconciliation rounds in a single exchange.
@@ -110,6 +112,45 @@ pub struct RemoteDigest {
     pub frame_matches: bool,
     /// Whether the responder advertised an extremity unknown to the requester.
     pub has_unknown_extremity: bool,
+}
+
+fn normalize_ids<S: AsRef<str>>(ids: &[S]) -> alloc::vec::Vec<&str> {
+    let mut ids: alloc::vec::Vec<&str> = ids.iter().map(AsRef::as_ref).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+impl RemoteDigest {
+    /// Builds a digest from the responder's wire fields.
+    ///
+    /// `digest` and `strata` are the responder's base64url encodings.
+    /// `frame_matches` is set when the local and remote frame event IDs are
+    /// equal as sets. `has_unknown_extremity` is set when any remote extremity
+    /// fails `is_known`.
+    ///
+    /// # Errors
+    /// Returns the decode error for a malformed `digest` or `strata`.
+    pub fn from_wire<A: AsRef<str>, B: AsRef<str>, C: AsRef<str>, D: AsRef<str>>(
+        digest: &str,
+        known_event_count: u64,
+        strata: &[A],
+        local_frame_event_ids: &[B],
+        remote_frame_event_ids: &[C],
+        remote_extremity_event_ids: &[D],
+        mut is_known: impl FnMut(&str) -> bool,
+    ) -> Result<Self, AlgebraicError> {
+        Ok(Self {
+            digest: RoomAccumulator::decode_digest(digest)?,
+            known_event_count,
+            strata: decode_strata(strata)?,
+            frame_matches: normalize_ids(local_frame_event_ids)
+                == normalize_ids(remote_frame_event_ids),
+            has_unknown_extremity: remote_extremity_event_ids
+                .iter()
+                .any(|id| !is_known(id.as_ref())),
+        })
+    }
 }
 
 /// The next request selected by the reconciliation client.
@@ -1274,6 +1315,33 @@ mod tests {
             ReconciliationClient::new(0),
             Err(AlgebraicError::InvalidSketchCapacity)
         );
+    }
+
+    #[test]
+    fn from_wire_builds_digest() {
+        let strata = crate::resident::encode_strata(&[[7; STRATUM_CAPACITY]; STRATA_COUNT]);
+        let d = RoomAccumulator::from_parts(42, 3).encode_digest();
+        let build = |remote_frame: &[&str], known: bool| {
+            RemoteDigest::from_wire(&d, 3, &strata, &["$b", "$a"], remote_frame, &["$x"], |_| {
+                known
+            })
+        };
+        let ok = build(&["$a", "$b", "$a"], true).unwrap();
+        assert_eq!(ok.digest, 42);
+        assert_eq!(ok.strata, [[7; STRATUM_CAPACITY]; STRATA_COUNT]);
+        assert!(ok.frame_matches && !ok.has_unknown_extremity);
+        let bad = build(&["$a"], false).unwrap();
+        assert!(!bad.frame_matches && bad.has_unknown_extremity);
+        assert!(RemoteDigest::from_wire(
+            "!",
+            0,
+            &strata,
+            &[] as &[&str],
+            &[] as &[&str],
+            &[] as &[&str],
+            |_| true
+        )
+        .is_err());
     }
 
     #[test]
