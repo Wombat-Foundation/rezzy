@@ -140,14 +140,35 @@ fn mutate(base: &Node, entries: &[(Key, Value)], edits: usize, variant: usize) -
     root
 }
 
+type Delta = (Vec<(Key, Value)>, Vec<(Key, Value)>);
+
+/// Fully-resident reference delta between `a` and `b`, used to check that
+/// every resolver-backed variant returns the identical ordered pair.
+fn reference_delta(a: &Node, b: &Node) -> Delta {
+    let mut none = |_: &StructuralHash| -> Result<Node, ()> { Err(()) };
+    diff_hamt_nodes(a, b, &mut none).expect("reference diff")
+}
+
 /// Times `reps` diffs from `a` to `b`, resolving lazy nodes from `store`.
 /// Prints average nanoseconds per diff and the final diff's fetch count and
 /// combined added/removed leaf count under `label`.
 ///
+/// Before the timer starts, the diff is checked against `reference` (the fully
+/// resident ordered `(added, removed)` pair) so a wrong delta fails instead of
+/// posting a fast time.
+///
 /// # Panics
-/// Panics if `reps` is zero, a needed hash is missing from `store`, or the diff
-/// exceeds the HAMT traversal depth limit.
-fn run_one(label: &str, a: &Node, b: &Node, store: &Store, reps: u32) {
+/// Panics if `reps` is zero, a needed hash is missing from `store`, the diff
+/// exceeds the HAMT traversal depth limit, or the delta differs from `reference`.
+fn run_one(label: &str, a: &Node, b: &Node, store: &Store, reference: &Delta, reps: u32) {
+    // Parity check before the timer starts: a variant that returns a wrong
+    // delta must fail, not post a fast time.
+    {
+        let mut resolver =
+            |h: &StructuralHash| -> Result<Node, ()> { Ok(Arc::clone(store.get(h).ok_or(())?)) };
+        let got = diff_hamt_nodes(a, b, &mut resolver).expect("diff");
+        assert_eq!(&got, reference, "delta mismatch for {label}");
+    }
     let mut fetches = 0u64;
     let mut delta_len = 0usize;
     let start = Instant::now();
@@ -179,6 +200,7 @@ fn bench(n: usize, delta: usize) {
         .expect("build should not collide");
     let next = mutate(&base, &entries, delta, 0);
     let depth = tree_depth(&base).max(tree_depth(&next));
+    let reference = reference_delta(&base, &next);
     println!("hamt delta (n={n}, edits={delta}, depth={depth}):");
 
     let reps = if n >= 65536 { 2000 } else { 5000 };
@@ -187,6 +209,7 @@ fn bench(n: usize, delta: usize) {
         &base,
         &next,
         &Store::new(),
+        &reference,
         reps,
     );
 
@@ -200,6 +223,7 @@ fn bench(n: usize, delta: usize) {
             &a,
             &b,
             &store,
+            &reference,
             reps,
         );
     }
@@ -215,7 +239,10 @@ fn bench(n: usize, delta: usize) {
 /// created with `create_new`, which refuses to follow a pre-existing path.
 #[cfg(target_os = "linux")]
 mod disk {
-    use super::{cache_layers, hamt, mutate, tree_depth, Key, Node, Store, Value, STRUCTURAL_KEY};
+    use super::{
+        cache_layers, hamt, mutate, reference_delta, tree_depth, Key, Node, Store, Value,
+        STRUCTURAL_KEY,
+    };
     use crate::common::{make_string_entries, to_persisted, Xorshift128};
     use rezzy::hamt::codec::PersistedInternalNode;
     use rezzy::hamt::hash::StructuralHash;
@@ -233,6 +260,9 @@ mod disk {
     const SAMPLES: usize = 5;
     /// Direct-I/O alignments to try, smallest first.
     const ALIGNS: [usize; 4] = [4096, 8192, 16384, 65536];
+    /// Bytes written (and synced) before probing direct-I/O support, so an
+    /// unsupported filesystem is detected before the full span is filled.
+    const PROBE_BYTES: usize = 65536;
 
     struct AlignedBuf(*mut u8, Layout);
     impl AlignedBuf {
@@ -278,14 +308,32 @@ mod disk {
         )
     }
 
-    /// Returns the file span in bytes from `HAMT_DELTA_SPAN_MIB` (in MiB).
-    /// An unset or unparseable value defaults to 1024 MiB.
-    fn span_bytes() -> u64 {
-        std::env::var("HAMT_DELTA_SPAN_MIB")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(1024)
-            << 20
+    /// Span size in bytes from `HAMT_DELTA_SPAN_MIB` (default 1024). Rejects
+    /// unparsable, too-small (below the largest probed alignment) and
+    /// overflowing values instead of panicking or wrapping.
+    fn span_bytes() -> io::Result<u64> {
+        let mib = match std::env::var("HAMT_DELTA_SPAN_MIB") {
+            Ok(v) => v.parse::<u64>().map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("HAMT_DELTA_SPAN_MIB: {e}"),
+                )
+            })?,
+            Err(_) => 1024,
+        };
+        let bytes = mib.checked_mul(1 << 20).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HAMT_DELTA_SPAN_MIB overflows u64",
+            )
+        })?;
+        if bytes < PROBE_BYTES as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HAMT_DELTA_SPAN_MIB too small",
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Opens an existing node file for reads with `O_DIRECT`.
@@ -331,7 +379,7 @@ mod disk {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos())
             ));
-            let span = span_bytes();
+            let span = span_bytes()?;
             // `create_new` fails if the path exists (including as a symlink).
             let mut w = OpenOptions::new()
                 .create_new(true)
@@ -344,13 +392,12 @@ mod disk {
                 slot: 0,
                 index: HashMap::new(),
             };
-            // Fill the span so blocks are really allocated across it.
+            // Probe direct-I/O support on a small prefix first; only then
+            // fill the rest of the span (so blocks are really allocated
+            // across it).
             let zeros = vec![0u8; 1 << 20];
-            for _ in 0..(span >> 20) {
-                w.write_all(&zeros)?;
-            }
+            w.write_all(&zeros[..PROBE_BYTES])?;
             w.sync_all()?;
-
             let direct = open_direct(&store.path)?;
             let align = probe_align(&direct).ok_or_else(|| {
                 io::Error::new(
@@ -358,6 +405,13 @@ mod disk {
                     "O_DIRECT reads not supported here",
                 )
             })?;
+            let mut remaining = span - PROBE_BYTES as u64;
+            while remaining > 0 {
+                let chunk = remaining.min(zeros.len() as u64) as usize;
+                w.write_all(&zeros[..chunk])?;
+                remaining -= chunk as u64;
+            }
+            w.sync_all()?;
             let encoded: Vec<_> = mem
                 .iter()
                 .map(|(h, n)| (*h, to_persisted(n).encode_v1()))
@@ -457,8 +511,16 @@ mod disk {
         for layers in 0..depth {
             let a = cache_layers(&base, layers);
             let mut samples: Vec<(Duration, u64, usize)> = Vec::with_capacity(SAMPLES);
+            let mut warm: Vec<Duration> = Vec::with_capacity(SAMPLES);
             for next in &nexts {
                 let b = cache_layers(next, layers);
+                let reference = reference_delta(&base, next);
+                {
+                    let mut check =
+                        |h: &StructuralHash| -> Result<Node, ()> { store.fetch(&mut buf, h) };
+                    let got = hamt::delta::diff_hamt_nodes(&a, &b, &mut check).expect("diff");
+                    assert_eq!(got, reference, "disk delta mismatch ({layers} layers)");
+                }
                 let mut fetches = 0u64;
                 let start = Instant::now();
                 let mut r = |h: &StructuralHash| -> Result<Node, ()> {
@@ -466,10 +528,32 @@ mod disk {
                     store.fetch(&mut buf, h)
                 };
                 let (ad, rm) = hamt::delta::diff_hamt_nodes(&a, &b, &mut r).expect("diff");
-                samples.push((start.elapsed(), fetches, ad.len() + rm.len()));
+                let elapsed = start.elapsed();
+                std::hint::black_box((&ad, &rm));
+                samples.push((elapsed, fetches, ad.len() + rm.len()));
+                if fetches == 0 {
+                    // Same diff again, now warm: separates single-shot cold-CPU
+                    // overhead from the diff's steady-state cost.
+                    const WARM_REPS: u32 = 1000;
+                    let start = Instant::now();
+                    for _ in 0..WARM_REPS {
+                        let mut r = |_: &StructuralHash| -> Result<Node, ()> { Err(()) };
+                        std::hint::black_box(
+                            hamt::delta::diff_hamt_nodes(&a, &b, &mut r).expect("diff"),
+                        );
+                    }
+                    warm.push(start.elapsed() / WARM_REPS);
+                }
             }
             samples.sort_by_key(|s| s.0);
             let (med, fetches, delta_len) = samples[SAMPLES / 2];
+            warm.sort();
+            if let Some(w) = warm.get(warm.len() / 2) {
+                println!(
+                    "  disk, {layers} cached layers (n={n}, d={delta}): warm steady-state (1000 reps) {:.3} us",
+                    w.as_secs_f64() * 1e6
+                );
+            }
             println!(
                 "  disk, {layers} cached layers (n={n}, d={delta}): {:.3} ms/op ({fetches} fetches, {:.2} ms/fetch, {delta_len} delta leaves; min {:.3}, max {:.3} ms)",
                 med.as_secs_f64() * 1e3,
