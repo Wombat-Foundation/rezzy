@@ -436,9 +436,7 @@ impl BucketExchange {
             let (_, _, parent_summary) = self.parents.remove(slot);
             self.awaiting
                 .retain(|&(d, p, _)| (d, p) != sibling && (d, p) != (depth, prefix));
-            let consistent = parent_summary.digest == summary.digest ^ sibling_summary.digest
-                && summary.count.checked_add(sibling_summary.count) == Some(parent_summary.count);
-            if !consistent {
+            if !parent_summary.is_split_of(summary, sibling_summary) {
                 self.ladder_fail(parent, batch);
             }
         }
@@ -1315,6 +1313,17 @@ mod tests {
             ReconciliationClient::new(0),
             Err(AlgebraicError::InvalidSketchCapacity)
         );
+    }
+
+    #[test]
+    fn node_summary_is_split_of_checks_counts_and_digests() {
+        let n = |count, digest| NodeSummary { count, digest };
+        let parent = n(5, 0b0110);
+        assert!(parent.is_split_of(n(2, 0b0101), n(3, 0b0011)));
+        assert!(!parent.is_split_of(n(2, 0b0101), n(2, 0b0011)));
+        assert!(!parent.is_split_of(n(2, 0b0101), n(3, 0b0010)));
+        assert!(!n(u64::MAX, 0).is_split_of(n(u64::MAX, 0), n(1, 0)));
+        assert!(n(0, 0).is_split_of(n(0, 0), n(0, 0)));
     }
 
     #[test]

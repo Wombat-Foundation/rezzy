@@ -251,7 +251,8 @@ pub fn decode_strata<S: AsRef<str>>(
             return Err(AlgebraicError::InvalidSketchLength);
         }
         for (coordinate, chunk) in stratum.iter_mut().zip(bytes.chunks_exact(8)) {
-            *coordinate = u64::from_le_bytes(chunk.try_into().unwrap());
+            *coordinate =
+                u64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields 8 bytes"));
         }
     }
     Ok(strata)

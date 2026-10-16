@@ -106,6 +106,14 @@ pub struct NodeSummary {
 }
 
 impl NodeSummary {
+    /// Whether two child summaries reconstruct this parent: counts add
+    /// (overflow is inconsistency) and digests XOR.
+    #[must_use]
+    pub fn is_split_of(self, left: Self, right: Self) -> bool {
+        left.count.checked_add(right.count) == Some(self.count)
+            && self.digest == left.digest ^ right.digest
+    }
+
     /// Summarizes the `h128` values of one node's elements.
     ///
     /// # Errors
