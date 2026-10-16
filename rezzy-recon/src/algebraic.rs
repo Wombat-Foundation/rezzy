@@ -549,6 +549,12 @@ impl SyndromeSketch {
         budget: &mut usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_LOCAL_SKETCH_DECODE_CAPACITY)?;
+        if self.coordinates[..max_elements]
+            .iter()
+            .all(|&coordinate| coordinate == 0)
+        {
+            return Ok(Vec::new());
+        }
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],
             max_elements,
@@ -720,6 +726,12 @@ impl SyndromeSketch {
         budget: usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_OVERFLOW_SKETCH_CAPACITY)?;
+        if self.coordinates[..max_elements]
+            .iter()
+            .all(|&coordinate| coordinate == 0)
+        {
+            return Ok(Vec::new());
+        }
         let mut remaining = budget;
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],

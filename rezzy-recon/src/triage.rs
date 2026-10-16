@@ -257,6 +257,11 @@ fn estimate_delta_internal(
     let mut lowest_decoded = None;
 
     for stratum in (0..STRATA_COUNT).rev() {
+        if local[stratum] == remote[stratum] {
+            // A zero residual is already its own empty decode; skip factoring.
+            lowest_decoded = Some(stratum);
+            continue;
+        }
         let residual: [u64; STRATUM_CAPACITY] =
             core::array::from_fn(|index| local[stratum][index] ^ remote[stratum][index]);
 
