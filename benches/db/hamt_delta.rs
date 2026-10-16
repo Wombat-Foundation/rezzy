@@ -104,18 +104,20 @@ fn tree_depth(node: &Node) -> usize {
 }
 
 /// Applies `edits` mutations (half overwrites of existing keys, half new keys).
-fn mutate(base: &Node, entries: &[(Key, Value)], edits: usize) -> Node {
+fn mutate(base: &Node, entries: &[(Key, Value)], edits: usize, variant: usize) -> Node {
     let mut root = Arc::clone(base);
     for i in 0..edits {
         let (k, v) = if i % 2 == 0 {
             (
-                entries[(i * 7919) % entries.len()].0.clone(),
-                format!("$edited{i}:example.org"),
+                entries[(i * 7919 + variant * 104_729) % entries.len()]
+                    .0
+                    .clone(),
+                format!("$edited{variant}-{i}:example.org"),
             )
         } else {
             (
-                format!("room_member|@delta{i}:example.org"),
-                format!("$new{i}:example.org"),
+                format!("room_member|@delta{variant}-{i}:example.org"),
+                format!("$new{variant}-{i}:example.org"),
             )
         };
         let mut r = unreachable_resolver();
@@ -151,7 +153,7 @@ fn bench(n: usize, delta: usize) {
     let entries = make_string_entries(n, 0x5EED_0000 + n as u64);
     let base = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
         .expect("build should not collide");
-    let next = mutate(&base, &entries, delta);
+    let next = mutate(&base, &entries, delta, 0);
     let depth = tree_depth(&base).max(tree_depth(&next));
     println!("hamt delta (n={n}, edits={delta}, depth={depth}):");
 
@@ -179,34 +181,39 @@ fn bench(n: usize, delta: usize) {
     }
 }
 
-/// Node file layout: 4 KiB-aligned slots at pseudo-random positions inside a
-/// `SPAN`-byte file, so reads pay realistic seeks instead of landing in one
-/// short-stroked region.
+/// Disk-backed cold reads (Linux only: needs `O_DIRECT`).
+///
+/// Nodes live in 4 KiB-or-larger aligned slots at pseudo-random positions
+/// inside a `HAMT_DELTA_SPAN_MIB`-sized file (default 1024), so reads pay
+/// realistic seeks instead of landing in one short-stroked region. The file
+/// goes in `HAMT_DELTA_DIR` (default `<manifest>/target`; it must be on a
+/// filesystem that supports `O_DIRECT`, so not tmpfs) under a unique name
+/// created with `create_new`, which refuses to follow a pre-existing path.
+#[cfg(target_os = "linux")]
 mod disk {
     use super::{cache_layers, hamt, mutate, tree_depth, Key, Node, Store, Value, STRUCTURAL_KEY};
     use crate::common::{make_string_entries, to_persisted, Xorshift128};
     use rezzy::hamt::codec::PersistedInternalNode;
     use rezzy::hamt::hash::StructuralHash;
     use std::alloc::{alloc, dealloc, Layout};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs::{File, OpenOptions};
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::os::unix::fs::{FileExt, OpenOptionsExt};
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
-    const SLOT: u64 = 4096;
-    const SPAN: u64 = 1 << 30;
-    #[cfg(target_arch = "x86_64")]
-    const O_DIRECT: i32 = 0o40000;
-    #[cfg(target_arch = "aarch64")]
-    const O_DIRECT: i32 = 0o200000;
+    /// Independent samples per config, each diffing a different edit set so
+    /// the touched nodes are not already in the drive's own cache.
+    const SAMPLES: usize = 5;
+    /// Direct-I/O alignments to try, smallest first.
+    const ALIGNS: [usize; 4] = [4096, 8192, 16384, 65536];
 
     struct AlignedBuf(*mut u8, Layout);
     impl AlignedBuf {
-        fn new(len: usize) -> Self {
-            let layout = Layout::from_size_align(len, SLOT as usize).unwrap();
+        fn new(len: usize, align: usize) -> Self {
+            let layout = Layout::from_size_align(len, align).unwrap();
             // SAFETY: non-zero size; zeroed so reads never see uninit memory.
             let ptr = unsafe { alloc(layout) };
             assert!(!ptr.is_null());
@@ -214,11 +221,13 @@ mod disk {
             Self(ptr, layout)
         }
         fn as_mut(&mut self) -> &mut [u8] {
+            // SAFETY: `ptr` is a live allocation of `layout.size()` bytes.
             unsafe { std::slice::from_raw_parts_mut(self.0, self.1.size()) }
         }
     }
     impl Drop for AlignedBuf {
         fn drop(&mut self) {
+            // SAFETY: allocated with this layout in `new`.
             unsafe { dealloc(self.0, self.1) };
         }
     }
@@ -226,50 +235,107 @@ mod disk {
     struct DiskStore {
         path: PathBuf,
         file: File,
+        slot: usize,
         index: HashMap<StructuralHash, (u64, usize)>,
     }
 
+    fn scratch_dir() -> PathBuf {
+        std::env::var_os("HAMT_DELTA_DIR").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+            PathBuf::from,
+        )
+    }
+
+    fn span_bytes() -> u64 {
+        std::env::var("HAMT_DELTA_SPAN_MIB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1024)
+            << 20
+    }
+
+    fn open_direct(path: &PathBuf) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(path)
+    }
+
+    /// Smallest alignment for which an `O_DIRECT` read of that size at offset 0
+    /// into a buffer of that alignment succeeds.
+    fn probe_align(file: &File) -> Option<usize> {
+        ALIGNS.into_iter().find(|&a| {
+            let mut buf = AlignedBuf::new(a, a);
+            file.read_exact_at(buf.as_mut(), 0).is_ok()
+        })
+    }
+
     impl DiskStore {
-        fn build(path: PathBuf, mem: &Store) -> Self {
-            let slots = SPAN / SLOT;
-            let mut rng = Xorshift128::new(0xD15C);
-            let mut used = std::collections::HashSet::new();
-            let mut index = HashMap::new();
+        fn build(mem: &Store) -> io::Result<Self> {
+            let dir = scratch_dir();
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(format!(
+                "hamt_delta_nodes-{}-{}.bin",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            let span = span_bytes();
+            // `create_new` fails if the path exists (including as a symlink).
             let mut w = OpenOptions::new()
-                .create(true)
+                .create_new(true)
                 .write(true)
-                .truncate(true)
-                .open(&path)
-                .expect("create node file");
+                .open(&path)?;
+            // From here on `store`'s Drop removes exactly this file.
+            let mut store = Self {
+                path,
+                file: w.try_clone()?,
+                slot: 0,
+                index: HashMap::new(),
+            };
             // Fill the span so blocks are really allocated across it.
             let zeros = vec![0u8; 1 << 20];
-            for _ in 0..(SPAN >> 20) {
-                w.write_all(&zeros).unwrap();
+            for _ in 0..(span >> 20) {
+                w.write_all(&zeros)?;
             }
-            for (hash, node) in mem {
-                let bytes = to_persisted(node).encode_v1();
-                assert!(
-                    bytes.len() as u64 <= SLOT,
-                    "node > one slot: {}",
-                    bytes.len()
-                );
-                let slot = loop {
+            w.sync_all()?;
+
+            let direct = open_direct(&store.path)?;
+            let align = probe_align(&direct).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "O_DIRECT reads not supported here",
+                )
+            })?;
+            let encoded: Vec<_> = mem
+                .iter()
+                .map(|(h, n)| (*h, to_persisted(n).encode_v1()))
+                .collect();
+            let max_len = encoded.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
+            let slot = max_len.div_ceil(align).max(1) * align;
+            let slots = span / slot as u64;
+            if (encoded.len() as u64) > slots {
+                return Err(io::Error::other("span too small for node count"));
+            }
+
+            let mut rng = Xorshift128::new(0xD15C);
+            let mut used = HashSet::new();
+            for (hash, bytes) in &encoded {
+                let pos = loop {
                     let c = rng.next_u64() % slots;
                     if used.insert(c) {
-                        break c;
+                        break c * slot as u64;
                     }
                 };
-                w.write_all_at(&bytes, slot * SLOT).unwrap();
-                index.insert(*hash, (slot * SLOT, bytes.len()));
+                w.write_all_at(bytes, pos)?;
+                store.index.insert(*hash, (pos, bytes.len()));
             }
-            w.sync_all().unwrap();
+            w.sync_all()?;
             drop(w);
-            let file = OpenOptions::new()
-                .read(true)
-                .custom_flags(O_DIRECT)
-                .open(&path)
-                .expect("open O_DIRECT");
-            Self { path, file, index }
+            store.file = direct;
+            store.slot = slot;
+            Ok(store)
         }
 
         fn fetch(&self, buf: &mut AlignedBuf, hash: &StructuralHash) -> Result<Node, ()> {
@@ -290,48 +356,59 @@ mod disk {
         }
     }
 
-    pub fn bench(n: usize, delta: usize, reps: u32) {
+    pub fn bench(n: usize, delta: usize) {
         let entries = make_string_entries(n, 0x5EED_0000 + n as u64);
         let base = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
             .expect("build");
-        let next = mutate(&base, &entries, delta);
-        let depth = tree_depth(&base).max(tree_depth(&next));
+        let nexts: Vec<Node> = (0..SAMPLES)
+            .map(|v| mutate(&base, &entries, delta, v))
+            .collect();
+        let depth = nexts
+            .iter()
+            .map(tree_depth)
+            .chain([tree_depth(&base)])
+            .max()
+            .unwrap_or(0);
         let mut mem = Store::new();
         super::store_all(&base, &mut mem);
-        super::store_all(&next, &mut mem);
-let path = std::env::temp_dir().join(format!(
-            "hamt_delta_nodes-{}-{}.bin",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock before epoch")
-                .as_nanos()
-        ));
-        let store = DiskStore::build(path, &mem);
+        for next in &nexts {
+            super::store_all(next, &mut mem);
+        }
+        let store = match DiskStore::build(&mem) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("hamt delta on disk (n={n}, edits={delta}): skipped ({e})");
+                return;
+            }
+        };
         println!(
-            "hamt delta on disk (n={n}, edits={delta}, depth={depth}, {} nodes):",
-            store.index.len()
+            "hamt delta on disk (n={n}, edits={delta}, depth={depth}, {} nodes, {} B slots, median of {SAMPLES}):",
+            store.index.len(),
+            store.slot
         );
-        let mut buf = AlignedBuf::new(SLOT as usize);
+        let mut buf = AlignedBuf::new(store.slot, store.slot);
         for layers in 0..depth {
-            let (a, b) = (cache_layers(&base, layers), cache_layers(&next, layers));
-            let mut fetches = 0u64;
-            let mut delta_len = 0;
-            let start = Instant::now();
-            for _ in 0..reps {
-                fetches = 0;
+            let a = cache_layers(&base, layers);
+            let mut samples: Vec<(Duration, u64, usize)> = Vec::with_capacity(SAMPLES);
+            for next in &nexts {
+                let b = cache_layers(next, layers);
+                let mut fetches = 0u64;
+                let start = Instant::now();
                 let mut r = |h: &StructuralHash| -> Result<Node, ()> {
                     fetches += 1;
                     store.fetch(&mut buf, h)
                 };
                 let (ad, rm) = hamt::delta::diff_hamt_nodes(&a, &b, &mut r).expect("diff");
-                delta_len = ad.len() + rm.len();
+                samples.push((start.elapsed(), fetches, ad.len() + rm.len()));
             }
-            let per = start.elapsed() / reps;
+            samples.sort_by_key(|s| s.0);
+            let (med, fetches, delta_len) = samples[SAMPLES / 2];
             println!(
-                "  disk, {layers} cached layers (n={n}, d={delta}): {:.3} ms/op ({fetches} fetches, {:.2} ms/fetch, {delta_len} delta leaves)",
-                per.as_secs_f64() * 1e3,
-                per.as_secs_f64() * 1e3 / fetches.max(1) as f64
+                "  disk, {layers} cached layers (n={n}, d={delta}): {:.3} ms/op ({fetches} fetches, {:.2} ms/fetch, {delta_len} delta leaves; min {:.3}, max {:.3} ms)",
+                med.as_secs_f64() * 1e3,
+                med.as_secs_f64() * 1e3 / fetches.max(1) as f64,
+                samples[0].0.as_secs_f64() * 1e3,
+                samples[SAMPLES - 1].0.as_secs_f64() * 1e3,
             );
         }
     }
@@ -343,9 +420,12 @@ pub fn run() {
             bench(n, delta);
         }
     }
+    #[cfg(target_os = "linux")]
     for &n in &[16384usize, 131_072] {
         for &delta in &[1usize, 10, 100] {
-            disk::bench(n, delta, 1);
+            disk::bench(n, delta);
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    println!("hamt delta on disk: skipped (needs Linux O_DIRECT)");
 }

@@ -1207,6 +1207,7 @@ dependencies = [
  "ed25519-consensus",
  "ed25519-dalek",
  "imbl",
+ "libc",
  "rand 0.8.8",
  "rezzy",
  "rezzy-recon",
