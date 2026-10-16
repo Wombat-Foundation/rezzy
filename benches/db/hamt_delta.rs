@@ -41,7 +41,8 @@ type Store = HashMap<StructuralHash, Node>;
 const STRUCTURAL_KEY: &[u8] = b"bench-hamt-delta";
 
 /// Copies `node` with every child replaced by `Lazy(hash)` and records the
-/// copy (and, recursively, all descendants) in `store`.
+/// copy and its resolved descendants in `store`. Hashes already present in
+/// `store` are skipped along with their descendants; lazy children are not loaded.
 fn store_all(node: &Node, store: &mut Store) {
     if store.contains_key(&node.structural_hash) {
         return;
@@ -54,6 +55,7 @@ fn store_all(node: &Node, store: &mut Store) {
     store.insert(node.structural_hash, Arc::new(lazy_copy(node)));
 }
 
+/// Copies `node` with lazy child references, preserving its leaves and hash.
 fn lazy_copy(node: &Node) -> HamtNode<Key, Value> {
     HamtNode {
         datamap: node.datamap,
@@ -70,6 +72,7 @@ fn lazy_copy(node: &Node) -> HamtNode<Key, Value> {
 
 /// Rebuilds `node` keeping `layers` levels of children resident and turning
 /// everything deeper into `Lazy` refs.
+/// Zero keeps only `node` resident; existing lazy references stay lazy.
 fn cache_layers(node: &Node, layers: usize) -> Node {
     if layers == 0 {
         return Arc::new(lazy_copy(node));
@@ -91,6 +94,8 @@ fn cache_layers(node: &Node, layers: usize) -> Node {
     })
 }
 
+/// Returns the longest resolved path's node count, including `node` itself.
+/// Lazy children are ignored, so a node with no resolved children has depth 1.
 fn tree_depth(node: &Node) -> usize {
     1 + node
         .children
@@ -103,7 +108,14 @@ fn tree_depth(node: &Node) -> usize {
         .unwrap_or(0)
 }
 
-/// Applies `edits` mutations (half overwrites of existing keys, half new keys).
+/// Returns a root after `edits` mutations, alternating overwrites of keys from
+/// `entries` with generated new keys, starting with an overwrite. Odd counts
+/// therefore include one extra overwrite. `variant` varies the selected keys
+/// and generated names; `base` is left unchanged, and zero edits returns it.
+///
+/// # Panics
+/// Panics if `edits` is nonzero and `entries` is empty, if an edit requires
+/// resolving a lazy child, or if HAMT insertion fails.
 fn mutate(base: &Node, entries: &[(Key, Value)], edits: usize, variant: usize) -> Node {
     let mut root = Arc::clone(base);
     for i in 0..edits {
@@ -128,6 +140,13 @@ fn mutate(base: &Node, entries: &[(Key, Value)], edits: usize, variant: usize) -
     root
 }
 
+/// Times `reps` diffs from `a` to `b`, resolving lazy nodes from `store`.
+/// Prints average nanoseconds per diff and the final diff's fetch count and
+/// combined added/removed leaf count under `label`.
+///
+/// # Panics
+/// Panics if `reps` is zero, a needed hash is missing from `store`, or the diff
+/// exceeds the HAMT traversal depth limit.
 fn run_one(label: &str, a: &Node, b: &Node, store: &Store, reps: u32) {
     let mut fetches = 0u64;
     let mut delta_len = 0usize;
@@ -149,6 +168,11 @@ fn run_one(label: &str, a: &Node, b: &Node, store: &Store, reps: u32) {
     );
 }
 
+/// Reports fully resident and RAM-resolved diff timings for an `n`-entry base
+/// with `delta` mutations, varying the number of cached child layers.
+///
+/// # Panics
+/// Panics if HAMT construction, mutation, or differencing fails.
 fn bench(n: usize, delta: usize) {
     let entries = make_string_entries(n, 0x5EED_0000 + n as u64);
     let base = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
@@ -212,6 +236,10 @@ mod disk {
 
     struct AlignedBuf(*mut u8, Layout);
     impl AlignedBuf {
+        /// Allocates `len` zeroed bytes with alignment `align`; `len` must be nonzero.
+        ///
+        /// # Panics
+        /// Panics if the allocation layout is invalid or allocation fails.
         fn new(len: usize, align: usize) -> Self {
             let layout = Layout::from_size_align(len, align).unwrap();
             // SAFETY: non-zero size; zeroed so reads never see uninit memory.
@@ -220,12 +248,14 @@ mod disk {
             unsafe { ptr.write_bytes(0, len) };
             Self(ptr, layout)
         }
+        /// Borrows the entire allocation as a mutable byte slice.
         fn as_mut(&mut self) -> &mut [u8] {
             // SAFETY: `ptr` is a live allocation of `layout.size()` bytes.
             unsafe { std::slice::from_raw_parts_mut(self.0, self.1.size()) }
         }
     }
     impl Drop for AlignedBuf {
+        /// Releases the aligned allocation.
         fn drop(&mut self) {
             // SAFETY: allocated with this layout in `new`.
             unsafe { dealloc(self.0, self.1) };
@@ -239,6 +269,8 @@ mod disk {
         index: HashMap<StructuralHash, (u64, usize)>,
     }
 
+    /// Returns `HAMT_DELTA_DIR`, or `<manifest>/target` when it is unset.
+    /// Does not create the directory.
     fn scratch_dir() -> PathBuf {
         std::env::var_os("HAMT_DELTA_DIR").map_or_else(
             || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
@@ -246,6 +278,8 @@ mod disk {
         )
     }
 
+    /// Returns the file span in bytes from `HAMT_DELTA_SPAN_MIB` (in MiB).
+    /// An unset or unparseable value defaults to 1024 MiB.
     fn span_bytes() -> u64 {
         std::env::var("HAMT_DELTA_SPAN_MIB")
             .ok()
@@ -254,6 +288,10 @@ mod disk {
             << 20
     }
 
+    /// Opens an existing node file for reads with `O_DIRECT`.
+    ///
+    /// # Errors
+    /// Propagates file-open errors, including unsupported direct I/O.
     fn open_direct(path: &PathBuf) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
@@ -263,6 +301,7 @@ mod disk {
 
     /// Smallest alignment for which an `O_DIRECT` read of that size at offset 0
     /// into a buffer of that alignment succeeds.
+    /// Tries only `ALIGNS` and returns `None` if every probe read fails.
     fn probe_align(file: &File) -> Option<usize> {
         ALIGNS.into_iter().find(|&a| {
             let mut buf = AlignedBuf::new(a, a);
@@ -271,6 +310,17 @@ mod disk {
     }
 
     impl DiskStore {
+        /// Persists `mem` in a unique file under the scratch directory, scattering
+        /// nodes across the configured span in aligned slots for direct reads.
+        /// Creates the directory as needed and writes the full span before nodes.
+        ///
+        /// # Errors
+        /// Propagates directory, file creation, cloning, writing, syncing, and
+        /// direct-open errors. Returns an error if all alignment probes fail or
+        /// the configured span cannot hold the encoded nodes.
+        ///
+        /// # Panics
+        /// Panics if a node cannot be encoded or an aligned buffer cannot be allocated.
         fn build(mem: &Store) -> io::Result<Self> {
             let dir = scratch_dir();
             std::fs::create_dir_all(&dir)?;
@@ -338,6 +388,12 @@ mod disk {
             Ok(store)
         }
 
+        /// Reads and verifies the node at `hash`, returning it with lazy children.
+        /// `buf` must have this store's slot size and alignment; its contents are overwritten.
+        ///
+        /// # Errors
+        /// Returns `Err(())` for an unknown hash, a read or decode failure, or a
+        /// failed structural-hash verification, discarding the underlying error.
         fn fetch(&self, buf: &mut AlignedBuf, hash: &StructuralHash) -> Result<Node, ()> {
             let &(off, len) = self.index.get(hash).ok_or(())?;
             self.file.read_exact_at(buf.as_mut(), off).map_err(|_| ())?;
@@ -351,11 +407,22 @@ mod disk {
     }
 
     impl Drop for DiskStore {
+        /// Attempts to remove this store's node file, ignoring removal errors.
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.path);
         }
     }
 
+    /// Reports direct-I/O diff timings for an `n`-entry base with `delta`
+    /// mutations per sample, varying cached child layers. Prints the median,
+    /// minimum, and maximum milliseconds across five edit sets; fetch and delta
+    /// leaf counts come from the median sample.
+    ///
+    /// Store setup errors print a skipped result and return.
+    ///
+    /// # Panics
+    /// Panics if HAMT construction or mutation fails, a buffer cannot be allocated,
+    /// or a diff fails, including node read, decode, or verification failures.
     pub fn bench(n: usize, delta: usize) {
         let entries = make_string_entries(n, 0x5EED_0000 + n as u64);
         let base = hamt::build_hamt::<Key, Value, _>(STRUCTURAL_KEY, entries.iter().cloned())
@@ -414,6 +481,13 @@ mod disk {
     }
 }
 
+/// Runs the HAMT delta benchmark matrix for resident trees and a RAM resolver,
+/// plus direct disk reads on Linux. Prints results to standard output.
+/// Disk setup errors skip the affected configuration; other platforms skip disk runs.
+///
+/// # Panics
+/// Panics if HAMT construction, mutation, or differencing fails, including disk
+/// fetch failures after successful setup, or if an aligned allocation fails.
 pub fn run() {
     for &n in &[1024usize, 16384, 131_072] {
         for &delta in &[1usize, 10, 100] {
