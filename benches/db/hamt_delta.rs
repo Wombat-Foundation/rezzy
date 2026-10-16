@@ -299,7 +299,14 @@ mod disk {
         let mut mem = Store::new();
         super::store_all(&base, &mut mem);
         super::store_all(&next, &mut mem);
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/hamt_delta_nodes.bin");
+let path = std::env::temp_dir().join(format!(
+            "hamt_delta_nodes-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before epoch")
+                .as_nanos()
+        ));
         let store = DiskStore::build(path, &mem);
         println!(
             "hamt delta on disk (n={n}, edits={delta}, depth={depth}, {} nodes):",
