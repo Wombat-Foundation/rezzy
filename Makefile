@@ -238,6 +238,19 @@ clean:   rust/clean	##H Remove all build artifacts
 # 	fi
 
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Execute command for reach submodule
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PROJECT_CRATES ?= rezzy-cli/ benches/ tests/ examples/
+
+.PHONY: sub
+sub:	##H Run a command for each crate (set c)
+	@test -n "${c}" || (echo "error: set c=<command>"; exit 1)
+	@for d in $(PROJECT_CRATES); do echo "--- $$d ---"; (cd $$d && ${c}) || exit 1; done
+
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Help / extras
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
