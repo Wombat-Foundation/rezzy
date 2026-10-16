@@ -257,6 +257,20 @@ impl ElementHash {
         Self::matrix_event_digest32(event_id, format).map(Self::from_digest32)
     }
 
+    /// Derives an element hash from an event ID of unknown room-version format.
+    ///
+    /// Tries [`EventIdFormat::V4Plus`], then [`EventIdFormat::V3`]. The
+    /// alphabets differ only in the `+/` versus `-_` characters, so an ID that
+    /// decodes under both decodes to the same digest and the result is never
+    /// ambiguous.
+    ///
+    /// # Errors
+    /// Returns the V3 error when the ID is valid under neither format.
+    pub fn from_matrix_event_id_any(event_id: &str) -> Result<Self, AlgebraicError> {
+        Self::from_matrix_event_id(event_id, EventIdFormat::V4Plus)
+            .or_else(|_| Self::from_matrix_event_id(event_id, EventIdFormat::V3))
+    }
+
     /// Derives the MSC4521 Matrix event-ID binding digest `D(e)`.
     ///
     /// # Errors
@@ -752,6 +766,25 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+
+    #[test]
+    fn event_id_any_falls_back_to_v3_and_matches_explicit_format() {
+        // 0xFB.. bytes force '+'/'/' (V3) or '-'/'_' (V4+) characters.
+        let digest = [0xFB_u8; 32];
+        let v3 = encode_base64(&STANDARD_NO_PAD, &digest);
+        let v4 = encode_base64(&URL_SAFE_NO_PAD, &digest);
+        assert_ne!(v3, v4);
+        let expect = ElementHash::from_digest32(digest);
+        assert_eq!(
+            ElementHash::from_matrix_event_id_any(&alloc::format!("${v3}")),
+            Ok(expect)
+        );
+        assert_eq!(
+            ElementHash::from_matrix_event_id_any(&alloc::format!("${v4}")),
+            Ok(expect)
+        );
+        assert!(ElementHash::from_matrix_event_id_any("nope").is_err());
+    }
 
     #[test]
     fn h128_comes_from_the_trailing_half_disjoint_from_h64() {

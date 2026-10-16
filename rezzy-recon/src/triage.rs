@@ -179,6 +179,57 @@ pub struct BucketDecodeBatch {
     pub failed_buckets: Vec<(u8, u64)>,
 }
 
+impl BucketDecodeBatch {
+    /// A batch in which every requested bucket failed to decode, as when the
+    /// peer reports capacity exceeded for the whole request.
+    #[must_use]
+    pub fn all_failed(requests: &[BucketRequest]) -> Self {
+        Self {
+            successful_buckets: Vec::new(),
+            failed_buckets: requests.iter().map(|r| (r.depth, r.prefix)).collect(),
+        }
+    }
+
+    /// A batch in which every requested bucket decoded, with `roots` grouped
+    /// into the bucket whose prefix they fall under. Buckets holding no root
+    /// still succeed with an empty root list. Roots outside every requested
+    /// bucket are dropped; requests are expected to be non-overlapping.
+    #[must_use]
+    pub fn from_roots(requests: &[BucketRequest], roots: &[u64]) -> Self {
+        let successful_buckets = requests
+            .iter()
+            .map(|r| BucketDecodeSuccess {
+                depth: r.depth,
+                prefix: r.prefix,
+                roots: roots
+                    .iter()
+                    .copied()
+                    .filter(|&root| bucket_prefix(root, r.depth) == r.prefix)
+                    .collect(),
+            })
+            .collect();
+        Self {
+            successful_buckets,
+            failed_buckets: Vec::new(),
+        }
+    }
+}
+
+/// Returns the bucket prefix of `h64` at `depth`: its top `depth` bits.
+///
+/// Depth 0 is the single root bucket (prefix 0); depths of 64 or more return
+/// `h64` unchanged.
+#[must_use]
+pub const fn bucket_prefix(h64: u64, depth: u8) -> u64 {
+    if depth == 0 {
+        0
+    } else if depth >= 64 {
+        h64
+    } else {
+        h64 >> 64_u32.saturating_sub(depth as u32)
+    }
+}
+
 /// Returns the canonical start of a bucket's key-space range.
 ///
 /// This is shared between bucket ordering and request validation so the two
@@ -740,6 +791,24 @@ mod tests {
                 low_confidence: true,
             })
         );
+    }
+
+    #[test]
+    fn bucket_prefix_and_batch_constructors() {
+        assert_eq!(bucket_prefix(u64::MAX, 0), 0);
+        assert_eq!(bucket_prefix(1 << 63, 1), 1);
+        assert_eq!(bucket_prefix(0xABCD_0000_0000_0000, 16), 0xABCD);
+        assert_eq!(bucket_prefix(7, 64), 7);
+        let requests = [BucketRequest::new(1, 0, 4), BucketRequest::new(2, 2, 4)];
+        let failed = BucketDecodeBatch::all_failed(&requests);
+        assert_eq!(failed.failed_buckets, [(1, 0), (2, 2)]);
+        assert!(failed.successful_buckets.is_empty());
+        let (a, b) = (0x1000_0000_0000_0000_u64, 0x8000_0000_0000_0001_u64);
+        let batch = BucketDecodeBatch::from_roots(&requests, &[a, b]);
+        assert!(batch.failed_buckets.is_empty());
+        assert_eq!(batch.successful_buckets[0].roots, [a]);
+        assert_eq!(batch.successful_buckets[1].roots, [b]);
+        assert_eq!(batch.successful_buckets[1].prefix, 2);
     }
 
     #[test]

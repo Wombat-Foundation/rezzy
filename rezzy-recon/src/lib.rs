@@ -57,10 +57,10 @@ pub use server::{
     Population, ReconciliationContext, SortedPopulation,
 };
 pub use triage::{
-    decode_bucket_sketches, estimate_strata, validate_overflow_bucket_requests, BucketDecodeBatch,
-    BucketDecodeSuccess, BucketRequest, NodeSummary, StrataEstimate, MAX_BATCH_FACTOR_WORK,
-    MAX_BUCKETED_SKETCH_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY, MAX_STRATA_FACTOR_WORK,
-    NODE_SUMMARY_LEN,
+    bucket_prefix, decode_bucket_sketches, estimate_strata, validate_overflow_bucket_requests,
+    BucketDecodeBatch, BucketDecodeSuccess, BucketRequest, NodeSummary, StrataEstimate,
+    MAX_BATCH_FACTOR_WORK, MAX_BUCKETED_SKETCH_CAPACITY, MAX_OVERFLOW_BUCKET_CAPACITY,
+    MAX_STRATA_FACTOR_WORK, NODE_SUMMARY_LEN,
 };
 pub use verify::{verify_batch, verify_decode, verify_follow_up, Classified};
 
