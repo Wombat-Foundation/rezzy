@@ -318,9 +318,8 @@ impl fmt::Display for VerifyError<'_> {
 }
 
 /// Compatibility conversion to `String` for callers that still surface
-/// `VerifyError` through a `String`-typed error boundary. It is what lets
-/// `AuthError::InvalidSyntax` keep holding a borrowed `&'a str` reason
-/// while still accepting a structured verification failure.
+/// `VerifyError` through a `String`-typed error boundary. Use it to render a
+/// structured verification failure as text where a `String` is required.
 impl From<VerifyError<'_>> for String {
     fn from(err: VerifyError<'_>) -> Self {
         err.to_string()
