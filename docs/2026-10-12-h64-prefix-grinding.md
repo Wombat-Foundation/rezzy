@@ -99,10 +99,11 @@ This policy describes the verified `BucketExchange::advance_verified` path.
    verification failures are split instead; they do not take this overflow
    retry.
 2. **Fan out stalled nodes.** A failed node too large for overflow, or whose
-   overflow request does not fit the configured aggregate budget, uses the
-   available 128-request budget to descend up to seven prefix bits in one
-   round. These nodes are split immediately based on the summaries already
-   returned for each node.
+   overflow request does not fit the configured aggregate budget, is split
+   immediately, based on the summaries already returned for each node, by up to
+   seven prefix bits. The children are queued; up to 128 requests per round are
+   sent, bounded by the aggregate capacity, and the remainder go out in later
+   rounds.
 3. **Keep terminal fallback local.** `ClientAction::ResolveRoots` exposes
    terminal failures through `ladder_failed`; it does not perform ID fallback.
    The caller must apply bounded ID fallback to each failed node, limiting the

@@ -977,6 +977,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn standard_decode_checks_coordinates_beyond_element_limit() {
+        let mut sketch = SyndromeSketch::new(32).unwrap();
+        sketch.coordinates[20] = 1;
+
+        assert_eq!(
+            sketch.decode_elements_with_budget(10, 8_000_000),
+            Err(AlgebraicError::DecodeFailure)
+        );
+    }
+
     /// Fast unit test for the capacity-mismatch check itself: a
     /// capacity-256 sketch must reject a 257-element decode even though
     /// re-encoding those values would reproduce the sketch exactly

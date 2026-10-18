@@ -1097,8 +1097,9 @@ mod tests {
         // Densities straddle the 4096-of-65536 (16/256) array/bitset threshold.
         for &da in &[0u64, 1, 3, 16, 17, 64, 200, 256] {
             for &db in &[0u64, 2, 15, 16, 18, 128, 256] {
-                // Stopgap: above the array/bitset threshold the `BTreeSet` oracle
-                // dominates the runtime (debug build), so only compare sparse pairs.
+                // Above the array/bitset threshold the `BTreeSet` oracle dominates
+                // the runtime (debug build), so only compare sparse pairs here;
+                // dense pairs are covered by `dense_set_ops_match_linear_oracle`.
                 if da > 16 || db > 16 {
                     continue;
                 }
@@ -1147,8 +1148,7 @@ mod tests {
         assert!(b.chunks.iter().all(|c| matches!(c.store, Store::Dense(_))));
 
         let expected_union: Vec<_> = (0..75_000).filter(|&v| in_a(v) || in_b(v)).collect();
-        let expected_intersection: Vec<_> =
-            (0..75_000).filter(|&v| in_a(v) && in_b(v)).collect();
+        let expected_intersection: Vec<_> = (0..75_000).filter(|&v| in_a(v) && in_b(v)).collect();
         let expected_difference: Vec<_> = (0..75_000).filter(|&v| in_a(v) && !in_b(v)).collect();
         let check_values = |bitmap: &Bitmap, expected: &[u32]| {
             assert_eq!(bitmap.len(), expected.len() as u64);
