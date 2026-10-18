@@ -77,7 +77,7 @@ impl From<Hash> for UnsignedRoot {
 /// allocate.
 ///
 /// A `FieldName` can only hold [`FieldName::MAX_LEN`] bytes, so a name that is
-/// stored truncated would not compare equal to another over-long name sharing
+/// stored truncated would compare equal to another over-long name sharing
 /// the same prefix -- and derived equality on [`MerkleError`] would then treat
 /// distinct names as identical. To keep that from happening the validated
 /// entry points ([`leaf_hash`], [`leaf_hash_bytes`], [`component_hash`],
