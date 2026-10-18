@@ -246,6 +246,51 @@ fn covers(ancestor: (u8, u64), node: (u8, u64)) -> bool {
     u128::from(node.1).checked_shr(u32::from(shift)) == Some(u128::from(ancestor.1))
 }
 
+/// The half-open interval represented by a bucket prefix at `MAX_DEPTH`.
+fn node_interval(node: (u8, u64)) -> Option<(u128, u128)> {
+    let remaining = crate::MAX_DEPTH.checked_sub(node.0)?;
+    let remaining = u32::from(remaining);
+    let start = u128::from(node.1).checked_shl(remaining)?;
+    let end = u128::from(node.1).checked_add(1)?.checked_shl(remaining)?;
+    Some((start, end))
+}
+
+/// Combines a complete, non-overlapping cover of `parent` from descendant
+/// summaries. `None` means some part of the parent has not arrived yet.
+fn summarize_descendant_cover(
+    parent: (u8, u64),
+    summaries: &[(u8, u64, NodeSummary)],
+) -> Option<(NodeSummary, bool)> {
+    let mut descendants = alloc::vec::Vec::new();
+    for &(depth, prefix, summary) in summaries {
+        let node = (depth, prefix);
+        if depth > parent.0 && covers(parent, node) {
+            let (start, end) = node_interval(node)?;
+            descendants.push((start, end, summary));
+        }
+    }
+    descendants.sort_unstable_by_key(|&(start, _, _)| start);
+
+    let (start, end) = node_interval(parent)?;
+    let mut cursor = start;
+    let mut count = 0_u64;
+    let mut count_valid = true;
+    let mut digest = 0_u128;
+    for &(child_start, child_end, summary) in &descendants {
+        if child_start != cursor {
+            return None;
+        }
+        cursor = child_end;
+        if let Some(total) = count.checked_add(summary.count) {
+            count = total;
+        } else {
+            count_valid = false;
+        }
+        digest ^= summary.digest;
+    }
+    (cursor == end).then_some((NodeSummary { count, digest }, count_valid))
+}
+
 /// Whether `h64` falls inside `node`.
 fn in_node(h64: u64, node: (u8, u64)) -> bool {
     crate::server::H64Index::bounds_unchecked(&BucketRequest::new(node.0, node.1, 1))
@@ -374,11 +419,13 @@ impl BucketExchange {
         batch.failed_buckets.retain(|&(d, p)| !inside(d, p));
     }
 
-    /// Checks that each split's two children, as reported by the responder,
-    /// XOR and sum to the parent's summary. The children may arrive in
-    /// different rounds, so the parent's summary is kept until both are in.
-    /// A violation is responder inconsistency, which no capacity bump or split
-    /// can fix, so the parent goes straight to ladder-failed.
+    /// Checks that each split's children, as reported by the responder, XOR
+    /// and sum to the parent's summary. A split may fan out by several prefix
+    /// bits, so the children are all `2^k` descendants at the shallowest depth
+    /// below the parent, and they may arrive in different rounds: the parent's
+    /// summary is kept until every one of them is in. A violation is responder
+    /// inconsistency, which no capacity bump or split can fix, so the parent
+    /// goes straight to ladder-failed.
     ///
     /// Only the responder's summaries are checked: that is what catches peer
     /// inconsistency. The local summaries come from our own population and are
@@ -390,42 +437,47 @@ impl BucketExchange {
         batch: &mut BucketDecodeBatch,
     ) {
         for (request, &summary) in requests.iter().zip(remote) {
-            let (depth, prefix) = (request.depth, request.prefix);
-            let Some(parent_depth) = depth.checked_sub(1) else {
-                continue;
-            };
-            let parent = (parent_depth, prefix >> 1);
+            let node = (request.depth, request.prefix);
+            // A fresh summary supersedes any overlapping earlier summary: a
+            // previously observed descendant may itself have been split.
+            self.awaiting.retain(|&(depth, prefix, _)| {
+                !covers((depth, prefix), node) && !covers(node, (depth, prefix))
+            });
+            let under_parent = self
+                .parents
+                .iter()
+                .any(|&(d, p, _)| d < node.0 && covers((d, p), node));
+            if under_parent {
+                self.awaiting.push((node.0, node.1, summary));
+            }
+        }
+
+        let candidates: alloc::vec::Vec<(u8, u64)> =
+            self.parents.iter().map(|&(d, p, _)| (d, p)).collect();
+        for parent in candidates {
+            // An earlier ladder failure in this loop may have dropped it.
             let Some(slot) = self.parents.iter().position(|&(d, p, _)| (d, p) == parent) else {
                 continue;
             };
-            let sibling = (depth, prefix ^ 1);
-            let from_round = requests
-                .iter()
-                .zip(remote)
-                .find(|(r, _)| (r.depth, r.prefix) == sibling)
-                .map(|(_, &s)| s);
-            let from_earlier = self
-                .awaiting
-                .iter()
-                .position(|&(d, p, _)| (d, p) == sibling);
-            let sibling_summary = from_round.or_else(|| from_earlier.map(|i| self.awaiting[i].2));
-            let Some(sibling_summary) = sibling_summary else {
-                if !self
-                    .awaiting
-                    .iter()
-                    .any(|&(d, p, _)| (d, p) == (depth, prefix))
-                {
-                    self.awaiting.push((depth, prefix, summary));
-                }
+            let parent_summary = self.parents[slot].2;
+            let Some((descendant_summary, count_valid)) =
+                summarize_descendant_cover(parent, &self.awaiting)
+            else {
                 continue;
             };
-            let (_, _, parent_summary) = self.parents.remove(slot);
-            self.awaiting
-                .retain(|&(d, p, _)| (d, p) != sibling && (d, p) != (depth, prefix));
-            if !parent_summary.is_split_of(summary, sibling_summary) {
+            self.parents.remove(slot);
+            if !count_valid || descendant_summary != parent_summary {
                 self.ladder_fail(parent, batch);
             }
         }
+
+        self.awaiting.retain(|&(depth, prefix, _)| {
+            self.parents
+                .iter()
+                .any(|&(parent_depth, parent_prefix, _)| {
+                    parent_depth < depth && covers((parent_depth, parent_prefix), (depth, prefix))
+                })
+        });
     }
 
     /// Whether a phase-1 failure of `node` repeats an earlier one: same
@@ -2259,6 +2311,56 @@ mod tests {
         assert_eq!(exchange.ladder_failed(), &[(2, 1)]);
     }
 
+    #[test]
+    fn multi_bit_split_consistency_waits_for_descendants_across_rounds() {
+        let mut exchange = fresh_exchange();
+        exchange.parents.push((0, 0, summary(5, 0b1_1111)));
+
+        let first_requests = [BucketRequest::new(2, 0, 8), BucketRequest::new(2, 2, 8)];
+        let first_summaries = [summary(2, 0b0011), summary(1, 0b1000)];
+        let mut batch = BucketDecodeBatch {
+            successful_buckets: vec![],
+            failed_buckets: vec![],
+        };
+        exchange.check_split_consistency(&first_requests, &first_summaries, &mut batch);
+        assert!(exchange.ladder_failed().is_empty());
+        assert_eq!(exchange.parents.len(), 1);
+
+        // The first depth-2 node was split again. Its stale summary is
+        // replaced by the two depth-3 summaries, arriving alongside the
+        // remaining depth-2 descendants of the original root.
+        let second_requests = [
+            BucketRequest::new(3, 0, 8),
+            BucketRequest::new(3, 1, 8),
+            BucketRequest::new(2, 1, 8),
+            BucketRequest::new(2, 3, 8),
+        ];
+        let second_summaries = [
+            summary(1, 0b0001),
+            summary(1, 0b0010),
+            summary(1, 0b0100),
+            summary(1, 0b10_0000),
+        ];
+        exchange.check_split_consistency(&second_requests, &second_summaries, &mut batch);
+        assert_eq!(exchange.ladder_failed(), &[(0, 0)]);
+
+        let action = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![],
+            },
+            &[],
+            None,
+        );
+        assert_eq!(
+            action,
+            ClientAction::ResolveRoots {
+                roots: vec![],
+                ladder_failed: vec![(0, 0)],
+            }
+        );
+    }
+
     /// The phase-2 stop rule mirrors phase 1's: large, splittable, budget left.
     #[test]
     fn should_narrow_follows_the_phase_one_limits() {
@@ -2408,6 +2510,94 @@ mod tests {
         }
         assert_eq!(exchange.ladder_failed(), []);
         assert_eq!(exchange.classified().len(), 2);
+    }
+
+    /// A wide split fans out by several prefix bits. Its children, which may
+    /// arrive across rounds, are checked against the parent only once all of
+    /// them are in; a mismatch ladder-fails the parent.
+    #[test]
+    fn inconsistent_wide_split_children_ladder_fail_the_parent() {
+        let mut exchange = fresh_exchange();
+        let max = MAX_BUCKET_SKETCH_CAPACITY;
+        let _ = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &[BucketRequest::new(0, 0, max)],
+                &[summary(4, 0xF)],
+                &[summary(4, 0xF)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        // Three of four depth-2 children arrive first; nothing can be judged yet.
+        for (prefix, count, digest) in [(0_u64, 1_u64, 0x1_u128), (1, 1, 0x2), (2, 1, 0x4)] {
+            let _ = exchange
+                .advance_verified(
+                    success(2, prefix, &[]),
+                    &[BucketRequest::new(2, prefix, 8)],
+                    &[summary(count, digest)],
+                    &[summary(count, digest)],
+                    None,
+                    |_| vec![],
+                )
+                .unwrap();
+        }
+        assert_eq!(exchange.ladder_failed(), []);
+        // The last child makes the sum 5, not the parent's 4.
+        let action = exchange
+            .advance_verified(
+                success(2, 3, &[]),
+                &[BucketRequest::new(2, 3, 8)],
+                &[summary(2, 0x8)],
+                &[summary(2, 0x8)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        assert_eq!(exchange.ladder_failed(), &[(0, 0)]);
+        assert!(exchange.classified().is_empty());
+        assert_eq!(
+            action,
+            ClientAction::ResolveRoots {
+                roots: vec![],
+                ladder_failed: vec![(0, 0)],
+            }
+        );
+    }
+
+    #[test]
+    fn consistent_wide_split_children_across_rounds_are_admitted() {
+        let mut exchange = fresh_exchange();
+        let max = MAX_BUCKET_SKETCH_CAPACITY;
+        let _ = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &[BucketRequest::new(0, 0, max)],
+                &[summary(4, 0xF)],
+                &[summary(4, 0xF)],
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        for (prefix, count, digest) in [
+            (0_u64, 1_u64, 0x1_u128),
+            (1, 1, 0x2),
+            (2, 1, 0x4),
+            (3, 1, 0x8),
+        ] {
+            let _ = exchange
+                .advance_verified(
+                    success(2, prefix, &[]),
+                    &[BucketRequest::new(2, prefix, 8)],
+                    &[summary(count, digest)],
+                    &[summary(count, digest)],
+                    None,
+                    |_| vec![],
+                )
+                .unwrap();
+        }
+        assert_eq!(exchange.ladder_failed(), []);
+        assert_eq!(exchange.classified().len(), 4);
     }
 
     #[test]
