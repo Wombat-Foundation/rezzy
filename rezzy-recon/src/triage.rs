@@ -970,6 +970,58 @@ mod tests {
     }
 
     #[test]
+    fn capacity_256_overflow_request_decodes_with_its_single_call_ceiling() {
+        let request = BucketRequest::with_overflow(0, 0, MAX_OVERFLOW_BUCKET_CAPACITY);
+        let mut sketch = SyndromeSketch::new_overflow(MAX_OVERFLOW_BUCKET_CAPACITY).unwrap();
+        let expected: Vec<u64> = (1..=MAX_OVERFLOW_BUCKET_CAPACITY as u64)
+            .map(|value| value * 2 + 1)
+            .collect();
+        for &value in &expected {
+            sketch.toggle(value).unwrap();
+        }
+        let encoded = sketch
+            .coordinates()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let budget = pinsketch::single_call_work_ceiling(MAX_OVERFLOW_BUCKET_CAPACITY).unwrap();
+        let batch = decode_bucket_sketches(&encoded, &[request], budget).unwrap();
+        assert!(batch.failed_buckets.is_empty(), "{batch:?}");
+        let mut roots = batch.successful_buckets[0].roots.clone();
+        roots.sort_unstable();
+        assert_eq!(roots, expected);
+    }
+
+    #[test]
+    fn full_capacity_overflow_bucket_decodes_within_the_recommended_budget() {
+        let requests = [BucketRequest::with_overflow(
+            8,
+            1,
+            MAX_OVERFLOW_BUCKET_CAPACITY,
+        )];
+        let mut sketch = SyndromeSketch::new_overflow(MAX_OVERFLOW_BUCKET_CAPACITY).unwrap();
+        let expected: Vec<u64> = (1..=MAX_OVERFLOW_BUCKET_CAPACITY as u64)
+            .map(|i| i * 2 + 1)
+            .collect();
+        for &value in &expected {
+            sketch.toggle(value).unwrap();
+        }
+        let encoded = sketch
+            .coordinates()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let budget = recommended_bucket_decode_budget(&requests).unwrap();
+        let batch = decode_bucket_sketches(&encoded, &requests, budget).unwrap();
+        assert!(batch.failed_buckets.is_empty(), "{batch:?}");
+        let mut roots = batch.successful_buckets[0].roots.clone();
+        roots.sort_unstable();
+        assert_eq!(roots, expected);
+    }
+
+    #[test]
     fn one_undecodable_bucket_does_not_starve_a_later_decodable_bucket() {
         // Bucket at prefix 1 is over capacity and forces the full
         // factoring ladder to run and fail. Bucket at prefix 9 is

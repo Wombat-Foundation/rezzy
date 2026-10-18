@@ -2,8 +2,8 @@
 
 Status: **local no-amplification policy implemented.** Placement remains
 predictable; the retry path now bounds defender work by node population and
-depth without salt, epochs, or wire changes. The caller handles terminal
-failed prefixes with its node-scoped bounded ID fallback.
+depth without salt, epochs, or wire changes. Terminal failed prefixes are
+exposed to the caller, which must apply node-scoped bounded ID fallback.
 
 ## What the integrity checks do and don't give us
 
@@ -91,17 +91,22 @@ extra consensus appears not to exist. What remains is bounding the damage
 
 This policy describes the verified `BucketExchange::advance_verified` path.
 
-1. **Overflow decode small residuals.** If the sum of both sides' node counts
-   is at most 256, request one capacity-256 overflow sketch. The residual
-   population is bounded by that capacity, giving the decoder one attempt
-   without a capacity ladder.
-2. **Fan out stalled nodes.** A failed node too large for overflow uses the
-   available 128-request budget to descend up to seven prefix bits in one round.
-   Nodes with population above 256 are split immediately based on the summaries
-   already returned for each node.
-3. **Keep terminal fallback local.** `ladder_failed` reports the failed node
-   only. Its caller performs bounded ID fallback for that node, so transferred
-   IDs are limited to the population in the attacked region.
+1. **Overflow decode small residuals.** For an undecodable normal bucket that
+   was not rejected by phase-1 verification, if the sum of both sides' node
+   counts is at most 256 and the aggregate budget admits it, request one
+   capacity-256 overflow sketch. The residual population is bounded by that
+   capacity, giving the decoder one attempt without a capacity ladder. Phase-1
+   verification failures are split instead; they do not take this overflow
+   retry.
+2. **Fan out stalled nodes.** A failed node too large for overflow, or whose
+   overflow request does not fit the configured aggregate budget, uses the
+   available 128-request budget to descend up to seven prefix bits in one
+   round. These nodes are split immediately based on the summaries already
+   returned for each node.
+3. **Keep terminal fallback local.** `ClientAction::ResolveRoots` exposes
+   terminal failures through `ladder_failed`; it does not perform ID fallback.
+   The caller must apply bounded ID fallback to each failed node, limiting the
+   transferred IDs to that node's population in the attacked region.
 
 Each additional constrained digest bit doubles the expected hashes per attacker
 element. The responder's fallback cost is proportional to the node population,

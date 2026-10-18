@@ -29,7 +29,7 @@ use rezzy_recon::client::{
 use rezzy_recon::resident::ResidentKernel;
 use rezzy_recon::triage::{
     decode_bucket_sketches, estimate_strata, recommended_bucket_decode_budget,
-    MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_BUCKET_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
 };
 use rezzy_recon::{
     build_bucket_nodes, should_narrow, verify_follow_up, BucketRequest, Classified, ElementHash,
@@ -372,8 +372,24 @@ fn drive(
     estimate: Option<u64>,
 ) -> (ClientAction, BucketExchange) {
     loop {
-        let remote_nodes = build_bucket_nodes(&remote.population, &requests).unwrap();
-        let local_nodes = build_bucket_nodes(&local.population, &requests).unwrap();
+        match drive_round(local, remote, &mut exchange, &requests, estimate) {
+            ClientAction::BucketSketches { requests: next, .. } => requests = next,
+            terminal => return (terminal, exchange),
+        }
+    }
+}
+
+/// Builds, decodes and advances a single round for `requests`.
+fn drive_round(
+    local: &Side,
+    remote: &Side,
+    exchange: &mut BucketExchange,
+    requests: &[BucketRequest],
+    estimate: Option<u64>,
+) -> ClientAction {
+    {
+        let remote_nodes = build_bucket_nodes(&remote.population, requests).unwrap();
+        let local_nodes = build_bucket_nodes(&local.population, requests).unwrap();
         let mut encoded = Vec::new();
         for ((remote_sketch, _), (local_sketch, _)) in remote_nodes.iter().zip(&local_nodes) {
             let mut xored = remote_sketch.clone();
@@ -385,24 +401,20 @@ fn drive(
                     .flat_map(|coordinate| coordinate.to_le_bytes()),
             );
         }
-        let budget = recommended_bucket_decode_budget(&requests).unwrap();
-        let batch = decode_bucket_sketches(&encoded, &requests, budget).unwrap();
+        let budget = recommended_bucket_decode_budget(requests).unwrap();
+        let batch = decode_bucket_sketches(&encoded, requests, budget).unwrap();
         let local_summaries: Vec<NodeSummary> = local_nodes.iter().map(|n| n.1).collect();
         let remote_summaries: Vec<NodeSummary> = remote_nodes.iter().map(|n| n.1).collect();
-        let action = exchange
+        exchange
             .advance_verified(
                 batch,
-                &requests,
+                requests,
                 &local_summaries,
                 &remote_summaries,
                 estimate,
                 |root| local.candidates(root),
             )
-            .unwrap();
-        match action {
-            ClientAction::BucketSketches { requests: next, .. } => requests = next,
-            terminal => return (terminal, exchange),
-        }
+            .unwrap()
     }
 }
 
@@ -456,7 +468,25 @@ fn verified_exchange_retries_through_overflow_decode_with_batch_budget() {
         MAX_BUCKETED_SKETCH_CAPACITY,
     );
 
-    let (action, exchange) = drive(&local, &remote, exchange, vec![request], None);
+    let mut exchange = exchange;
+    let first = drive_round(&local, &remote, &mut exchange, &[request], None);
+    let ClientAction::BucketSketches {
+        requests: retry, ..
+    } = first
+    else {
+        panic!("expected an overflow retry round, got {first:?}");
+    };
+    assert_eq!(
+        retry,
+        [BucketRequest::with_overflow(
+            0,
+            0,
+            MAX_BUCKET_SKETCH_CAPACITY * 8
+        )],
+        "the retry must be the expected BucketRequest::with_overflow"
+    );
+
+    let (action, exchange) = drive(&local, &remote, exchange, retry, None);
     let ClientAction::ResolveRoots { mut roots, .. } = action else {
         panic!("expected overflow retry to resolve, got {action:?}");
     };

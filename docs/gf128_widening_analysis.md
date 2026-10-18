@@ -275,11 +275,13 @@ are already infeasible; this is a non-gain.
 - **Prefix-grinding placement attack on the verified `advance_verified` path**.
   Placement is still deterministic, but that path's retry policy avoids
   attacker-controlled defender-cost growth:
-  overflow-decode nodes up to capacity 256, fan out up to seven bits for larger
-  nodes, and route terminal failures to node-scoped ID fallback. See
+  overflow-decode undecodable normal buckets up to residual capacity 256 when
+  phase-1 verification has not rejected them and the aggregate budget admits
+  the request, fan out up to seven bits for larger nodes, and expose terminal
+  failures for caller-applied node-scoped ID fallback. See
   `docs/2026-10-12-h64-prefix-grinding.md`.
-- **Round exhaustion** and the `MAX_NO_PROGRESS_ROUNDS = 3` mitigation
-  (`rezzy-recon/src/client.rs:149`) — unchanged.
+- **Round exhaustion** and the persistent no-progress breaker
+  (`no_progress_rounds` in `rezzy-recon/src/client.rs`) — unchanged.
 - **`MAX_FACTOR_WORK` worst-case gap** (`rezzy-recon/src/pinsketch.rs:25-45`) —
   unchanged in kind, worse in absolute units (see Time).
 - **DoS CPU ceilings** — strictly weaker under Scenario A (see Time).

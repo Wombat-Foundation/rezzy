@@ -502,12 +502,13 @@ impl BucketExchange {
                 let residual_population = local[slot].count.saturating_add(remote[slot].count);
                 if !requests[slot].overflow
                     && residual_population <= super::triage::MAX_OVERFLOW_BUCKET_CAPACITY as u64
+                    && self.max_aggregate_capacity >= super::triage::MAX_OVERFLOW_BUCKET_CAPACITY
                 {
                     self.overflow_retry.push((depth, prefix));
                 } else if !requests[slot].overflow && !self.force_split.contains(&(depth, prefix)) {
-                    // A depth-adjusted population far above what one overflow
-                    // sketch can decode is a skew signal: spend fan-out now,
-                    // rather than climbing the capacity ladder first.
+                    // Either the node is too large for one overflow sketch or
+                    // the configured aggregate budget cannot admit one. Treat
+                    // its skew as a signal to spend fan-out now.
                     self.force_split.push((depth, prefix));
                     self.wide_split.push((depth, prefix));
                 }
@@ -2086,6 +2087,36 @@ mod tests {
         };
         assert!(requests.len() > 1);
         assert!(requests.iter().all(|request| !request.overflow));
+    }
+
+    #[test]
+    fn overflow_retry_respects_aggregate_capacity() {
+        let mut exchange = BucketExchange::new(vec![], MAX_RECONCILIATION_ROUNDS, 128, 128);
+        let requests = [BucketRequest::new(0, 0, 8)];
+        let local = [summary(20, 0)];
+        let remote = [summary(20, 0)];
+        let action = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &requests,
+                &local,
+                &remote,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        let ClientAction::BucketSketches { requests, .. } = action else {
+            panic!("expected fan-out under the aggregate cap, got {action:?}");
+        };
+        assert!(requests.len() > 1);
+        assert!(requests.iter().all(|request| !request.overflow));
+        assert!(
+            requests
+                .iter()
+                .map(|request| request.capacity)
+                .sum::<usize>()
+                <= 128
+        );
     }
 
     /// At the depth cap no split is possible: give up on that prefix instead
