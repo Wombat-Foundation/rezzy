@@ -960,16 +960,16 @@ impl ReconciliationClient {
             // and let bucket decoding localize any over-capacity region.
             Err(_) => {
                 return ClientAction::BucketSketches {
-                    requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY,)],
-                    accumulated_roots: alloc::vec::Vec::new(),
+                    requests: vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
+                    accumulated_roots: Vec::new(),
                 };
             }
         };
 
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
             return ClientAction::BucketSketches {
-                requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
-                accumulated_roots: alloc::vec::Vec::new(),
+                requests: vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
+                accumulated_roots: Vec::new(),
             };
         }
 
