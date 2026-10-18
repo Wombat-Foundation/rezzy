@@ -499,11 +499,12 @@ impl BucketExchange {
                 .iter()
                 .position(|r| (r.depth, r.prefix) == (depth, prefix))
             {
-                if local[slot].count.max(remote[slot].count)
-                    <= super::triage::MAX_OVERFLOW_BUCKET_CAPACITY as u64
+                let residual_population = local[slot].count.saturating_add(remote[slot].count);
+                if !requests[slot].overflow
+                    && residual_population <= super::triage::MAX_OVERFLOW_BUCKET_CAPACITY as u64
                 {
                     self.overflow_retry.push((depth, prefix));
-                } else if !self.force_split.contains(&(depth, prefix)) {
+                } else if !requests[slot].overflow && !self.force_split.contains(&(depth, prefix)) {
                     // A depth-adjusted population far above what one overflow
                     // sketch can decode is a skew signal: spend fan-out now,
                     // rather than climbing the capacity ladder first.
@@ -2024,6 +2025,67 @@ mod tests {
             vec![(1, 0), (1, 1)],
             "children, not the same node at a larger capacity"
         );
+    }
+
+    #[test]
+    fn failed_overflow_retry_fans_out_instead_of_repeating() {
+        let mut exchange = fresh_exchange();
+        let requests = [BucketRequest::new(0, 0, 8)];
+        let small = [summary(40, 0)];
+        let action = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &requests,
+                &small,
+                &small,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        let ClientAction::BucketSketches { requests, .. } = action else {
+            panic!("expected overflow retry, got {action:?}");
+        };
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].overflow);
+
+        let action = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &requests,
+                &small,
+                &small,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        let ClientAction::BucketSketches { requests, .. } = action else {
+            panic!("expected fan-out after overflow failure, got {action:?}");
+        };
+        assert!(requests.len() > 1);
+        assert!(requests.iter().all(|request| !request.overflow));
+    }
+
+    #[test]
+    fn overflow_retry_requires_residual_population_to_fit() {
+        let mut exchange = fresh_exchange();
+        let requests = [BucketRequest::new(0, 0, 8)];
+        let local = [summary(200, 0)];
+        let remote = [summary(200, 0)];
+        let action = exchange
+            .advance_verified(
+                undecodable(0, 0),
+                &requests,
+                &local,
+                &remote,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        let ClientAction::BucketSketches { requests, .. } = action else {
+            panic!("expected fan-out, got {action:?}");
+        };
+        assert!(requests.len() > 1);
+        assert!(requests.iter().all(|request| !request.overflow));
     }
 
     /// At the depth cap no split is possible: give up on that prefix instead

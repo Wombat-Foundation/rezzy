@@ -515,12 +515,6 @@ mod disk {
             for next in &nexts {
                 let b = cache_layers(next, layers);
                 let reference = reference_delta(&base, next);
-                {
-                    let mut check =
-                        |h: &StructuralHash| -> Result<Node, ()> { store.fetch(&mut buf, h) };
-                    let got = hamt::delta::diff_hamt_nodes(&a, &b, &mut check).expect("diff");
-                    assert_eq!(got, reference, "disk delta mismatch ({layers} layers)");
-                }
                 let mut fetches = 0u64;
                 let start = Instant::now();
                 let mut r = |h: &StructuralHash| -> Result<Node, ()> {
@@ -530,6 +524,11 @@ mod disk {
                 let (ad, rm) = hamt::delta::diff_hamt_nodes(&a, &b, &mut r).expect("diff");
                 let elapsed = start.elapsed();
                 std::hint::black_box((&ad, &rm));
+                assert_eq!(
+                    (&ad, &rm),
+                    (&reference.0, &reference.1),
+                    "disk delta mismatch ({layers} layers)"
+                );
                 samples.push((elapsed, fetches, ad.len() + rm.len()));
                 if fetches == 0 {
                     // Same diff again, now warm: separates single-shot cold-CPU

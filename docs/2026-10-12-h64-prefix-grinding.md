@@ -89,9 +89,12 @@ extra consensus appears not to exist. What remains is bounding the damage
 
 ## No-amplification policy
 
-1. **Overflow decode small nodes.** If either side's node population is at most
-   256, request one capacity-256 overflow sketch. If both populations fit, the
-   node resolves in that one request round; there is no capacity ladder.
+This policy describes the verified `BucketExchange::advance_verified` path.
+
+1. **Overflow decode small residuals.** If the sum of both sides' node counts
+   is at most 256, request one capacity-256 overflow sketch. The residual
+   population is bounded by that capacity, giving the decoder one attempt
+   without a capacity ladder.
 2. **Fan out stalled nodes.** A failed node too large for overflow uses the
    available 128-request budget to descend up to seven prefix bits in one round.
    Nodes with population above 256 are split immediately based on the summaries
@@ -100,7 +103,7 @@ extra consensus appears not to exist. What remains is bounding the damage
    only. Its caller performs bounded ID fallback for that node, so transferred
    IDs are limited to the population in the attacked region.
 
-Every constrained digest bit costs about 2 hashes per additional attacker
+Each additional constrained digest bit doubles the expected hashes per attacker
 element. The responder's fallback cost is proportional to the node population,
 whose elements must cross the symmetric difference regardless. A fully
 exhausted 32-bit prefix therefore costs about 2^32 hashes per element to

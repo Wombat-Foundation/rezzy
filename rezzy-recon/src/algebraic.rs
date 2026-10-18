@@ -510,10 +510,7 @@ impl SyndromeSketch {
         budget: &mut usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_LOCAL_SKETCH_DECODE_CAPACITY)?;
-        if self.coordinates[..max_elements]
-            .iter()
-            .all(|&coordinate| coordinate == 0)
-        {
+        if self.coordinates.iter().all(|&coordinate| coordinate == 0) {
             return Ok(Vec::new());
         }
         let decoded = super::pinsketch::decode_with_budget(
@@ -530,10 +527,7 @@ impl SyndromeSketch {
         budget: &mut usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_OVERFLOW_SKETCH_CAPACITY)?;
-        if self.coordinates[..max_elements]
-            .iter()
-            .all(|&coordinate| coordinate == 0)
-        {
+        if self.coordinates.iter().all(|&coordinate| coordinate == 0) {
             return Ok(Vec::new());
         }
         let decoded = super::pinsketch::decode_with_budget(
@@ -707,10 +701,7 @@ impl SyndromeSketch {
         budget: usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_OVERFLOW_SKETCH_CAPACITY)?;
-        if self.coordinates[..max_elements]
-            .iter()
-            .all(|&coordinate| coordinate == 0)
-        {
+        if self.coordinates.iter().all(|&coordinate| coordinate == 0) {
             return Ok(Vec::new());
         }
         let mut remaining = budget;
@@ -964,6 +955,17 @@ mod tests {
         }
         let res = sketch.decode_elements_overflow_budget(64, 100);
         assert_eq!(res, Err(AlgebraicError::BudgetExhausted));
+    }
+
+    #[test]
+    fn overflow_decode_checks_coordinates_beyond_element_limit() {
+        let mut sketch = SyndromeSketch::new_overflow(64).unwrap();
+        sketch.coordinates[40] = 1;
+
+        assert_eq!(
+            sketch.decode_elements_overflow_budget(32, 8_000_000),
+            Err(AlgebraicError::DecodeFailure)
+        );
     }
 
     /// Fast unit test for the capacity-mismatch check itself: a

@@ -272,8 +272,9 @@ are already infeasible; this is a non-gain.
 
 ### Not improved
 
-- **Prefix-grinding placement attack**. Placement is still deterministic, but
-  the local retry policy avoids attacker-controlled defender-cost growth:
+- **Prefix-grinding placement attack on the verified `advance_verified` path**.
+  Placement is still deterministic, but that path's retry policy avoids
+  attacker-controlled defender-cost growth:
   overflow-decode nodes up to capacity 256, fan out up to seven bits for larger
   nodes, and route terminal failures to node-scoped ID fallback. See
   `docs/2026-10-12-h64-prefix-grinding.md`.
