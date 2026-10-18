@@ -27,10 +27,13 @@ use rezzy_recon::client::{
     MAX_RECONCILIATION_ROUNDS,
 };
 use rezzy_recon::resident::ResidentKernel;
-use rezzy_recon::triage::{estimate_strata, MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK};
+use rezzy_recon::triage::{
+    decode_bucket_sketches, estimate_strata, recommended_bucket_decode_budget,
+    MAX_BUCKETED_SKETCH_CAPACITY, MAX_STRATA_FACTOR_WORK,
+};
 use rezzy_recon::{
-    build_bucket_nodes, should_narrow, verify_follow_up, BucketDecodeBatch, BucketDecodeSuccess,
-    BucketRequest, Classified, ElementHash, NodeSummary, SortedPopulation,
+    build_bucket_nodes, should_narrow, verify_follow_up, BucketRequest, Classified, ElementHash,
+    NodeSummary, SortedPopulation,
 };
 #[path = "../../support/reconciliation.rs"]
 mod reconciliation_support;
@@ -371,29 +374,19 @@ fn drive(
     loop {
         let remote_nodes = build_bucket_nodes(&remote.population, &requests).unwrap();
         let local_nodes = build_bucket_nodes(&local.population, &requests).unwrap();
-        let mut batch = BucketDecodeBatch {
-            successful_buckets: Vec::new(),
-            failed_buckets: Vec::new(),
-        };
-        for ((request, (remote_sketch, _)), (local_sketch, _)) in
-            requests.iter().zip(&remote_nodes).zip(&local_nodes)
-        {
+        let mut encoded = Vec::new();
+        for ((remote_sketch, _), (local_sketch, _)) in remote_nodes.iter().zip(&local_nodes) {
             let mut xored = remote_sketch.clone();
             xored.xor(local_sketch).unwrap();
-            let decoded = if request.overflow {
-                xored.decode_elements_overflow_budget(request.capacity, usize::MAX)
-            } else {
-                xored.decode_elements(request.capacity)
-            };
-            match decoded {
-                Ok(roots) => batch.successful_buckets.push(BucketDecodeSuccess {
-                    depth: request.depth,
-                    prefix: request.prefix,
-                    roots,
-                }),
-                Err(_) => batch.failed_buckets.push((request.depth, request.prefix)),
-            }
+            encoded.extend(
+                xored
+                    .coordinates()
+                    .iter()
+                    .flat_map(|coordinate| coordinate.to_le_bytes()),
+            );
         }
+        let budget = recommended_bucket_decode_budget(&requests).unwrap();
+        let batch = decode_bucket_sketches(&encoded, &requests, budget).unwrap();
         let local_summaries: Vec<NodeSummary> = local_nodes.iter().map(|n| n.1).collect();
         let remote_summaries: Vec<NodeSummary> = remote_nodes.iter().map(|n| n.1).collect();
         let action = exchange
@@ -448,6 +441,40 @@ fn verified_exchange_resolves_and_passes_phase_two() {
         assert_eq!(verify_follow_up(classified, node, &returned), Ok(()));
     }
     assert_eq!(covered, remote_only.len());
+}
+
+#[test]
+fn verified_exchange_retries_through_overflow_decode_with_batch_budget() {
+    let mut generator = Xorshift128::new(18);
+    let local = Side::new((0..20).map(|_| generator.hash()).collect());
+    let remote = Side::new((0..20).map(|_| generator.hash()).collect());
+    let request = BucketRequest::new(0, 0, 32);
+    let exchange = BucketExchange::new(
+        Vec::new(),
+        MAX_RECONCILIATION_ROUNDS,
+        MAX_BUCKETS_PER_ROUND,
+        MAX_BUCKETED_SKETCH_CAPACITY,
+    );
+
+    let (action, exchange) = drive(&local, &remote, exchange, vec![request], None);
+    let ClientAction::ResolveRoots { mut roots, .. } = action else {
+        panic!("expected overflow retry to resolve, got {action:?}");
+    };
+    roots.sort_unstable();
+    let mut expected: Vec<u64> = local
+        .population
+        .h64s()
+        .iter()
+        .chain(remote.population.h64s())
+        .copied()
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(roots, expected);
+    assert_eq!(
+        exchange.rounds_emitted(),
+        1,
+        "the initial capacity-32 failure should take exactly one overflow retry"
+    );
 }
 
 /// A shared element whose `h64` collides with a remote-only one (mocked, since

@@ -26,6 +26,30 @@ pub const MAX_BATCH_FACTOR_WORK: usize = MAX_BUCKETS_PER_ROUND
         Some(ceiling) => ceiling,
         None => panic!("single_call_work_ceiling overflowed for MAX_BUCKET_SKETCH_CAPACITY"),
     };
+
+/// Returns a shared budget that grants every request its full per-bucket work
+/// ceiling, including overflow requests.
+///
+/// This is useful when a batch contains capacities above the normal
+/// [`MAX_BUCKET_SKETCH_CAPACITY`], which are not covered by
+/// [`MAX_BATCH_FACTOR_WORK`]. A bucket can still be reported as failed if its
+/// recursive factoring exceeds that ceiling.
+///
+/// # Errors
+/// Returns an error if requests are invalid or summing their work ceilings
+/// overflows `usize`.
+pub fn recommended_bucket_decode_budget(
+    requests: &[BucketRequest],
+) -> Result<usize, AlgebraicError> {
+    validate_adaptive_bucket_requests(requests)?;
+    requests.iter().try_fold(0_usize, |total, request| {
+        let ceiling = pinsketch::single_call_work_ceiling(request.capacity)
+            .ok_or(AlgebraicError::InvalidSketchCapacity)?;
+        total
+            .checked_add(ceiling)
+            .ok_or(AlgebraicError::InvalidSketchCapacity)
+    })
+}
 /// Recommended default work budget for [`estimate_strata`], sized to
 /// cover a full strata-estimator pass: [`STRATA_COUNT`] strata each at
 /// the worst-case per-stratum work ceiling for [`STRATUM_CAPACITY`].
@@ -393,18 +417,22 @@ fn estimate_delta_internal(
 /// proven-undecodable one differ in cost by roughly two orders of
 /// magnitude (see `MAX_FACTOR_WORK`'s comment). Callers sizing `budget`
 /// should account for this clamp: budgeting less than that per-bucket
-/// ceiling for even one request in the batch means that request may report
-/// `BudgetExhausted` for reasons unrelated to how much of `budget` the
-/// rest of the batch has used. [`MAX_BATCH_FACTOR_WORK`] is sized to cover
+/// ceiling for even one request in the batch means that request will be
+/// reported as a failed bucket if it exhausts that allotment. A request that
+/// exhausts the shared budget still returns [`AlgebraicError::BudgetExhausted`].
+/// [`MAX_BATCH_FACTOR_WORK`] is sized to cover
 /// a full normal-path batch and is the right default absent a
 /// caller-specific budget.
 ///
 /// # Errors
 ///
 /// Returns an error for invalid ordering, capacity, aggregate or byte
-/// length, or [`AlgebraicError::BudgetExhausted`] once the shared budget
-/// runs out, even if some buckets in the batch would otherwise have
-/// decoded.
+/// length, or [`AlgebraicError::BudgetExhausted`] when a bucket needs more
+/// than the remaining shared budget. A bucket that exhausts its full
+/// per-bucket ceiling is instead reported in `failed_buckets`, allowing the
+/// caller to retry or split that node while later buckets use the remaining
+/// budget. [`recommended_bucket_decode_budget`] grants each request its full
+/// ceiling in one shared budget.
 pub fn decode_bucket_sketches(
     encoded: &[u8],
     requests: &[BucketRequest],
@@ -437,7 +465,11 @@ pub fn decode_bucket_sketches(
             })
             .collect();
 
-        let sketch = SyndromeSketch::from_coordinates(coordinates)?;
+        let sketch = if request.overflow {
+            SyndromeSketch::from_overflow_coordinates(coordinates)?
+        } else {
+            SyndromeSketch::from_coordinates(coordinates)?
+        };
         // Clamp this bucket's draw so it can't outspend its own fair
         // ceiling and starve buckets later in `requests` of the shared
         // pool -- see this function's doc comment.
@@ -479,6 +511,9 @@ pub fn decode_bucket_sketches(
                 roots,
             }),
             Err(AlgebraicError::DecodeFailure) => {
+                failed_buckets.push((request.depth, request.prefix));
+            }
+            Err(AlgebraicError::BudgetExhausted) if allowance == ceiling => {
                 failed_buckets.push((request.depth, request.prefix));
             }
             Err(error) => return Err(error),
@@ -861,6 +896,77 @@ mod tests {
                 failed_buckets: vec![(8, 9)],
             })
         );
+    }
+
+    #[test]
+    fn bucket_decoder_isolates_per_bucket_budget_exhaustion() {
+        let requests = [BucketRequest::new(8, 1, 32), BucketRequest::new(8, 9, 4)];
+        let mut over_capacity = SyndromeSketch::new(32).unwrap();
+        for value in 1..=33 {
+            over_capacity.toggle(value).unwrap();
+        }
+        let mut encoded = over_capacity
+            .coordinates()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut easy = SyndromeSketch::new(4).unwrap();
+        easy.toggle(7).unwrap();
+        encoded.extend(
+            easy.coordinates()
+                .iter()
+                .flat_map(|value| value.to_le_bytes()),
+        );
+
+        let budget = pinsketch::single_call_work_ceiling(32)
+            .unwrap()
+            .checked_add(pinsketch::single_call_work_ceiling(4).unwrap())
+            .unwrap();
+        let batch = decode_bucket_sketches(&encoded, &requests, budget).unwrap();
+        assert_eq!(batch.failed_buckets, [(8, 1)]);
+        assert_eq!(batch.successful_buckets.len(), 1);
+        assert_eq!(batch.successful_buckets[0].prefix, 9);
+        assert_eq!(batch.successful_buckets[0].roots, [7]);
+    }
+
+    #[test]
+    fn bucket_decoder_returns_error_when_shared_budget_is_exhausted() {
+        let requests = [BucketRequest::new(8, 1, 4)];
+        let mut sketch = SyndromeSketch::new(4).unwrap();
+        for value in [7, 11, 19] {
+            sketch.toggle(value).unwrap();
+        }
+        let encoded = sketch
+            .coordinates()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            decode_bucket_sketches(&encoded, &requests, 0),
+            Err(AlgebraicError::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn overflow_bucket_above_standard_capacity_round_trips_over_the_wire() {
+        let requests = [BucketRequest::with_overflow(8, 1, 64)];
+        let mut sketch = SyndromeSketch::new_overflow(64).unwrap();
+        let expected: Vec<u64> = (1..=40_u64).map(|i| i * 2 + 1).collect();
+        for &value in &expected {
+            sketch.toggle(value).unwrap();
+        }
+        let encoded = sketch
+            .coordinates()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let batch = decode_bucket_sketches(&encoded, &requests, MAX_BATCH_FACTOR_WORK).unwrap();
+        assert!(batch.failed_buckets.is_empty(), "{batch:?}");
+        let mut roots = batch.successful_buckets[0].roots.clone();
+        roots.sort_unstable();
+        assert_eq!(roots, expected);
     }
 
     #[test]

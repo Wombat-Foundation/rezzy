@@ -400,11 +400,20 @@ pub struct SyndromeSketch {
 
 impl SyndromeSketch {
     pub(crate) fn from_coordinates(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
-        Self::from_coordinates_checked(coordinates)
+        Self::from_coordinates_checked(coordinates, MAX_SKETCH_CAPACITY)
     }
 
-    fn from_coordinates_checked(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
-        if coordinates.is_empty() || coordinates.len() > MAX_SKETCH_CAPACITY {
+    /// Like [`from_coordinates`](Self::from_coordinates) but admits the
+    /// overflow capacity range, for buckets requested with `overflow = true`.
+    pub(crate) fn from_overflow_coordinates(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
+        Self::from_coordinates_checked(coordinates, MAX_OVERFLOW_SKETCH_CAPACITY)
+    }
+
+    fn from_coordinates_checked(
+        coordinates: Vec<u64>,
+        max_capacity: usize,
+    ) -> Result<Self, AlgebraicError> {
+        if coordinates.is_empty() || coordinates.len() > max_capacity {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
         Ok(Self { coordinates })
@@ -535,7 +544,7 @@ impl SyndromeSketch {
             max_elements,
             budget,
         )?;
-        self.validate_decoded_elements(decoded)
+        self.validate_decoded_overflow(decoded)
     }
 
     const fn validate_decode_capacity(
