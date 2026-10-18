@@ -657,22 +657,8 @@ impl BucketExchange {
     /// The planner keeps deferred children in a pending frontier rather than aborting when a
     /// single round hits the per-round bucket cap.
     ///
-    /// Detects lack of progress and returns failed nodes through `ladder_failed`
-    /// after a few consecutive rounds of it (an internal, unexported
-    /// constant), rather than
-    /// always riding out the full `max_rounds` budget. `retry_or_split_bucket`
-    /// always emits a failed bucket's two split children together (same
-    /// depth, prefixes `p<<1` and `(p<<1)|1`). A failed bucket whose
-    /// sibling (found via `previous_requests`, this round's submission) also
-    /// failed means the split failed to resolve either branch (persistently
-    /// stalled), and further splits without progress are unlikely to help.
-    /// Conversely, if a sibling succeeds (even if empty with zero roots), the
-    /// split has narrowed the unresolved range and progress is being made.
-    /// This is a global signal, not per split-chain. Once a split stalls, the
-    /// next retry widens to the maximum fan-out; it never causes region-wide
-    /// give-up. Any split narrowing or bucket resolving a nonzero root resets
-    /// the counter.
-    #[allow(clippy::too_many_lines)]
+    /// Tracks split progress, queues failed-node retries, and emits the next
+    /// bounded round. A stalled split widens the next retry to maximum fan-out.
     #[must_use]
     pub fn advance(
         &mut self,
@@ -684,58 +670,83 @@ impl BucketExchange {
             successful_buckets,
             failed_buckets,
         } = batch;
-
         let had_failures = !failed_buckets.is_empty();
+        self.observe_progress(&successful_buckets, &failed_buckets, previous_requests);
+        self.accumulated_roots.extend(
+            successful_buckets
+                .into_iter()
+                .flat_map(|bucket| bucket.roots),
+        );
 
-        let any_nonempty_success = successful_buckets.iter().any(|s| !s.roots.is_empty());
+        let Some(share) = self.failed_node_share(failed_buckets.len(), global_estimate) else {
+            return ClientAction::ExtremityDiff;
+        };
+        if let Err(action) = self.queue_failed_nodes(failed_buckets, previous_requests, share) {
+            return action;
+        }
+        self.pending
+            .make_contiguous()
+            .sort_unstable_by_key(bucket_range_start);
+
+        if !had_failures && self.pending.is_empty() {
+            return self.complete_action();
+        }
+        self.drain_next_action()
+    }
+
+    fn observe_progress(
+        &mut self,
+        successful_buckets: &[super::triage::BucketDecodeSuccess],
+        failed_buckets: &[(u8, u64)],
+        previous_requests: &[BucketRequest],
+    ) {
+        let any_nonempty_success = successful_buckets
+            .iter()
+            .any(|bucket| !bucket.roots.is_empty());
         let is_split_sibling_of = |depth: u8, prefix: u64| {
             previous_requests
                 .iter()
-                .any(|r| r.depth == depth && r.prefix == (prefix ^ 1))
+                .any(|request| request.depth == depth && request.prefix == (prefix ^ 1))
         };
         let mut saw_split_failure = false;
         let all_split_failures_stalled = failed_buckets.iter().all(|&(depth, prefix)| {
             if !is_split_sibling_of(depth, prefix) {
-                // Not a split child this round (a solo capacity retry, or a
-                // first-round request) -- has no sibling to compare against,
-                // so it neither confirms nor denies stall.
                 return true;
             }
             saw_split_failure = true;
-            let sibling_prefix = prefix ^ 1;
             !successful_buckets
                 .iter()
-                .any(|s| s.depth == depth && s.prefix == sibling_prefix)
+                .any(|success| success.depth == depth && success.prefix == (prefix ^ 1))
         });
         if saw_split_failure && all_split_failures_stalled && !any_nonempty_success {
             self.no_progress_rounds = self.no_progress_rounds.saturating_add(1);
         } else {
             self.no_progress_rounds = 0;
         }
-        for success in successful_buckets {
-            self.accumulated_roots.extend(success.roots);
-        }
-        let Ok(resolved_count) = u64::try_from(self.accumulated_roots.len()) else {
-            return ClientAction::ExtremityDiff;
-        };
-        let unaccounted = global_estimate.unwrap_or(0).saturating_sub(resolved_count);
-        let Ok(failed_count) = u64::try_from(failed_buckets.len()) else {
-            return ClientAction::ExtremityDiff;
-        };
-        let share = if failed_count == 0 {
-            0
-        } else {
-            unaccounted.checked_div(failed_count).unwrap_or(0)
-        };
+    }
 
+    fn failed_node_share(&self, failed_count: usize, global_estimate: Option<u64>) -> Option<u64> {
+        let resolved_count = u64::try_from(self.accumulated_roots.len()).ok()?;
+        let unaccounted = global_estimate.unwrap_or(0).saturating_sub(resolved_count);
+        let failed_count = u64::try_from(failed_count).ok()?;
+        Some(unaccounted.checked_div(failed_count).unwrap_or(0))
+    }
+
+    fn queue_failed_nodes(
+        &mut self,
+        failed_buckets: alloc::vec::Vec<(u8, u64)>,
+        previous_requests: &[BucketRequest],
+        share: u64,
+    ) -> Result<(), ClientAction> {
         for (depth, prefix) in failed_buckets {
-            let force_split = self.force_split.contains(&(depth, prefix));
-            self.force_split.retain(|&node| node != (depth, prefix));
-            let overflow = self.overflow_retry.contains(&(depth, prefix));
-            self.overflow_retry.retain(|&node| node != (depth, prefix));
-            let wide_split = self.wide_split.contains(&(depth, prefix));
-            self.wide_split.retain(|&node| node != (depth, prefix));
-            let next_requests = if overflow {
+            let node = (depth, prefix);
+            let force_split = self.force_split.contains(&node);
+            self.force_split.retain(|&queued| queued != node);
+            let overflow = self.overflow_retry.contains(&node);
+            self.overflow_retry.retain(|&queued| queued != node);
+            let wide_split = self.wide_split.contains(&node);
+            self.wide_split.retain(|&queued| queued != node);
+            let requests = if overflow {
                 Ok(VecDeque::from([BucketRequest::with_overflow(
                     depth,
                     prefix,
@@ -755,37 +766,35 @@ impl BucketExchange {
                     },
                 )
             };
-            let Ok(next_requests) = next_requests else {
-                self.record_ladder_failed((depth, prefix));
+            let Ok(requests) = requests else {
+                self.record_ladder_failed(node);
                 continue;
             };
-            self.pending.extend(next_requests);
+            self.pending.extend(requests);
             if self.pending.len() > self.max_pending_requests {
                 while let Some(request) = self.pending.pop_front() {
                     self.record_ladder_failed((request.depth, request.prefix));
                 }
-                return self.partial_action();
+                return Err(self.partial_action());
             }
         }
+        Ok(())
+    }
 
-        self.pending
-            .make_contiguous()
-            .sort_unstable_by_key(bucket_range_start);
-
-        if !had_failures && self.pending.is_empty() {
-            return ClientAction::ResolveRoots {
-                roots: self.accumulated_roots.clone(),
-                ladder_failed: self.ladder_failed.clone(),
-            };
+    fn complete_action(&self) -> ClientAction {
+        ClientAction::ResolveRoots {
+            roots: self.accumulated_roots.clone(),
+            ladder_failed: self.ladder_failed.clone(),
         }
+    }
 
+    fn drain_next_action(&mut self) -> ClientAction {
         let Ok(requests) = self.drain_pending_round() else {
             while let Some(request) = self.pending.pop_front() {
                 self.record_ladder_failed((request.depth, request.prefix));
             }
             return self.partial_action();
         };
-
         ClientAction::BucketSketches {
             requests: requests.into_iter().collect(),
             accumulated_roots: self.accumulated_roots.clone(),
