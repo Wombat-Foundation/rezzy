@@ -2553,7 +2553,7 @@ fn test_event_verifier_reject_event_id_hash() {
         Some(&RejectEventIdHash),
     );
     assert!(
-        matches!(&result, Err(e) if e.to_string().contains("bad event id hash")),
+        matches!(&result, Err(AuthError::Verification(rezzy::errors::VerifyError::Reason(r))) if *r == "bad event id hash"),
         "Should reject with bad event id hash: {result:?}"
     );
 }
