@@ -611,6 +611,7 @@ mod tests {
         let event = ElementHash {
             h128: u128::from(value),
             h64: value,
+            q3: value,
         };
         let mut resident = ResidentKernel::new();
         resident.insert(event).unwrap();

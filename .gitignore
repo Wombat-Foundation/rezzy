@@ -10,11 +10,12 @@
 target/
 .gemini/
 .env
+.env.*
 .tmp*
 *.zip
 *.tar.*
 /*.txt
-matrix-spec-txt/
+*.pdf
 
 # cargo
 *cov

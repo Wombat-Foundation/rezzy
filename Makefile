@@ -121,7 +121,13 @@ endif
 
 .PHONY: rust/bench
 rust/bench: ##H Run benchmarks
-	cd benches/ && direnv exec . sh -c '$$CARGO bench --profile release --benches'
+	@set -o pipefail; \
+	output=$$(mktemp); \
+	trap 'rm -f "$$output"' EXIT; \
+	(cd benches/ && direnv exec . sh -c '$$CARGO bench --profile release --benches') 2>&1 | tee "$$output"; \
+	status=$$?; \
+	if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
+	python3 scripts/record_bench.py --current "$$output" --out benches/bench-results.csv
 
 
 export LLVM_COV_FLAGS = -show-region-summary=false -show-branch-summary=false
@@ -231,6 +237,19 @@ clean:   rust/clean	##H Remove all build artifacts
 # 		echo "No MATRIX_TOKEN found, skipping live fetch."; \
 # 		echo "  Set MATRIX_TOKEN and MATRIX_SERVER in .env to generate real DAG fixtures."; \
 # 	fi
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Execute command for reach submodule
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PROJECT_CRATES ?= rezzy-cli/ benches/ tests/ examples/
+
+.PHONY: sub
+sub:	##H Run a command for each crate (set c)
+	@test -n "${c}" || (echo "error: set c=<command>"; exit 1)
+	@for d in $(PROJECT_CRATES); do echo "--- $$d ---"; (cd $$d && ${c}) || exit 1; done
+
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -149,7 +149,7 @@ impl ResidentKernel {
             return Err(AlgebraicError::ZeroShortIdentifier);
         }
         self.accumulator.insert(hash)?;
-        toggle_stratum(&mut self.strata, hash.h64);
+        toggle_stratum(&mut self.strata, strata_identifier(hash));
         Ok(())
     }
 
@@ -164,8 +164,20 @@ impl ResidentKernel {
             return Err(AlgebraicError::ZeroShortIdentifier);
         }
         self.accumulator.remove(hash)?;
-        toggle_stratum(&mut self.strata, hash.h64);
+        toggle_stratum(&mut self.strata, strata_identifier(hash));
         Ok(())
+    }
+}
+
+const fn strata_identifier(hash: ElementHash) -> u64 {
+    // PinSketch requires nonzero identifiers. This makes the sole alias in
+    // the strata estimator (Q3=0 and Q3=1); a resulting estimate miss is
+    // recovered by the independent h64 bucket tree.
+    let q3 = hash.q3;
+    if q3 == 0 {
+        1
+    } else {
+        q3
     }
 }
 
@@ -186,7 +198,7 @@ mod tests {
     use super::*;
 
     const fn hash(h128: u128, h64: u64) -> ElementHash {
-        ElementHash { h128, h64 }
+        ElementHash { h128, h64, q3: h64 }
     }
 
     #[test]

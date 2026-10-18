@@ -1,0 +1,396 @@
+timestamp_utc,revision,branch,metric,milliseconds
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1024: db/cumulative_rebuild: LtHash            cumulative,2.847000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1024: db/cumulative_rebuild: conduwuit-style   cumulative,274.606000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1024: db/cumulative_rebuild: synapse-style hash cumulative,314.427000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=16: db/cumulative_rebuild: LtHash            cumulative,0.036000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=16: db/cumulative_rebuild: conduwuit-style   cumulative,0.070000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=16: db/cumulative_rebuild: synapse-style hash cumulative,0.079000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: add_lattice (x2),0.000095100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch insert [   1],0.000047500
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch insert [   2],0.000107800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch insert [   4],0.000194900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch insert [   8],0.000393900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch insert [  16],0.000773900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch remove [   1],0.000048500
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch remove [   2],0.000098600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch remove [   4],0.000201700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch remove [   8],0.000396300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: batch remove [  16],0.000770300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: collapse,0.000915600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: from_state [  512],1.070000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: from_state [ 1024],2.170000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: from_state [ 2048],4.390000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: from_state [ 4096],8.170000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: from_state [ 8192],16.490000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: from_state [16384],32.130000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: incremental   [  512],1.100000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: incremental   [ 1024],2.200000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: incremental   [ 2048],4.340000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: incremental   [ 4096],8.430000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: incremental   [ 8192],16.510000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: incremental   [16384],32.600000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=1: math/lthash_comprehensive: sub_lattice (x2),0.000094000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2048: db/cumulative_rebuild: LtHash            cumulative,7.093000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2048: db/cumulative_rebuild: conduwuit-style   cumulative,1224.989000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2048: db/cumulative_rebuild: synapse-style hash cumulative,1421.055000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=256: db/cumulative_rebuild: LtHash            cumulative,0.595000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=256: db/cumulative_rebuild: conduwuit-style   cumulative,16.443000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=256: db/cumulative_rebuild: synapse-style hash cumulative,19.161000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_backends: expand (large) blake3+blake3,0.002119800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_backends: expand (large) shake+blake2,0.008472300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_backends: expand (medium) blake3+blake3,0.001803200
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_backends: expand (medium) shake+blake2,0.007240300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_backends: expand (small) blake3+blake3,0.001762900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_backends: expand (small) shake+blake2,0.007196100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: add_lattice (x2),0.000094700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch insert [   1],0.000046800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch insert [   2],0.000100000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch insert [   4],0.000193400
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch insert [   8],0.000382600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch insert [  16],0.000759400
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch remove [   1],0.000046900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch remove [   2],0.000097500
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch remove [   4],0.000190900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch remove [   8],0.000377900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: batch remove [  16],0.000760200
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: collapse,0.000906300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: from_state [  512],1.060000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: from_state [ 1024],2.080000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: from_state [ 2048],4.210000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: from_state [ 4096],8.190000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: from_state [ 8192],16.240000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: from_state [16384],32.480000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: incremental   [  512],1.040000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: incremental   [ 1024],2.100000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: incremental   [ 2048],4.160000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: incremental   [ 4096],8.240000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: incremental   [ 8192],16.280000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: incremental   [16384],32.360000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=2: math/lthash_comprehensive: sub_lattice (x2),0.000096000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_backends: collapse blake3+blake3,0.000926700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_backends: collapse shake+blake2,0.002186800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: add_lattice (x2),0.000094300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch insert [   1],0.000047000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch insert [   2],0.000100900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch insert [   4],0.000192200
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch insert [   8],0.000385600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch insert [  16],0.000752600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch remove [   1],0.000047700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch remove [   2],0.000098900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch remove [   4],0.000191100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch remove [   8],0.000399100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: batch remove [  16],0.000753600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: collapse,0.000907800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: from_state [  512],1.190000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: from_state [ 1024],2.450000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: from_state [ 2048],4.850000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: from_state [ 4096],9.830000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: from_state [ 8192],18.970000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: from_state [16384],38.470000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: incremental   [  512],1.200000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: incremental   [ 1024],2.510000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: incremental   [ 2048],4.930000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: incremental   [ 4096],9.650000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: incremental   [ 8192],19.110000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: incremental   [16384],37.930000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=3: math/lthash_comprehensive: sub_lattice (x2),0.000095100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4096: db/cumulative_rebuild: LtHash            cumulative,16.408000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4096: db/cumulative_rebuild: conduwuit-style   cumulative,5261.115000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4096: db/cumulative_rebuild: synapse-style hash cumulative,5761.362000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_backends: insert blake3+blake3,0.001848000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_backends: insert shake+blake2,0.007260100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: add_lattice (x2),0.000094600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch insert [   1],0.000046800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch insert [   2],0.000099800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch insert [   4],0.000191000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch insert [   8],0.000408600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch insert [  16],0.000778600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch remove [   1],0.000046700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch remove [   2],0.000098900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch remove [   4],0.000190500
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch remove [   8],0.000396500
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: batch remove [  16],0.000777100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: collapse,0.000913200
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: from_state [   64],1.490000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: from_state [  128],2.950000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: from_state [  256],6.130000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: from_state [  512],12.160000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: from_state [ 1024],23.400000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: incremental   [   64],1.490000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: incremental   [  128],3.010000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: incremental   [  256],6.190000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: incremental   [  512],12.010000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: incremental   [ 1024],23.480000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=4: math/lthash_comprehensive: sub_lattice (x2),0.000096200
+2026-10-13T14:49:34+00:00,079fb8f,master,S=5: math/lthash_backends: build (n=1024) blake3+blake3,1.976000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=5: math/lthash_backends: build (n=1024) shake+blake2,7.506000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=5: math/lthash_backends: build (n=64) blake3+blake3,0.121000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=5: math/lthash_backends: build (n=64) shake+blake2,0.469000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=5: math/lthash_backends: build (n=8192) blake3+blake3,15.462000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=5: math/lthash_backends: build (n=8192) shake+blake2,59.697000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=64: db/cumulative_rebuild: LtHash            cumulative,0.146000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=64: db/cumulative_rebuild: conduwuit-style   cumulative,1.056000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=64: db/cumulative_rebuild: synapse-style hash cumulative,1.175000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=6: math/lthash_backends: mutate (n=4096) blake3+blake3,0.003562800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=6: math/lthash_backends: mutate (n=4096) shake+blake2,0.011888100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (large) aes-ctr-ni,0.001005600
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (large) aes-ctr-portable,0.008397300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (large) blake3,0.002078500
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (large) sha512-ctr,0.011975900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (large) shake256,0.008419700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (medium) aes-ctr-ni,0.000706300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (medium) aes-ctr-portable,0.008200200
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (medium) blake3,0.001769100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (medium) sha512-ctr,0.011018300
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (medium) shake256,0.007182800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (small) aes-ctr-ni,0.000642700
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (small) aes-ctr-portable,0.008040100
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (small) blake3,0.001708900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (small) sha512-ctr,0.010975900
+2026-10-13T14:49:34+00:00,079fb8f,master,S=7: math/lthash_backends: expand (small) shake256,0.007186800
+2026-10-13T14:49:34+00:00,079fb8f,master,S=8: math/lthash_backends: build (n=1024) aes-ctr-ni,0.787000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=8: math/lthash_backends: build (n=1024) aes-ctr-portable,8.430000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=8: math/lthash_backends: build (n=1024) blake3,1.863000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=8: math/lthash_backends: build (n=1024) sha512-ctr,11.370000000
+2026-10-13T14:49:34+00:00,079fb8f,master,S=8: math/lthash_backends: build (n=1024) shake256,7.534000000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=1024),0.000374000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=128),0.000304000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=131072),0.001020000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=16),0.000303000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=16384),0.000497000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=65536),0.000782000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap fork+diverge (n=8192),0.000499000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=1024),0.103376000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=128),0.012407000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=131072),36.767990000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=16),0.001549000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=16384),2.966637000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=65536),15.649162000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap state hash (n=8192),1.248663000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=1024),0.000859000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=128),0.000771000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=131072),0.002347000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=16),0.000705000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=16384),0.001424000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=65536),0.001771000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::diff (n=8192),0.001371000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=1024),0.338802000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=128),0.030529000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=131072),182.385024000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=16),0.001512000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=16384),12.978045000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=65536),81.550258000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::from_iter (n=8192),4.019073000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=1024),0.000139000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=128),0.000084000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=131072),0.000742000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=16),0.000058000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=16384),0.000313000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=65536),0.000654000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::get (n=8192),0.000259000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=1024),0.001809000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=128),0.001559000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=131072),0.008834000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=16),0.000992000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=16384),0.003808000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=65536),0.006156000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::remove (fresh clone each op) (n=8192),0.003572000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=1024),0.001263000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=128),0.000720000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=131072),0.003485000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=16),0.000832000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=16384),0.002178000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=65536),0.003865000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: OrdMap::update (fresh clone each op) (n=8192),0.002180000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=1024),0.000419000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=128),0.000339000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=131072),0.001027000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=16),0.000291000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=16384),0.000573000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=65536),0.000918000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap fork+diverge (n=8192),0.000537000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=1024),0.104530000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=128),0.012233000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=131072),27.752095000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=16),0.001481000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=16384),2.418965000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=65536),11.947429000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap state hash (n=8192),0.942442000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=1024),0.001111000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=128),0.000951000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=131072),0.001615000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=16),0.000861000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=16384),0.001389000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=65536),0.001567000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::diff (n=8192),0.001397000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=1024),0.264240000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=128),0.025628000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=131072),175.603246000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=16),0.001697000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=16384),8.767278000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=65536),65.373591000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::from_iter (n=8192),3.074493000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=1024),0.000188000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=128),0.000114000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=131072),0.001258000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=16),0.000060000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=16384),0.000433000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=65536),0.000855000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::get (n=8192),0.000311000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=1024),0.001983000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=128),0.001354000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=131072),0.020287000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=16),0.000893000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=16384),0.004749000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=65536),0.008028000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::remove (fresh clone each op) (n=8192),0.003144000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=1024),0.001847000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=128),0.000876000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=131072),0.005264000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=16),0.000700000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=16384),0.002687000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=65536),0.005957000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: PersistentOrdMap::update (fresh clone each op) (n=8192),0.002620000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=1024),0.007126000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=128),0.004517000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=131072),0.014085000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=16),0.003697000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=16384),0.009418000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=65536),0.014956000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt fork+diverge (n=8192),0.008110000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=1024),0.807379000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=128),0.092940000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=131072),161.954718000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=16),0.009229000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=16384),16.151334000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=65536),82.893242000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::build_hamt (n=8192),7.038015000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=1024),0.000245000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=128),0.000226000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=131072),0.000733000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=16),0.000219000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=16384),0.000361000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=65536),0.000686000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::get (n=8192),0.000390000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=1024),0.006027000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=128),0.004085000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=131072),0.012696000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=16),0.002680000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=16384),0.008338000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=65536),0.014487000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::insert (path-copy from shared root) (n=8192),0.006979000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=1024),0.005896000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=128),0.003965000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=131072),0.013608000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=16),0.002422000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=16384),0.008473000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=65536),0.013370000
+2026-10-13T14:49:34+00:00,079fb8f,master,db/state_backend: hamt::remove (path-copy from shared root) (n=8192),0.006987000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: bloom/insert/1000,0.080570000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: bloom/insert/10000,0.829991000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: bloom/insert/100000,8.466182000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: bloom/probe/1000,0.086386000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: bloom/probe/10000,0.865417000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: bloom/probe/100000,8.632607000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cqf/insert/1000,0.025654000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cqf/insert/10000,0.350472000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cqf/insert/100000,2.763831000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cqf/probe/1000,0.017462000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cqf/probe/10000,0.295461000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cqf/probe/100000,2.147459000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cuckoo/insert/1000,0.021116000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cuckoo/insert/10000,0.253580000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cuckoo/insert/100000,3.142414000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cuckoo/probe/1000,0.019168000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cuckoo/probe/10000,0.237520000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: cuckoo/probe/100000,2.998176000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: remainder_probe/insert/1000,0.056830000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: remainder_probe/insert/10000,0.585833000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: remainder_probe/insert/100000,6.013491000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: remainder_probe/probe/1000,0.053021000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: remainder_probe/probe/10000,0.577702000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/filter_spillover: remainder_probe/probe/100000,6.185413000
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=1024)",0.004905500
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=128)",0.005392700
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=16)",0.004873300
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=16384)",0.004804900
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=2048)",0.004849300
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=256)",0.005007400
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=32)",0.005129200
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=32768)",0.004568800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=4096)",0.005450600
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=512)",0.005149900
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=64)",0.004731800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=65536)",0.004728400
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: LtHash (O(1), lattice add/sub + BLAKE3 digest) (n=8192)",0.004569800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=1024)",0.658799200
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=128)",0.104301400
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=16)",0.056902800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=16384)",9.821419100
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=2048)",1.131977200
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=256)",0.178936600
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=32)",0.061138200
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=32768)",20.794082500
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=4096)",2.432219800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=512)",0.327605300
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=64)",0.076944800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=65536)",48.127210600
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: conduwuit-style (O(S log S), sort + SHA-256 every step) (n=8192)",5.220290800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=1024)",0.730449600
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=128)",0.140477800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=16)",0.064288800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=16384)",9.205323200
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=2048)",1.243763800
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=256)",0.212982300
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=32)",0.070691400
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=32768)",18.422986200
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=4096)",2.424967400
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=512)",0.386335900
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=64)",0.092466300
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=65536)",37.351359400
+2026-10-13T14:49:34+00:00,079fb8f,master,"math/lthash: synapse-style (O(S), unsorted XOR-fold of SHA-256 every step) (n=8192)",4.803953800
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/decode/32x16,0.357712000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/decode/32x32,1.158473000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/decode/8x4,0.040054000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/subtract/32x16,0.000032000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/subtract/32x32,0.000024000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/subtract/8x4,0.000039000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/toggle/32x16,0.003771000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/toggle/32x32,0.007415000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: algebraic/toggle/8x4,0.000350000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract+decode/N=10000 Δ≈64,2.303197000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract+decode/N=100000 Δ≈512,19.120423000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract+decode/N=1000000 Δ≈4096,151.625532000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract+decode/N=10000000 Δ≈4096,149.638949000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract+decode/N=10000000 Δ≈99968,3620.928883000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract/N=10M Δ≈4096,1.001410000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract/N=10M Δ≈512,0.123300000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: extract/N=10M Δ≈64,0.015063000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: gf64 multiply,0.000005000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: pinsketch decode/1,0.001287000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: pinsketch decode/16,0.280001000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: pinsketch decode/32,0.835293000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: pinsketch decode/4,0.031325000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: pinsketch decode/8,0.099500000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: resident insert/100,0.006102000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: resident insert/1000,0.059867000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: resident insert/10000,0.610363000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: triage/estimate strata/0,0.004598000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: triage/estimate strata/100,0.825807000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: triage/estimate strata/4,0.045682000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: triage/parse bucket sketch,0.000219000
+2026-10-13T14:49:34+00:00,079fb8f,master,math/reconcile: triage/transition_bucket_batch split,0.000203000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/mainline_cache: compute_state_at (serial, cache-free; L=1000, M=2000)",3353.400000000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/mainline_cache: compute_state_at (serial, cache-free; L=200, M=500)",126.400000000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/mainline_cache: compute_state_at (serial, cache-free; L=2000, M=5000)",21416.500000000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/mainline_cache: compute_state_at_batch (L=1000, M=2000)",542.700000000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/mainline_cache: compute_state_at_batch (L=200, M=500)",33.000000000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/mainline_cache: compute_state_at_batch (L=2000, M=5000)",3096.500000000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/4-Way Federated Partition (500 Members, 4 Forks, 200 Conflicted Keys): rezzy (bitmap accelerated)",718.329509000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/4-Way Federated Partition (500 Members, 4 Forks, 200 Conflicted Keys): ruma-state-res (original)",617.043383000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys): rezzy (bitmap accelerated)",349.611023000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/8-Way Split-Brain Chaos (1,000 Members, 8 Forks, 400 Conflicted Keys): ruma-state-res (original)",317.854952000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys): rezzy (bitmap accelerated)",289.605884000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/Mega Rebuild Stress (2,000 Members, 8 Forks, 800 Conflicted Keys): ruma-state-res (original)",273.085906000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys): rezzy (bitmap accelerated)",913.824385000
+2026-10-13T14:49:34+00:00,079fb8f,master,"state/ruma_vs_rezzy/Nasty 2-Branch Conflict (500 Members, 100 Conflicted Keys): ruma-state-res (original)",826.540491000

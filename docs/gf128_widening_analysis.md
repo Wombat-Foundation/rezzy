@@ -352,6 +352,12 @@ Note that these are complementary, not exclusive: the field widening buys the
 pair-cost floor, the keyed placement hash buys the liveness attack, and the
 accumulator choice buys residual forgery resistance.
 
+Related implementation update: the sibling `gomatrixcrypto` repository's
+`lthash` package added an AES-256-CTR LtHash accumulator alongside its BLAKE3
+profile in commit [`bce1178`](https://github.com/Wombat-Foundation/gomatrixcrypto/commit/bce1178d1ac10c241d423feb6b45c662383470ab).
+That accumulator is available in `gomatrixcrypto`; it is not wired into
+`rezzy-recon`, whose reconciliation residual binding remains h128.
+
 ## Bottom line
 
 Widening to GF(2^128) costs roughly ×2 on encode paths, ×4-5 on decode, exactly

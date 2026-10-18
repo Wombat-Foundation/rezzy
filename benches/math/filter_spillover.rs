@@ -167,6 +167,7 @@ fn generate_best_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>, 
         remote.push(ElementHash {
             h128: u128::from(gen.next()) << 64 | u128::from(h64 ^ 0x5555),
             h64,
+            q3: gen.next() | 1,
         });
     }
     (base.to_vec(), remote)
@@ -198,6 +199,7 @@ fn generate_worst_case(base: &[ElementHash], delta: usize) -> (Vec<ElementHash>,
         remote.push(ElementHash {
             h128: u128::from(gen.next()) << 64 | u128::from(h64 ^ 0xAAAA),
             h64,
+            q3: gen.next() | 1,
         });
     }
     (base.to_vec(), remote)
@@ -246,6 +248,7 @@ fn generate_symmetric_mix(
         remote.push(ElementHash {
             h128: u128::from(gen.next()) << 64 | u128::from(h64 ^ 0x7777),
             h64,
+            q3: gen.next() | 1,
         });
     }
 

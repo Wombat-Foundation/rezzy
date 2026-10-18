@@ -51,3 +51,7 @@ harness = false
 name = "compare-ruma"
 path = "compare_ruma.rs"
 harness = false
+
+[[test]]
+name = "aesctr_crosscheck"
+path = "aesctr_crosscheck.rs"

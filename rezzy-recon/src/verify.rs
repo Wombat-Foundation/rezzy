@@ -287,7 +287,7 @@ mod tests {
     use crate::triage::BucketDecodeSuccess;
 
     const fn el(h128: u128, h64: u64) -> ElementHash {
-        ElementHash { h128, h64 }
+        ElementHash { h128, h64, q3: h64 }
     }
 
     /// A digest whose derived `h64`/`h128` are exactly the given values

@@ -211,8 +211,8 @@ fn small_delta_resolves_in_one_round_trip() {
 /// Builds a pair with a large identical shared base plus a small, real
 /// difference. The shared base cancels out of `estimate_strata`'s per-stratum
 /// residuals entirely; the injected differences concentrate in the low strata
-/// (a hash's stratum is the trailing-zero count of its `h64`, so most hashes
-/// land in stratum 0), which overflows a stratum and forces the
+/// (the fixture forces Q3's trailing-zero count to 0), which overflows a
+/// stratum and forces the
 /// `low_confidence` fallback. Confirms `low_confidence` only degrades the
 /// capacity *estimate* rather than blocking convergence: even with a poor
 /// first guess the small delta still resolves in a single round (the
@@ -244,20 +244,22 @@ fn low_confidence_estimate_still_converges() {
 
     // Now inject a genuine, small, real difference on top.
     for _ in 0..8 {
-        let hash = generator.hash();
+        let mut hash = generator.hash();
+        hash.q3 |= 1;
         local.insert(hash).unwrap();
         local_h64.push(hash.h64);
     }
     for _ in 0..8 {
-        let hash = generator.hash();
+        let mut hash = generator.hash();
+        hash.q3 |= 1;
         remote.insert(hash).unwrap();
         remote_h64.push(hash.h64);
     }
     local_h64.sort_unstable();
     remote_h64.sort_unstable();
 
-    // The injected differences cluster in the low strata (stratum == trailing
-    // zeros of h64), overflowing one and forcing the low_confidence fallback.
+    // Force the injected differences into Q3 stratum 0; 16 distinct residual
+    // identifiers exceed that stratum's capacity and exercise low confidence.
     let estimate =
         estimate_strata(local.strata(), remote.strata(), MAX_STRATA_FACTOR_WORK).unwrap();
     assert!(
@@ -457,11 +459,13 @@ fn colliding_h64_is_narrowed_not_the_whole_frame() {
     let twin = ElementHash {
         h128: collided.h128 ^ 0xdead_beef,
         h64: collided.h64,
+        q3: collided.q3,
     };
     // In the opposite top-level half, so the first split separates it.
     let extra = ElementHash {
         h128: generator.hash().h128,
         h64: collided.h64 ^ (1_u64 << 63),
+        q3: 1,
     };
     let local = Side::new(shared.clone());
     let remote = Side::new([shared, vec![twin, extra]].concat());
@@ -502,6 +506,7 @@ fn collision_in_one_bucket_leaves_siblings_resolved() {
     let twin = ElementHash {
         h128: collided.h128 ^ 0xdead_beef,
         h64: collided.h64,
+        q3: collided.q3,
     };
     let local = Side::new([shared.clone(), local_extra.clone()].concat());
     let remote = Side::new([shared, remote_extra.clone(), vec![twin]].concat());
@@ -556,11 +561,13 @@ fn split_pair_collision_is_admitted_by_phase_one_and_caught_by_phase_two() {
     let y = ElementHash {
         h128: x.h128 ^ 0xfeed_face,
         h64: x.h64,
+        q3: x.q3,
     };
     // An honest remote-only element in the same node as the colliding pair.
     let z = ElementHash {
         h128: generator.hash().h128,
         h64: x.h64 ^ 1,
+        q3: 1,
     };
     remote_extra.push(z);
 
@@ -633,11 +640,13 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
     let y = ElementHash {
         h128: x.h128 ^ 0xfeed_face,
         h64: x.h64,
+        q3: x.q3,
     };
     // An honest remote-only element in the same half as the pair.
     remote_extra.push(ElementHash {
         h128: generator.hash().h128,
         h64: x.h64 ^ (1_u64 << 62),
+        q3: 1,
     });
 
     let local = Side::new([shared.clone(), local_extra.clone(), vec![x]].concat());

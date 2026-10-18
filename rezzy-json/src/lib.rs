@@ -502,6 +502,36 @@ impl From<u32> for Value {
         Self::from(u64::from(v))
     }
 }
+impl From<u8> for Value {
+    fn from(v: u8) -> Self {
+        Self::from(u64::from(v))
+    }
+}
+impl From<u16> for Value {
+    fn from(v: u16) -> Self {
+        Self::from(u64::from(v))
+    }
+}
+impl From<i8> for Value {
+    fn from(v: i8) -> Self {
+        Self::from(i64::from(v))
+    }
+}
+impl From<i16> for Value {
+    fn from(v: i16) -> Self {
+        Self::from(i64::from(v))
+    }
+}
+impl From<i128> for Value {
+    fn from(v: i128) -> Self {
+        Self::Number(Number(v.to_string()))
+    }
+}
+impl From<isize> for Value {
+    fn from(v: isize) -> Self {
+        Self::from(v as i64)
+    }
+}
 impl From<usize> for Value {
     fn from(v: usize) -> Self {
         Self::from(v as u64)
@@ -2428,6 +2458,17 @@ fn valid_number(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn small_integer_from_impls() {
+        use crate::Value;
+        assert_eq!(Value::from(255u8).to_string(), "255");
+        assert_eq!(Value::from(65535u16).to_string(), "65535");
+        assert_eq!(Value::from(-128i8).to_string(), "-128");
+        assert_eq!(Value::from(-32768i16).to_string(), "-32768");
+        assert_eq!(Value::from(-7isize).to_string(), "-7");
+        assert_eq!(Value::from(i128::MIN).to_string(), i128::MIN.to_string());
+    }
+
     #[test]
     fn number_literals_keep_integers_and_normalize_floats() {
         // Integers keep their source spelling; floats are re-rendered through
