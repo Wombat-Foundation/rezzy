@@ -1,9 +1,9 @@
 # h64 prefix grinding and collisions (2026-10-12)
 
-Status: **open, possibly unsolvable in full.** Nothing here is implemented or
-validated. See also the `TODO(prefix-grinding)` comment in
-`rezzy-recon/src/algebraic.rs` and the MSC4511-C notes in
-`docs/msc4511_compressed_trie.md`.
+Status: **local no-amplification policy implemented.** Placement remains
+predictable; the retry path now bounds defender work by node population and
+depth without salt, epochs, or wire changes. The caller handles terminal
+failed prefixes with its node-scoped bounded ID fallback.
 
 ## What the integrity checks do and don't give us
 
@@ -26,9 +26,8 @@ validated. See also the `TODO(prefix-grinding)` comment in
   handled by splitting and falling back to direct ID exchange.
 - Adversarial prefix grinding: `h64` is unkeyed and fixed once the event exists.
   An author who controls content can grind a shared prefix of ~20+ bits cheaply.
-  The splitter descends one bit per round over `MAX_RECONCILIATION_ROUNDS` (20),
-  so such a bucket exhausts the budget and falls to
-  `ClientAction::ExtremityDiff`.
+  The old one-bit ladder made the give-up path disproportionate to the
+  attacker's work. The revised client avoids that growth curve.
 - Precondition: the ground events must be in the symmetric difference (selective
   federation, or a withholding attacker-run homeserver). Events that replicate
   normally cancel out. The result is a liveness and bandwidth cost on the
@@ -88,27 +87,30 @@ that is both unpredictable at authoring time and agreed by all peers without
 extra consensus appears not to exist. What remains is bounding the damage
 (mitigations below), not preventing it.
 
-## Mitigations considered (unprototyped)
+## No-amplification policy
 
-1. **Salt only on escalation.** Keep the resident index unkeyed. When a bucket
-   exhausts its split budget, re-place just that bucket's elements with a
-   per-session nonce or the independent `h128`. A grinder who fixed an `h64`
-   prefix can't also control the second placement. Cost is O(bucket size),
-   bounded by the attacker's own grinding. Builds on the existing per-prefix
-   fallback (`ladder_fail`, `force_split`). Not yet checked against how those
-   functions re-place a bucket.
-2. **Wider fan-out per round.** Split 2^k ways per round so a 20-bit prefix
-   costs 20/k rounds instead of 20. Constant-factor, also helps accidental skew,
-   but makes per-round sketches larger.
-3. **Early skew detection.** If a prefix is implausibly crowded for its depth,
-   send its IDs directly instead of burning rounds.
-4. **Accept and document.** The attack is liveness-only and needs withholding.
+1. **Overflow decode small nodes.** If either side's node population is at most
+   256, request one capacity-256 overflow sketch. If both populations fit, the
+   node resolves in that one request round; there is no capacity ladder.
+2. **Fan out stalled nodes.** A failed node too large for overflow uses the
+   available 128-request budget to descend up to seven prefix bits in one round.
+   Nodes with population above 256 are split immediately based on the summaries
+   already returned for each node.
+3. **Keep terminal fallback local.** `ladder_failed` reports the failed node
+   only. Its caller performs bounded ID fallback for that node, so transferred
+   IDs are limited to the population in the attacked region.
 
-## Open questions
+Every constrained digest bit costs about 2 hashes per additional attacker
+element. The responder's fallback cost is proportional to the node population,
+whose elements must cross the symmetric difference regardless. A fully
+exhausted 32-bit prefix therefore costs about 2^32 hashes per element to
+construct and causes only a node-local transfer. This is a complete
+no-amplification answer; unpredictability still requires entropy, but is not
+needed to make grinding economically unattractive.
 
-- Is the grinding problem fully solvable without a DAG-level epoch? Current
-  view: probably not, only boundable.
-- Do `ladder_fail` / `force_split` allow re-placing a failing bucket by `h128`
-  without protocol changes?
-- Is `h64` persisted or cached anywhere outside `rezzy-recon`? A grep of `src/`
-  found no `h64` references, but `resident.rs` was only skimmed.
+## Scope
+
+This does not make placement unpredictable. Per-session salts, keyed
+re-placement, and epoch keys remain protocol-level options if unpredictability
+is ever required. They are unnecessary for the economic objective here and
+would add coordination or change node-membership semantics.

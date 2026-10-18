@@ -410,7 +410,7 @@ pub fn decode_bucket_sketches(
     requests: &[BucketRequest],
     mut budget: usize,
 ) -> Result<BucketDecodeBatch, AlgebraicError> {
-    validate_bucket_requests(requests)?;
+    validate_adaptive_bucket_requests(requests)?;
 
     let mut offset = 0_usize;
     let mut successful_buckets = Vec::new();
@@ -445,7 +445,11 @@ pub fn decode_bucket_sketches(
             .ok_or(AlgebraicError::InvalidSketchCapacity)?;
         let allowance = budget.min(ceiling);
         let mut remaining = allowance;
-        let result = sketch.decode_elements_with_shared_budget(request.capacity, &mut remaining);
+        let result = if request.overflow {
+            sketch.decode_elements_overflow_with_shared_budget(request.capacity, &mut remaining)
+        } else {
+            sketch.decode_elements_with_shared_budget(request.capacity, &mut remaining)
+        };
         // `remaining` only ever decreases from `allowance` (budgeted
         // decoders only subtract) and `allowance <= budget` by
         // construction above, so both `checked_sub`s below are provably
@@ -534,6 +538,15 @@ pub fn validate_overflow_bucket_requests(requests: &[BucketRequest]) -> Result<(
     validate_bucket_requests_with_limit(requests, MAX_OVERFLOW_BUCKET_CAPACITY)
 }
 
+/// Validates one adaptive round containing ordinary and explicit overflow
+/// requests, while retaining the shared aggregate and overlap limits.
+///
+/// # Errors
+/// Returns an error if a request has invalid capacity, bounds, or overlap.
+pub fn validate_adaptive_bucket_requests(requests: &[BucketRequest]) -> Result<(), AlgebraicError> {
+    validate_bucket_requests_with_limit(requests, MAX_OVERFLOW_BUCKET_CAPACITY)
+}
+
 fn validate_bucket_requests_with_limit(
     requests: &[BucketRequest],
     max_bucket_capacity: usize,
@@ -541,7 +554,12 @@ fn validate_bucket_requests_with_limit(
     let mut total_capacity = 0_usize;
     let mut previous_end = 0_u128;
     for request in requests {
-        if request.capacity == 0 || request.capacity > max_bucket_capacity {
+        let item_limit = if request.overflow {
+            max_bucket_capacity
+        } else {
+            MAX_BUCKET_SKETCH_CAPACITY
+        };
+        if request.capacity == 0 || request.capacity > item_limit {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
         if request.depth > MAX_DEPTH {

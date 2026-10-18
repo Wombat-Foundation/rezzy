@@ -75,7 +75,7 @@ impl<'a> H64Index<'a> {
         &self,
         request: &BucketRequest,
     ) -> Result<core::ops::Range<usize>, AlgebraicError> {
-        crate::triage::validate_bucket_requests(core::slice::from_ref(request))?;
+        crate::triage::validate_adaptive_bucket_requests(core::slice::from_ref(request))?;
         Ok(self.bucket_range_unchecked(request))
     }
 
@@ -84,7 +84,7 @@ impl<'a> H64Index<'a> {
     /// # Errors
     /// Returns an error when the request is malformed.
     pub fn bucket_slice(&self, request: &BucketRequest) -> Result<&'a [u64], AlgebraicError> {
-        crate::triage::validate_bucket_requests(core::slice::from_ref(request))?;
+        crate::triage::validate_adaptive_bucket_requests(core::slice::from_ref(request))?;
         let range = self.bucket_range_unchecked(request);
         Ok(&self.sorted_h64[range])
     }
@@ -310,13 +310,17 @@ pub fn build_bucket_sketches(
     sorted_h64: &[u64],
     requests: &[BucketRequest],
 ) -> Result<Vec<SyndromeSketch>, AlgebraicError> {
-    crate::triage::validate_bucket_requests(requests)?;
+    crate::triage::validate_adaptive_bucket_requests(requests)?;
     let index = H64Index::new(sorted_h64);
 
     let mut sketches = Vec::with_capacity(requests.len());
 
     for request in requests {
-        let mut sketch = SyndromeSketch::new(request.capacity)?;
+        let mut sketch = if request.overflow {
+            SyndromeSketch::new_overflow(request.capacity)?
+        } else {
+            SyndromeSketch::new(request.capacity)?
+        };
         // The pre-sorted index makes the bucket's contents a contiguous slice.
         for &h64 in index.bucket_slice_unchecked(request) {
             sketch.toggle(h64)?;
@@ -447,11 +451,15 @@ pub fn build_bucket_nodes<P: Population + ?Sized>(
     population: &P,
     requests: &[BucketRequest],
 ) -> Result<Vec<(SyndromeSketch, NodeSummary)>, AlgebraicError> {
-    crate::triage::validate_bucket_requests(requests)?;
+    crate::triage::validate_adaptive_bucket_requests(requests)?;
     let mut nodes = Vec::with_capacity(requests.len());
     for request in requests {
         let node = (request.depth, request.prefix);
-        let mut sketch = SyndromeSketch::new(request.capacity)?;
+        let mut sketch = if request.overflow {
+            SyndromeSketch::new_overflow(request.capacity)?
+        } else {
+            SyndromeSketch::new(request.capacity)?
+        };
         let mut toggled = Ok(());
         population.for_each_h64_in(node, &mut |h64| {
             if toggled.is_ok() {
@@ -508,7 +516,7 @@ impl<'a> SketchBuilder<'a> {
     ) -> Result<SketchResult, AlgebraicError> {
         let mut total_work: usize = 0;
 
-        crate::triage::validate_bucket_requests(initial_requests)?;
+        crate::triage::validate_adaptive_bucket_requests(initial_requests)?;
         for req in initial_requests {
             let range = self.index.bucket_range_unchecked(req);
             let slice_len = range.len();
@@ -525,7 +533,11 @@ impl<'a> SketchBuilder<'a> {
 
         let mut sketches = Vec::with_capacity(initial_requests.len());
         for req in initial_requests {
-            let mut sketch = SyndromeSketch::new(req.capacity)?;
+            let mut sketch = if req.overflow {
+                SyndromeSketch::new_overflow(req.capacity)?
+            } else {
+                SyndromeSketch::new(req.capacity)?
+            };
             for &h64 in self.index.bucket_slice_unchecked(req) {
                 sketch.toggle(h64)?;
             }

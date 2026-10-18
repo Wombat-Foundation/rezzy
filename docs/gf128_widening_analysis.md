@@ -272,12 +272,11 @@ are already infeasible; this is a non-gain.
 
 ### Not improved
 
-- **Prefix-grinding placement attack** (`TODO(prefix-grinding)`,
-  `rezzy-recon/src/algebraic.rs:146-205`, `rezzy-recon/src/resident.rs:24-33`,
-  `rezzy-recon/src/client.rs:26-42`). The splitter descends one key bit per
-  round over `MAX_RECONCILIATION_ROUNDS = 20`; grinding a ~20-bit shared prefix
-  costs ~2^20 hashes per bit of prefix, independent of field width. The fix
-  remains an epoch-rotated keyed placement hash.
+- **Prefix-grinding placement attack**. Placement is still deterministic, but
+  the local retry policy avoids attacker-controlled defender-cost growth:
+  overflow-decode nodes up to capacity 256, fan out up to seven bits for larger
+  nodes, and route terminal failures to node-scoped ID fallback. See
+  `docs/2026-10-12-h64-prefix-grinding.md`.
 - **Round exhaustion** and the `MAX_NO_PROGRESS_ROUNDS = 3` mitigation
   (`rezzy-recon/src/client.rs:149`) — unchanged.
 - **`MAX_FACTOR_WORK` worst-case gap** (`rezzy-recon/src/pinsketch.rs:25-45`) —
@@ -343,7 +342,7 @@ behaviors must be re-specified:
 | Option                                                                                 | Security effect                                                                                                                | Cost                                                                                                                        |
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | Widen field to GF(2^128) (this document)                                               | pair grinding 2^32 → 2^64; accumulator forgery ~2^37 → ~2^69                                                                   | ×2 encode, ×4-5 decode, ×2 wire/memory, ~4-7× weaker DoS ceilings, interop break                                            |
-| Epoch-rotated keyed placement hash (Yang et al. §4.3; the `TODO(prefix-grinding)` fix) | defeats the prefix-grinding attack this change does **not** touch                                                              | one key per epoch; preserves `ResidentKernel` amortization within an epoch; no field change                                 |
+| Local no-amplification retry policy (implemented in `client.rs`) | leaves placement predictable; bounds failed-node cost by its population and depth | no salt, epoch, field change, or wire change |
 | LtHash accumulator profile                                                             | forgery ~2^97, not pair-gated                                                                                                  | ~2 KiB resident state per room + ~2 KiB wire per reconciliation; already partially implemented at `src/incremental/lthash/` |
 | Widen the accumulator sum only (mod 2^128 / 2^256)                                     | ~2^43 / ~2^48 today; dominated by the same 2^32 pair floor                                                                     | format change with no field change; previously judged "not worth a format change on its own"                                |
 | Document the limit and keep GF(2^64)                                                   | accepts ~2^37 accumulator forgery, which only hides the attacker's own events and blocks repair of a split the attacker caused | zero                                                                                                                        |
@@ -368,11 +367,10 @@ MSC4521/libminisketch interoperability with no reference oracle to replace it.
 
 In exchange it moves exactly one number: adversarial key-collision grinding from
 2^32 to 2^64, which lifts the pair-gated accumulator forgery estimates by ~2^32.
-It does not touch either open TODO in `rezzy-recon` (`prefix-grinding`,
-`MAX_FACTOR_WORK`), and it makes the second one larger in absolute units. If the
-goal is the documented security gaps, the epoch-rotated placement key addresses
-the gap widening misses, at a small fraction of the cost; if the goal is the
-accumulator bound, the field change is what makes plain XOR competitive again.
+It does not change the prefix-grinding policy or `MAX_FACTOR_WORK`, and it makes
+the latter larger in absolute units. The implemented local retry policy bounds
+prefix-grinding cost without placement entropy; the field change remains about
+the accumulator bound.
 
 ## Appendix: reproducing the derived numbers
 
