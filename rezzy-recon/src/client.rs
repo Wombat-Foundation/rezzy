@@ -1867,8 +1867,9 @@ mod tests {
 
         let mut action = advance_failed_root_bucket(&mut exchange);
 
-        // Run 5 narrowing split rounds (more than MAX_NO_PROGRESS_ROUNDS).
-        // Each round, left fails and right succeeds with 0 roots.
+        // Run five narrowing rounds to ensure a short retry cutoff does not
+        // interrupt real progress. Each round, left fails and right succeeds
+        // with 0 roots, so these rounds are not consecutive no-progress rounds.
         for _ in 0..5 {
             let ClientAction::BucketSketches { requests, .. } = &action else {
                 panic!("expected BucketSketches action on narrowing split");
