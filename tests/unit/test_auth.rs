@@ -453,7 +453,7 @@ fn test_flagged_auth_state_is_not_used() {
     assert!(
         matches!(
             check_auth(&event, &state, StateResVersion::V2_1, None),
-            Err(ref e) if e.to_string().contains("auth state event")
+            Err(AuthError::RejectedAuthStateEvent { .. })
         ),
         "flagged auth state must not authorize later events"
     );
