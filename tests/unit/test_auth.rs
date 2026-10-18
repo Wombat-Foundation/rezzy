@@ -2805,7 +2805,7 @@ fn test_pl_validation_users_invalid_key_rejected() {
     );
     let err = res.unwrap_err();
     assert!(
-        matches!(&err, e if e.to_string().contains("not_a_user_id")),
+        matches!(&err, AuthError::InvalidUsersKey { user_id } if *user_id == "not_a_user_id"),
         "Error should mention the bad key: {err:?}"
     );
 }
