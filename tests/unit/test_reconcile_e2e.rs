@@ -380,7 +380,12 @@ fn drive(
         {
             let mut xored = remote_sketch.clone();
             xored.xor(local_sketch).unwrap();
-            match xored.decode_elements(request.capacity) {
+            let decoded = if request.overflow {
+                xored.decode_elements_overflow_budget(request.capacity, usize::MAX)
+            } else {
+                xored.decode_elements(request.capacity)
+            };
+            match decoded {
                 Ok(roots) => batch.successful_buckets.push(BucketDecodeSuccess {
                     depth: request.depth,
                     prefix: request.prefix,
