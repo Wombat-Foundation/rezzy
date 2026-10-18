@@ -84,7 +84,7 @@ naturally splits into three clean layers:
 ```
 
 The homeserver owns all I/O and uses its database's batching capabilities. Rezzy
-owns all CPU-bound computation and uses its `imbl` stack for
+owns all CPU-bound computation and uses its persistent state structures for
 maximum cache locality and zero-allocation structural sharing.
 
 ## Internal Implementation
