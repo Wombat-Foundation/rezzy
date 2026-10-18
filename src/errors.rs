@@ -256,9 +256,8 @@ impl fmt::Display for SignError<'_> {
 }
 
 /// Compatibility conversion to `String` for callers that still surface
-/// `SignError` through a `String`-typed error boundary (the signing
-/// `EventVerifier` impls). [`VerifyError`] is the structured counterpart those
-/// impls migrate to; this conversion is unchanged.
+/// `SignError` through a `String`-typed error boundary. The signing
+/// `EventVerifier` impls now return [`VerifyError`], which wraps this type.
 impl From<SignError<'_>> for String {
     fn from(err: SignError<'_>) -> Self {
         err.to_string()
