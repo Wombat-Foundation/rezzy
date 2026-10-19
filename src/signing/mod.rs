@@ -135,6 +135,9 @@ pub fn verify_event_signatures_typed<'a>(
 }
 
 /// Compatibility wrapper returning the historical `String` error type.
+///
+/// # Errors
+/// Returns the rendered typed error when verification fails.
 pub fn verify_event_signatures(
     value: &Value,
     room_version: &str,
@@ -206,6 +209,9 @@ pub fn verify_event_signatures_from_server_typed<'a>(
 }
 
 /// Compatibility wrapper returning the historical `String` error type.
+///
+/// # Errors
+/// Returns the rendered typed error when verification fails.
 pub fn verify_event_signatures_from_server(
     value: &Value,
     room_version: &str,

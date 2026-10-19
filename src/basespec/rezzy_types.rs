@@ -1093,6 +1093,9 @@ pub fn reference_hash_typed<'a>(
 }
 
 /// Compatibility wrapper returning the historical `String` error type.
+///
+/// # Errors
+/// Returns the rendered typed error when the typed variant would fail.
 pub fn reference_hash(
     value: &Value,
     room_version: &str,
@@ -1128,6 +1131,9 @@ pub fn compute_content_hash_typed<'a>(
 }
 
 /// Compatibility wrapper returning the historical `String` error type.
+///
+/// # Errors
+/// Returns the rendered typed error when the typed variant would fail.
 pub fn compute_content_hash(
     value: &Value,
     room_version: &str,
@@ -1175,6 +1181,9 @@ pub fn verify_content_hash_typed<'a>(
 }
 
 /// Compatibility wrapper returning the historical `String` error type.
+///
+/// # Errors
+/// Returns the rendered typed error when the typed variant would fail.
 pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), std::string::String> {
     verify_content_hash_typed(value, room_version).map_err(|error| error.to_string())
 }
@@ -1227,6 +1236,9 @@ pub fn try_canonical_redacted_json_typed<'a>(
 }
 
 /// Compatibility wrapper returning the historical `String` error type.
+///
+/// # Errors
+/// Returns the rendered typed error when the typed variant would fail.
 pub fn try_canonical_redacted_json(
     value: &Value,
     room_version: &str,
@@ -2890,18 +2902,33 @@ pub trait EventVerifier<Id> {
 /// Use [`LegacyEventVerifierAdapter`] to pass an implementation to APIs that
 /// now consume structured [`VerifyError`] values.
 pub trait LegacyEventVerifier<Id> {
+    ///
+    /// # Errors
+    /// Returns `Err(reason)` to reject the event's ID hash.
     fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), String> {
         Ok(())
     }
+    ///
+    /// # Errors
+    /// Returns `Err(reason)` to reject the event's signatures.
     fn verify_signatures(&self, _event_id: &Id) -> Result<(), String> {
         Ok(())
     }
+    ///
+    /// # Errors
+    /// Returns `Err(reason)` to reject the event's content hash.
     fn verify_content_hash(&self, _event_id: &Id) -> Result<(), String> {
         Ok(())
     }
+    ///
+    /// # Errors
+    /// Returns `Err(reason)` to reject the third-party invite.
     fn verify_third_party_invite(&self, _event_id: &Id, _token: &str) -> Result<(), String> {
         Ok(())
     }
+    ///
+    /// # Errors
+    /// Returns `Err(reason)` to reject the authorising user's server.
     fn verify_join_authorised_via_users_server(
         &self,
         _event_id: &Id,
@@ -3804,9 +3831,9 @@ impl LeanEvent<String, Value, String> {
             let digest = reference_hash_bytes(value, ver)?;
             let mut encoded = [0_u8; HASH_B64_MAX_LEN];
             let length = encode_hash_slice(&digest, ver, &mut encoded)?;
-            let mut id = String::with_capacity(1 + length);
+            let mut id = String::with_capacity(HASH_B64_MAX_LEN + 1);
             id.push('$');
-            id.push_str(core::str::from_utf8(&encoded[..length]).expect("base64 is ASCII"));
+            id.push_str(core::str::from_utf8(&encoded[..length]).unwrap_or_default());
             id
         } else {
             return Err(String::from(
