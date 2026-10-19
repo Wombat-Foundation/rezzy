@@ -93,6 +93,12 @@ const BENCHMARKS: &[BenchmarkEntry] = &[
     },
     BenchmarkEntry {
         domain: "db",
+        name: "hamt_delta",
+        description: "HAMT delta resolution: in-memory vs cold reads by cached layer depth",
+        run_fn: db::hamt_delta::run,
+    },
+    BenchmarkEntry {
+        domain: "db",
         name: "persistence",
         description: "HAMT path-copying persistence vs full snapshot serialization",
         run_fn: db::persistence::run,

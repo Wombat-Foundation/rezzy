@@ -1097,6 +1097,12 @@ mod tests {
         // Densities straddle the 4096-of-65536 (16/256) array/bitset threshold.
         for &da in &[0u64, 1, 3, 16, 17, 64, 200, 256] {
             for &db in &[0u64, 2, 15, 16, 18, 128, 256] {
+                // Above the array/bitset threshold the `BTreeSet` oracle dominates
+                // the runtime (debug build), so only compare sparse pairs here;
+                // dense pairs are covered by `dense_set_ops_match_linear_oracle`.
+                if da > 16 || db > 16 {
+                    continue;
+                }
                 // Overlapping but offset spans so some chunks pair up and others do not.
                 let sa = random_set(&mut rng, 10_000, 40_000, da);
                 let sb = random_set(&mut rng, 30_000, 40_000, db);
@@ -1128,6 +1134,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn dense_set_ops_match_linear_oracle() {
+        // Dense inputs span two chunks and overlap without paying the cost of
+        // BTreeSet operations on tens of thousands of values.
+        let in_a = |v: u32| v < 50_000 && v % 2 == 0;
+        let in_b = |v: u32| (25_000..75_000).contains(&v) && v % 3 != 0;
+        let a: Bitmap = (0..50_000).filter(|&v| in_a(v)).collect();
+        let b: Bitmap = (25_000..75_000).filter(|&v| in_b(v)).collect();
+        assert!(a.chunks.iter().all(|c| matches!(c.store, Store::Dense(_))));
+        assert!(b.chunks.iter().all(|c| matches!(c.store, Store::Dense(_))));
+
+        let expected_union: Vec<_> = (0..75_000).filter(|&v| in_a(v) || in_b(v)).collect();
+        let expected_intersection: Vec<_> = (0..75_000).filter(|&v| in_a(v) && in_b(v)).collect();
+        let expected_difference: Vec<_> = (0..75_000).filter(|&v| in_a(v) && !in_b(v)).collect();
+        let check_values = |bitmap: &Bitmap, expected: &[u32]| {
+            assert_eq!(bitmap.len(), expected.len() as u64);
+            assert!(bitmap.iter().eq(expected.iter().copied()));
+            assert!(bitmap.chunks.windows(2).all(|w| w[0].key < w[1].key));
+            for chunk in &bitmap.chunks {
+                assert_eq!(
+                    matches!(chunk.store, Store::Array(_)),
+                    chunk.len as usize <= ARRAY_MAX
+                );
+            }
+        };
+
+        check_values(&(&a | &b), &expected_union);
+        let mut union = a.clone();
+        union |= &b;
+        check_values(&union, &expected_union);
+
+        check_values(&(&a & &b), &expected_intersection);
+        let mut intersection = a.clone();
+        intersection &= &b;
+        check_values(&intersection, &expected_intersection);
+
+        check_values(&(a.clone() - &b), &expected_difference);
+        let mut difference = a.clone();
+        difference -= &b;
+        check_values(&difference, &expected_difference);
     }
 
     #[test]
