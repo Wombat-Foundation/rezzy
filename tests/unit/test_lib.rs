@@ -1910,7 +1910,7 @@ mod tests {
             AuthError::InsufficientPowerLevel {
                 required: 100,
                 actual: 50,
-                event_type: "m.room.name",
+                event_type: std::borrow::Cow::Borrowed("m.room.name"),
             },
             AuthError::BannedUser {
                 sender: "bob",
@@ -2128,7 +2128,7 @@ mod tests {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                event_type: "m.room.name"
+                event_type: std::borrow::Cow::Borrowed("m.room.name")
             })
         );
 
@@ -3080,8 +3080,8 @@ macro_rules! impl_event_like_stub {
         impl rezzy::basespec::rezzy_types::EventLike for $ty {
             type Content = $content;
 
-            fn event_type(&self) -> &str {
-                "m.room.message"
+            fn event_type(&self) -> std::borrow::Cow<'_, str> {
+                std::borrow::Cow::Borrowed("m.room.message")
             }
             fn sender(&self) -> &'static str {
                 $sender
@@ -6205,8 +6205,8 @@ impl rezzy::RawEvent for TestRawEvent {
     fn raw_event_id(&self) -> &String {
         &self.id
     }
-    fn raw_event_type(&self) -> &str {
-        &self.event_type
+    fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.event_type)
     }
     fn raw_sender(&self) -> &str {
         &self.sender

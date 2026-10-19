@@ -50,7 +50,7 @@ pub enum AuthError<'a, Id = String> {
     InsufficientPowerLevel {
         required: i64,
         actual: i64,
-        event_type: &'a str,
+        event_type: std::borrow::Cow<'a, str>,
     },
     /// The sender is banned from the room.
     BannedUser { sender: &'a str, event_id: &'a Id },
@@ -93,8 +93,8 @@ pub enum AuthError<'a, Id = String> {
     /// "missing" from "stale citation" -- both name the same `(event_type,
     /// state_key)`.
     IncompleteAuthEvents {
-        event_type: &'a str,
-        state_key: &'a str,
+        event_type: std::borrow::Cow<'a, str>,
+        state_key: std::borrow::Cow<'a, str>,
     },
     /// Rule 2.5: an `auth_events` entry carries a [`RoomId`](crate::RoomId)
     /// that doesn't match the citing event's own room, OR carries no
@@ -134,7 +134,9 @@ pub enum AuthError<'a, Id = String> {
     /// The room has `m.federate = false` but the sender is from another domain.
     CrossDomainSender { sender: &'a str },
     /// An `auth_events` entry has a type outside the allowed auth set.
-    UnexpectedAuthEventType { auth_type: &'a str },
+    UnexpectedAuthEventType {
+        auth_type: std::borrow::Cow<'a, str>,
+    },
     /// A `m.room.power_levels` scalar field is not an integer.
     NonIntegerPowerLevel { field: &'a str },
     /// A `m.room.power_levels` map field is not an object of integers.
@@ -642,6 +644,26 @@ pub trait StateProviderRef<'p, Id = String, C = crate::json::Value, E = LeanEven
     fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p E>;
 }
 
+struct BorrowedStateProvider<'p, P>(&'p P);
+
+impl<Id, C, E, P> StateProvider<Id, C, E> for BorrowedStateProvider<'_, P>
+where
+    P: StateProvider<Id, C, E>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&E> {
+        self.0.get_event(event_type, state_key)
+    }
+}
+
+impl<'p, Id, C, E, P> StateProviderRef<'p, Id, C, E> for BorrowedStateProvider<'p, P>
+where
+    P: StateProvider<Id, C, E>,
+{
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p E> {
+        self.0.get_event(event_type, state_key)
+    }
+}
+
 /// The room state at a specific point in the DAG (keyed by (type, `state_key`) -> event).
 pub type RoomState<Id = String, C = crate::json::Value, K = String> =
     std::collections::BTreeMap<(String, K), LeanEvent<Id, C, K>>;
@@ -687,6 +709,29 @@ where
 /// mutate freely.
 pub(crate) struct BorrowedState<'p, Id, C, K> {
     map: std::collections::BTreeMap<(String, K), &'p LeanEvent<Id, C, K>>,
+}
+
+struct BorrowedStateRef<'s, 'p, Id, C, K>(&'s BorrowedState<'p, Id, C, K>);
+
+impl<Id, C, K> StateProvider<Id, C, LeanEvent<Id, C, K>> for BorrowedStateRef<'_, '_, Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event(&self, event_type: &str, state_key: &str) -> Option<&LeanEvent<Id, C, K>> {
+        self.0.get_event(event_type, state_key)
+    }
+}
+
+impl<'p, Id, C, K> StateProviderRef<'p, Id, C, LeanEvent<Id, C, K>>
+    for BorrowedStateRef<'_, 'p, Id, C, K>
+where
+    K: Ord,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
+{
+    fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p LeanEvent<Id, C, K>> {
+        self.0.get_event_ref(event_type, state_key)
+    }
 }
 
 impl<'p, Id, C, K> BorrowedState<'p, Id, C, K>
@@ -735,7 +780,7 @@ where
 impl<'p, Id, C, K> StateProviderRef<'p, Id, C, LeanEvent<Id, C, K>> for &BorrowedState<'p, Id, C, K>
 where
     K: Ord,
-    for<'r> (String, K): Borrow<dyn StateKeyDyn + 'r>,
+    for<'q> (String, K): Borrow<dyn StateKeyDyn + 'q>,
 {
     fn get_event_ref(&self, event_type: &str, state_key: &str) -> Option<&'p LeanEvent<Id, C, K>> {
         StateProviderRef::get_event_ref(*self, event_type, state_key)
@@ -954,8 +999,8 @@ pub fn validate_forward_extremity<
     E: EventLike<Id = Id, Content = C>,
 >(
     event: &'a E,
-    auth_events_state: impl StateProviderRef<'a, Id, C, E>,
-    current_room_state: impl StateProviderRef<'a, Id, C, E>,
+    auth_events_state: &'a impl StateProvider<Id, C, E>,
+    current_room_state: &'a impl StateProvider<Id, C, E>,
     version: StateResVersion,
     verifier: Option<&'a dyn EventVerifier<E::Id>>,
 ) -> ForwardExtremityResult<'a, Id> {
@@ -984,14 +1029,14 @@ pub fn validate_forward_extremity<
 /// Returns an `AuthError` if the event fails authorization validation.
 pub fn check_auth<'a, E: EventLike>(
     event: &'a E,
-    state: impl StateProviderRef<'a, E::Id, E::Content, E>,
+    state: &'a impl StateProvider<E::Id, E::Content, E>,
     version: StateResVersion,
     verifier: Option<&'a dyn EventVerifier<E::Id>>,
 ) -> Result<(), AuthError<'a, E::Id>>
 where
     E::Id: 'static,
 {
-    check_auth_with_context(event, state, version, verifier, None)
+    check_auth_with_context_impl(event, BorrowedStateProvider(state), version, verifier, None)
 }
 
 /// Check whether `event` is authorized given the room state at its `prev_events`,
@@ -1076,8 +1121,8 @@ fn check_auth_with_context_impl<
 
     // Cache event_type once — avoids repeated Cow allocations for
     // RawEvent impls that return Cow::Owned.
-    let event_type = event.event_type();
-    let event_type: &str = event_type;
+    let event_type_value = event.event_type();
+    let event_type: &str = event_type_value.as_ref();
 
     if event_type.is_empty() {
         return Err(AuthError::InvalidSyntax("event_type cannot be empty"));
@@ -1254,7 +1299,8 @@ fn check_auth_with_context_impl<
                 });
             }
 
-            let auth_type = auth_ev.event_type();
+            let auth_type_value = auth_ev.event_type();
+            let auth_type = auth_type_value.as_ref();
 
             if version.is_v2_1_plus() && auth_type == M_ROOM_CREATE {
                 return Err(AuthError::InvalidSyntax(
@@ -1263,7 +1309,9 @@ fn check_auth_with_context_impl<
             }
 
             if !VALID_AUTH_TYPES.contains(&auth_type) {
-                return Err(AuthError::UnexpectedAuthEventType { auth_type });
+                return Err(AuthError::UnexpectedAuthEventType {
+                    auth_type: auth_type_value,
+                });
             }
 
             let sk = auth_ev.state_key().unwrap_or("");
@@ -1301,8 +1349,8 @@ fn check_auth_with_context_impl<
                 Some(cited_id) if cited_id == state_ev.event_id() => {}
                 _ => {
                     return Err(AuthError::IncompleteAuthEvents {
-                        event_type: req_type,
-                        state_key: req_key,
+                        event_type: std::borrow::Cow::Owned(req_type.to_string()),
+                        state_key: std::borrow::Cow::Owned(req_key.to_string()),
                     });
                 }
             }
@@ -1361,7 +1409,7 @@ fn check_auth_with_context_impl<
                 return Err(AuthError::InsufficientPowerLevel {
                     required: required_pl,
                     actual: sender_pl,
-                    event_type,
+                    event_type: event_type_value.clone(),
                 });
             }
         }
@@ -2143,7 +2191,7 @@ fn check_leave_rules<'a, E: EventLike>(
         return Err(AuthError::InsufficientPowerLevel {
             required,
             actual: sender_pl,
-            event_type: label,
+            event_type: std::borrow::Cow::Borrowed(label),
         });
     }
 
@@ -2163,7 +2211,7 @@ fn check_ban_rules<'a, Id: EventId, C: EventContent, E: EventLike<Id = Id, Conte
         return Err(AuthError::InsufficientPowerLevel {
             required: ban_pl,
             actual: sender_pl,
-            event_type: "ban",
+            event_type: std::borrow::Cow::Borrowed("ban"),
         });
     }
     Ok(())
@@ -2250,7 +2298,7 @@ where
             return Err(AuthError::InsufficientPowerLevel {
                 required: invite_pl,
                 actual: issuer_pl,
-                event_type: "invite",
+                event_type: std::borrow::Cow::Borrowed("invite"),
             });
         }
 
@@ -2262,7 +2310,7 @@ where
         return Err(AuthError::InsufficientPowerLevel {
             required: invite_pl,
             actual: sender_pl,
-            event_type: "invite",
+            event_type: std::borrow::Cow::Borrowed("invite"),
         });
     }
 
@@ -2298,7 +2346,7 @@ fn check_membership_pl_hierarchies<
             return Err(AuthError::InsufficientPowerLevel {
                 required: target_pl.saturating_add(1),
                 actual: sender_pl,
-                event_type: "m.rezzy.member_pl_greater_than_target",
+                event_type: std::borrow::Cow::Borrowed("m.rezzy.member_pl_greater_than_target"),
             });
         }
     }
@@ -2765,7 +2813,13 @@ where
             continue;
         }
 
-        match check_auth_with_context_impl(event, &state, version, None, Some(&event_index)) {
+        match check_auth_with_context_impl(
+            event,
+            BorrowedStateRef(&state),
+            version,
+            None,
+            Some(&event_index),
+        ) {
             Ok(()) => {
                 // Apply event to state if it's a state event
                 if let Some(state_key) = &event.state_key {
@@ -2983,8 +3037,9 @@ pub fn auth_types_for_event_like<'a, E: EventLike + ?Sized>(
     version: StateResVersion,
     room_version: &str,
 ) -> Vec<(&'static str, &'a str)> {
+    let event_type = event.event_type();
     auth_types_for_event_core(
-        event.event_type(),
+        event_type.as_ref(),
         event.sender(),
         event.state_key(),
         event.get_membership(),

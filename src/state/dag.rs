@@ -212,6 +212,7 @@ impl<Id: fmt::Display> fmt::Display for StateDagValidationError<Id> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod validation_error_display_tests {
     use super::StateDagValidationError;
+    use crate::basespec::rezzy_types::StateResVersion;
     use std::format;
 
     #[test]
@@ -261,6 +262,12 @@ mod validation_error_display_tests {
                     actual_room: None,
                 },
                 "event $c (room !expected:example.org) references event $r without room_id",
+            ),
+            (
+                StateDagValidationError::<&str>::UnsupportedVersionForDag {
+                    version: StateResVersion::V1,
+                },
+                "State-DAG traversal requires room version 2.2 or later, got V1",
             ),
             (
                 StateDagValidationError::ReferencedRejectedEvent {
@@ -373,6 +380,26 @@ mod state_dag_branch_coverage_tests {
             soft_fail: false,
             room_id: None,
         }
+    }
+
+    #[test]
+    fn state_before_rejects_versions_before_v22() {
+        let event = event("$event", Some(""));
+        let events = TestMap::default();
+        let empty_key = String::new();
+        assert!(matches!(
+            compute_state_before_from_dag(&DagInputs::new(
+                &event,
+                &events,
+                StateResVersion::V1,
+                &empty_key,
+            )),
+            Err(StateDagError::Validation(
+                StateDagValidationError::UnsupportedVersionForDag {
+                    version: StateResVersion::V1,
+                }
+            ))
+        ));
     }
 
     #[test]

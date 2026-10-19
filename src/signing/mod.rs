@@ -36,7 +36,7 @@ use crate::json::Value;
 use std::string::String;
 use std::string::ToString;
 
-use crate::basespec::rezzy_types::{try_canonical_redacted_json, EventVerifier};
+use crate::basespec::rezzy_types::{try_canonical_redacted_json_typed, EventVerifier};
 use crate::errors::SignError;
 
 #[cfg(all(test, feature = "signing-consensus"))]
@@ -119,7 +119,7 @@ pub(crate) fn expected_event_signer<'a>(value: &'a Value, room_version: &str) ->
 /// Returns `Err` when the event carries no `signatures` object, when a
 /// signature present for a known key fails to verify, or when its base64
 /// encoding is malformed.
-pub fn verify_event_signatures<'a>(
+pub fn verify_event_signatures_typed<'a>(
     value: &'a Value,
     room_version: &'a str,
     verifier: &dyn SignatureVerifier,
@@ -131,7 +131,16 @@ pub fn verify_event_signatures<'a>(
     let Some(origin) = expected_event_signer(value, room_version) else {
         return Err(SignError::NoExpectedSigner);
     };
-    verify_event_signatures_from_server(value, room_version, origin, verifier)
+    verify_event_signatures_from_server_typed(value, room_version, origin, verifier)
+}
+
+/// Compatibility wrapper returning the historical `String` error type.
+pub fn verify_event_signatures(
+    value: &Value,
+    room_version: &str,
+    verifier: &dyn SignatureVerifier,
+) -> Result<(), String> {
+    verify_event_signatures_typed(value, room_version, verifier).map_err(|error| error.to_string())
 }
 
 /// Verifies a signature on `value` from one specific server.
@@ -142,13 +151,13 @@ pub fn verify_event_signatures<'a>(
 ///
 /// # Errors
 /// Returns `Err` if the expected server has no supported valid signature.
-pub fn verify_event_signatures_from_server<'a>(
+pub fn verify_event_signatures_from_server_typed<'a>(
     value: &'a Value,
     room_version: &'a str,
     expected_server: &'a str,
     verifier: &dyn SignatureVerifier,
 ) -> Result<(), SignError<'a>> {
-    let message = try_canonical_redacted_json(value, room_version)
+    let message = try_canonical_redacted_json_typed(value, room_version)
         .map_err(SignError::CanonicalRedacted)?
         .into_bytes();
     let Some(signatures) = value.get("signatures").and_then(Value::as_object) else {
@@ -180,7 +189,7 @@ pub fn verify_event_signatures_from_server<'a>(
                 base64::DecodeSliceError::DecodeError(source) => SignError::BadSignatureBase64 {
                     server,
                     key_id,
-                    source,
+                    source: crate::errors::Base64DecodeError(source),
                 },
                 base64::DecodeSliceError::OutputSliceTooSmall => SignError::SignatureLength,
             })?;
@@ -194,6 +203,17 @@ pub fn verify_event_signatures_from_server<'a>(
         });
     }
     Ok(())
+}
+
+/// Compatibility wrapper returning the historical `String` error type.
+pub fn verify_event_signatures_from_server(
+    value: &Value,
+    room_version: &str,
+    expected_server: &str,
+    verifier: &dyn SignatureVerifier,
+) -> Result<(), String> {
+    verify_event_signatures_from_server_typed(value, room_version, expected_server, verifier)
+        .map_err(|error| error.to_string())
 }
 
 /// A [`EventVerifier`] backed by a [`SignatureVerifier`] and an in-memory
@@ -279,7 +299,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
         event_id: &'a Id,
     ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
-        verify_event_signatures(value, &self.room_version, &self.verifier)
+        verify_event_signatures_typed(value, &self.room_version, &self.verifier)
             .map_err(crate::errors::VerifyError::Sign)
     }
 
@@ -294,7 +314,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
             .filter(|server| !server.is_empty())
             .ok_or(VerifyError::InvalidAuthorisingUser { authorising_user })?;
         let value = self.event(event_id)?;
-        verify_event_signatures_from_server(value, &self.room_version, server, &self.verifier)
+        verify_event_signatures_from_server_typed(value, &self.room_version, server, &self.verifier)
             .map_err(VerifyError::Sign)
     }
 
@@ -303,7 +323,7 @@ impl<Id: core::hash::Hash + Eq + AsRef<str>, K: SignatureVerifier> EventVerifier
         event_id: &'a Id,
     ) -> Result<(), crate::errors::VerifyError<'a>> {
         let value = self.event(event_id)?;
-        crate::basespec::rezzy_types::verify_content_hash(value, &self.room_version)
+        crate::basespec::rezzy_types::verify_content_hash_typed(value, &self.room_version)
             .map_err(crate::errors::VerifyError::Hash)
     }
 }

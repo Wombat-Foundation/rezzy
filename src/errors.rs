@@ -146,10 +146,17 @@ impl fmt::Display for HashError<'_> {
     }
 }
 
+impl core::error::Error for HashError<'_> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::CanonicalWrite(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// Compatibility conversion to `String` for callers that still surface
-/// `HashError` through a `String`-typed error boundary (for example the
-/// signing `EventVerifier` impls). The conversion itself is unchanged; only
-/// the boundary spelling differs from the structured type.
+/// `HashError` through a `String`-typed error boundary.
 impl From<HashError<'_>> for String {
     fn from(err: HashError<'_>) -> Self {
         err.to_string()
@@ -162,6 +169,17 @@ impl From<HashError<'_>> for String {
 /// server/key/room-version strings) or inline (embedded
 /// [`HashError`]/[`base64::DecodeError`]/`ed25519_zebra::Error` values), so
 /// building and displaying an error performs no allocation.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Base64DecodeError(pub base64::DecodeError);
+
+impl fmt::Display for Base64DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl core::error::Error for Base64DecodeError {}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignError<'a> {
     /// The room version has no defined signature format.
@@ -189,7 +207,7 @@ pub enum SignError<'a> {
         /// The claimed key ID.
         key_id: &'a str,
         /// The base64 decode failure.
-        source: base64::DecodeError,
+        source: Base64DecodeError,
     },
     /// No supported signature from the required server.
     NoSupportedSignature {
@@ -255,10 +273,19 @@ impl fmt::Display for SignError<'_> {
     }
 }
 
+impl core::error::Error for SignError<'_> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::CanonicalRedacted(HashError::CanonicalWrite(error)) => Some(error),
+            Self::BadSignatureBase64 { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
 /// Compatibility conversion to `String` for callers that still surface
-/// `SignError` through a `String`-typed error boundary (the signing
-/// `EventVerifier` impls). [`VerifyError`] is the structured counterpart those
-/// impls migrate to; this conversion is unchanged.
+/// `SignError` through a `String`-typed error boundary. The signing
+/// `EventVerifier` impls now return [`VerifyError`], which wraps this type.
 impl From<SignError<'_>> for String {
     fn from(err: SignError<'_>) -> Self {
         err.to_string()
@@ -275,6 +302,8 @@ impl From<SignError<'_>> for String {
 pub enum VerifyError<'a> {
     /// A caller-supplied rejection reason from a custom verifier impl.
     Reason(&'a str),
+    /// An owned rejection reason returned by a legacy `String` verifier.
+    OwnedReason(String),
     /// The verifier holds no stored event for this ID.
     UnknownEvent {
         /// The unresolvable event ID.
@@ -302,6 +331,7 @@ impl fmt::Display for VerifyError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reason(reason) => f.write_str(reason),
+            Self::OwnedReason(reason) => f.write_str(reason),
             Self::UnknownEvent { event_id } => write!(f, "unknown event {event_id}"),
             Self::EventIdHashMismatch { event_id, expected } => write!(
                 f,
@@ -313,6 +343,18 @@ impl fmt::Display for VerifyError<'_> {
             }
             Self::Sign(err) => fmt::Display::fmt(err, f),
             Self::Hash(err) => fmt::Display::fmt(err, f),
+        }
+    }
+}
+
+impl core::error::Error for VerifyError<'_> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Hash(HashError::CanonicalWrite(error)) => Some(error),
+            Self::Sign(SignError::CanonicalRedacted(HashError::CanonicalWrite(error))) => {
+                Some(error)
+            }
+            _ => None,
         }
     }
 }

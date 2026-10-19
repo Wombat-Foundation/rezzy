@@ -8,7 +8,7 @@
 //! (a container is an array exactly when it holds `<= ARRAY_MAX` values, and
 //! empty containers are dropped), so `==` is structural.
 //!
-//! Only `alloc` is required.
+//! This module requires `std`.
 
 pub use self::wide::{Bitmap128, Bitmap64, Iter128, Iter64};
 

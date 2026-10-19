@@ -614,7 +614,7 @@ fn test_auth_error_display_variants() {
     let err: AuthError<String> = AuthError::InsufficientPowerLevel {
         required: 50,
         actual: 10,
-        event_type: "m.room.topic",
+        event_type: std::borrow::Cow::Borrowed("m.room.topic"),
     };
     let msg = format!("{err}");
     assert!(msg.contains("10"));
@@ -660,8 +660,8 @@ fn test_auth_error_display_variants() {
     assert!(msg8.contains("m.room.create"));
 
     let err9: AuthError<String> = AuthError::IncompleteAuthEvents {
-        event_type: "m.room.power_levels",
-        state_key: "",
+        event_type: std::borrow::Cow::Borrowed("m.room.power_levels"),
+        state_key: std::borrow::Cow::Borrowed(""),
     };
     let msg9 = format!("{err9}");
     assert!(msg9.contains("m.room.power_levels"));
@@ -1749,7 +1749,7 @@ fn test_ban_insufficient_power_level() {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                event_type
+                ref event_type
             }) if event_type == "ban"
         ),
         "Expected InsufficientPowerLevel for ban, got {result:?}"
@@ -1770,7 +1770,7 @@ fn test_kick_insufficient_power_level() {
             Err(AuthError::InsufficientPowerLevel {
                 required: 50,
                 actual: 0,
-                event_type
+                ref event_type
             }) if event_type == "kick"
         ),
         "Expected InsufficientPowerLevel for kick, got {result:?}"

@@ -709,6 +709,12 @@ fn check_current(
         if existing_sidecar.as_slice() != sidecar {
             return Err(stale_error(sidecar_path));
         }
+    } else {
+        match fs::symlink_metadata(sidecar_path) {
+            Ok(_) => return Err(stale_error(sidecar_path)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(stale_error(sidecar_path)),
+        }
     }
     Ok(rezzy::json!({"status": "current", "unique_events": event_count}))
 }

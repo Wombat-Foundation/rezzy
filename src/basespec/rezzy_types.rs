@@ -19,6 +19,7 @@ use crate::{FastSet, HashMap};
 use base64::Engine as _;
 use core::cmp::Ordering;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::string::String;
 use std::string::ToString;
 use std::sync::Arc;
@@ -432,6 +433,8 @@ impl core::fmt::Display for CanonicalizationError {
         }
     }
 }
+
+impl core::error::Error for CanonicalizationError {}
 
 impl From<core::fmt::Error> for CanonicalizationError {
     fn from(_: core::fmt::Error) -> Self {
@@ -949,18 +952,56 @@ pub const HASH_B64_MAX_LEN: usize = 43;
 /// Returns the number of bytes written (always 43 for a 32-byte digest).
 ///
 /// # Errors
-/// Returns `Err` when `out` is shorter than [`HASH_B64_MAX_LEN`].
+/// Returns `Err` when `room_version` has no reference-hash alphabet (v1/v2 or
+/// unsupported), or when `out` is shorter than [`HASH_B64_MAX_LEN`].
 pub fn encode_hash_slice<'a>(
     hash: &[u8; 32],
     room_version: &'a str,
     out: &mut [u8],
 ) -> Result<usize, HashError<'a>> {
+    check_reference_hash_version(room_version)?;
     if out.len() < HASH_B64_MAX_LEN {
         return Err(HashError::EncodeBufferTooSmall);
     }
     hash_base64_engine(room_version)
         .encode_slice(hash, out)
         .map_err(HashError::Encode)
+}
+
+#[cfg(test)]
+mod encode_hash_slice_tests {
+    use super::{encode_hash_slice, HASH_B64_MAX_LEN};
+    use crate::errors::HashError;
+
+    #[test]
+    fn rejects_versions_without_a_reference_hash_alphabet() {
+        let mut out = [0; HASH_B64_MAX_LEN];
+        let hash = [0; 32];
+        assert!(matches!(
+            encode_hash_slice(&hash, "1", &mut out),
+            Err(HashError::ReferenceHashV1V2 { .. })
+        ));
+        assert!(matches!(
+            encode_hash_slice(&hash, "999", &mut out),
+            Err(HashError::UnsupportedReferenceHash { .. })
+        ));
+    }
+}
+
+/// Rejects room versions that have no reference-hash alphabet: v1/v2 (event
+/// IDs are not hashes) and versions this crate does not recognise.
+fn check_reference_hash_version(room_version: &str) -> Result<(), HashError<'_>> {
+    let major = room_version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok());
+    if major.is_some_and(|m| m <= 2) {
+        return Err(HashError::ReferenceHashV1V2 { room_version });
+    }
+    if StateResVersion::from_room_version(room_version).is_none() {
+        return Err(HashError::UnsupportedReferenceHash { room_version });
+    }
+    Ok(())
 }
 
 /// Computes the raw SHA-256 **reference hash** of a PDU `Value` (the event ID
@@ -978,17 +1019,7 @@ pub fn reference_hash_bytes<'a>(
     value: &Value,
     room_version: &'a str,
 ) -> Result<[u8; 32], HashError<'a>> {
-    let major = room_version
-        .split('.')
-        .next()
-        .and_then(|m| m.parse::<u32>().ok());
-    if major.is_some_and(|m| m <= 2) {
-        return Err(HashError::ReferenceHashV1V2 { room_version });
-    }
-
-    if StateResVersion::from_room_version(room_version).is_none() {
-        return Err(HashError::UnsupportedReferenceHash { room_version });
-    }
+    check_reference_hash_version(room_version)?;
 
     let mut hasher = Sha256::new();
     {
@@ -1050,7 +1081,7 @@ pub fn content_hash_bytes<'a>(
 /// event IDs are opaque server-assigned strings, not hashes), or when the
 /// canonical JSON writer fails (e.g. strict-number validation rejects a
 /// fractional value in a v6+ room).
-pub fn reference_hash<'a>(
+pub fn reference_hash_typed<'a>(
     value: &Value,
     room_version: &'a str,
 ) -> Result<std::string::String, HashError<'a>> {
@@ -1059,6 +1090,14 @@ pub fn reference_hash<'a>(
         &hash_base64_engine(room_version),
         &digest,
     ))
+}
+
+/// Compatibility wrapper returning the historical `String` error type.
+pub fn reference_hash(
+    value: &Value,
+    room_version: &str,
+) -> Result<std::string::String, std::string::String> {
+    reference_hash_typed(value, room_version).map_err(|error| error.to_string())
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
@@ -1077,7 +1116,7 @@ pub fn reference_hash<'a>(
 /// Returns `Err` when `room_version` is not a recognised room version, or
 /// when the canonical JSON writer fails (e.g. strict-number validation
 /// rejects a fractional value in a v6+ room).
-pub fn compute_content_hash<'a>(
+pub fn compute_content_hash_typed<'a>(
     value: &Value,
     room_version: &'a str,
 ) -> Result<std::string::String, HashError<'a>> {
@@ -1086,6 +1125,14 @@ pub fn compute_content_hash<'a>(
         &base64::engine::general_purpose::STANDARD_NO_PAD,
         &digest,
     ))
+}
+
+/// Compatibility wrapper returning the historical `String` error type.
+pub fn compute_content_hash(
+    value: &Value,
+    room_version: &str,
+) -> Result<std::string::String, std::string::String> {
+    compute_content_hash_typed(value, room_version).map_err(|error| error.to_string())
 }
 
 /// Verifies a raw PDU `Value`'s `hashes.sha256` against its recomputed content
@@ -1100,7 +1147,7 @@ pub fn compute_content_hash<'a>(
 /// # Errors
 /// Returns `Err` when `hashes.sha256` is missing/not a string, when the room
 /// version is unsupported, or when the recomputed content hash does not match.
-pub fn verify_content_hash<'a>(
+pub fn verify_content_hash_typed<'a>(
     value: &'a Value,
     room_version: &'a str,
 ) -> Result<(), HashError<'a>> {
@@ -1125,6 +1172,11 @@ pub fn verify_content_hash<'a>(
         });
     }
     Ok(())
+}
+
+/// Compatibility wrapper returning the historical `String` error type.
+pub fn verify_content_hash(value: &Value, room_version: &str) -> Result<(), std::string::String> {
+    verify_content_hash_typed(value, room_version).map_err(|error| error.to_string())
 }
 
 /// Produces the canonical JSON bytes an ed25519 PDU signature covers: the
@@ -1162,7 +1214,7 @@ pub fn canonical_redacted_json(value: &Value, room_version: &str) -> std::string
 /// # Errors
 /// Returns `Err` for unsupported room versions or canonical JSON write
 /// failures (e.g. strict-number validation).
-pub fn try_canonical_redacted_json<'a>(
+pub fn try_canonical_redacted_json_typed<'a>(
     value: &Value,
     room_version: &'a str,
 ) -> Result<std::string::String, HashError<'a>> {
@@ -1172,6 +1224,14 @@ pub fn try_canonical_redacted_json<'a>(
     let mut out = std::string::String::new();
     write_redacted_canonical(&mut out, value, room_version).map_err(HashError::CanonicalWrite)?;
     Ok(out)
+}
+
+/// Compatibility wrapper returning the historical `String` error type.
+pub fn try_canonical_redacted_json(
+    value: &Value,
+    room_version: &str,
+) -> Result<std::string::String, std::string::String> {
+    try_canonical_redacted_json_typed(value, room_version).map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1757,7 +1817,7 @@ impl<Id: EventId, C, K> DagNode for LeanEvent<Id, C, K> {
 ///
 /// impl EventLike for MyEvent {
 ///     type Content = rezzy::JsonValue;
-///     fn event_type(&self) -> &str { "m.room.message" }
+///     fn event_type(&self) -> Cow<'_, str> { Cow::Borrowed("m.room.message") }
 ///     fn sender(&self) -> &str { &self.sender }
 ///     fn state_key(&self) -> Option<&str> { None }
 ///     fn power_level(&self) -> i64 { 0 }
@@ -1771,9 +1831,9 @@ pub trait EventLike: DagNode {
 
     /// Matrix event type (e.g. `m.room.member`, `m.room.power_levels`).
     ///
-    /// Implementations must return a borrowed slice, so errors built from
-    /// this value stay allocation-free (and can outlive the call site).
-    fn event_type(&self) -> &str;
+    /// Returns the event type. `Cow` supports both borrowed and on-demand
+    /// owned values for compatibility with typed event adapters.
+    fn event_type(&self) -> Cow<'_, str>;
 
     /// The MXID of the user who sent the event.
     fn sender(&self) -> &str;
@@ -1907,8 +1967,8 @@ pub trait EventLike: DagNode {
 impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C, K> {
     type Content = C;
 
-    fn event_type(&self) -> &str {
-        &self.event_type
+    fn event_type(&self) -> Cow<'_, str> {
+        Cow::Borrowed(&self.event_type)
     }
     fn sender(&self) -> &str {
         &self.sender
@@ -1969,7 +2029,7 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
 ///     type Id = String;
 ///
 ///     fn raw_event_id(&self) -> &String { &self.event_id }
-///     fn raw_event_type(&self) -> &str { &self.kind }
+///     fn raw_event_type(&self) -> Cow<'_, str> { Cow::Borrowed(&self.kind) }
 ///     fn raw_sender(&self) -> &str { &self.sender }
 ///     fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
 ///     fn raw_content_json(&self) -> &str { &self.content }
@@ -2004,7 +2064,7 @@ pub trait RawEvent {
     fn raw_event_id(&self) -> &Self::Id;
 
     /// The Matrix event type as a string (e.g. `"m.room.member"`).
-    fn raw_event_type(&self) -> &str;
+    fn raw_event_type(&self) -> Cow<'_, str>;
 
     /// The sender's MXID as a string slice.
     fn raw_sender(&self) -> &str;
@@ -2121,7 +2181,7 @@ impl<T: RawEvent> DagNode for ParsedEvent<'_, T> {
 impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
     type Content = crate::json::Value;
 
-    fn event_type(&self) -> &str {
+    fn event_type(&self) -> Cow<'_, str> {
         self.raw.raw_event_type()
     }
 
@@ -2586,8 +2646,8 @@ impl<Id: EventId, C: EventContent, K> DagNode for LeanEventRef<'_, Id, C, K> {
 impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_, Id, C, K> {
     type Content = C;
 
-    fn event_type(&self) -> &str {
-        self.event_type
+    fn event_type(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.event_type)
     }
     fn sender(&self) -> &str {
         self.sender
@@ -2823,6 +2883,78 @@ pub trait EventVerifier<Id> {
         Err(VerifyError::Reason(
             "verifier does not support join_authorised_via_users_server signatures",
         ))
+    }
+}
+
+/// Legacy verifier interface whose methods return owned `String` errors.
+/// Use [`LegacyEventVerifierAdapter`] to pass an implementation to APIs that
+/// now consume structured [`VerifyError`] values.
+pub trait LegacyEventVerifier<Id> {
+    fn verify_event_id_hash(&self, _event_id: &Id) -> Result<(), String> {
+        Ok(())
+    }
+    fn verify_signatures(&self, _event_id: &Id) -> Result<(), String> {
+        Ok(())
+    }
+    fn verify_content_hash(&self, _event_id: &Id) -> Result<(), String> {
+        Ok(())
+    }
+    fn verify_third_party_invite(&self, _event_id: &Id, _token: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn verify_join_authorised_via_users_server(
+        &self,
+        _event_id: &Id,
+        _user: &str,
+    ) -> Result<(), String> {
+        Err(String::from(
+            "verifier does not support join_authorised_via_users_server signatures",
+        ))
+    }
+}
+
+/// Adapts a [`LegacyEventVerifier`] to the structured verifier interface.
+pub struct LegacyEventVerifierAdapter<'a, V>(pub &'a V);
+
+/// Wraps a legacy verifier for use with APIs that accept [`EventVerifier`].
+#[must_use]
+pub fn adapt_legacy_event_verifier<V>(verifier: &V) -> LegacyEventVerifierAdapter<'_, V> {
+    LegacyEventVerifierAdapter(verifier)
+}
+
+impl<Id, V: LegacyEventVerifier<Id>> EventVerifier<Id> for LegacyEventVerifierAdapter<'_, V> {
+    fn verify_event_id_hash<'a>(&'a self, id: &'a Id) -> Result<(), VerifyError<'a>> {
+        self.0
+            .verify_event_id_hash(id)
+            .map_err(VerifyError::OwnedReason)
+    }
+    fn verify_signatures<'a>(&'a self, id: &'a Id) -> Result<(), VerifyError<'a>> {
+        self.0
+            .verify_signatures(id)
+            .map_err(VerifyError::OwnedReason)
+    }
+    fn verify_content_hash<'a>(&'a self, id: &'a Id) -> Result<(), VerifyError<'a>> {
+        self.0
+            .verify_content_hash(id)
+            .map_err(VerifyError::OwnedReason)
+    }
+    fn verify_third_party_invite<'a>(
+        &'a self,
+        id: &'a Id,
+        token: &'a str,
+    ) -> Result<(), VerifyError<'a>> {
+        self.0
+            .verify_third_party_invite(id, token)
+            .map_err(VerifyError::OwnedReason)
+    }
+    fn verify_join_authorised_via_users_server<'a>(
+        &'a self,
+        id: &'a Id,
+        user: &'a str,
+    ) -> Result<(), VerifyError<'a>> {
+        self.0
+            .verify_join_authorised_via_users_server(id, user)
+            .map_err(VerifyError::OwnedReason)
     }
 }
 
@@ -3670,11 +3802,11 @@ impl LeanEvent<String, Value, String> {
             String::from(id)
         } else if let Some(ver) = room_version {
             let digest = reference_hash_bytes(value, ver)?;
-            let mut id = String::from('$');
-            id.push_str(&crate::base64_utils::encode(
-                &hash_base64_engine(ver),
-                &digest,
-            ));
+            let mut encoded = [0_u8; HASH_B64_MAX_LEN];
+            let length = encode_hash_slice(&digest, ver, &mut encoded)?;
+            let mut id = String::with_capacity(1 + length);
+            id.push('$');
+            id.push_str(core::str::from_utf8(&encoded[..length]).expect("base64 is ASCII"));
             id
         } else {
             return Err(String::from(

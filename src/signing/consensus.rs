@@ -37,12 +37,12 @@ impl Ed25519ConsensusVerifier {
     ///
     /// # Errors
     /// Returns `Err` if `public_key` is not a valid 32-byte Ed25519 public key.
-    pub fn insert_public_key<'a>(
+    pub fn insert_public_key(
         &mut self,
-        server_name: &'a str,
+        server_name: &str,
         key_id: &str,
         public_key: &[u8],
-    ) -> Result<&mut Self, SignError<'a>> {
+    ) -> Result<&mut Self, SignError<'static>> {
         let key =
             VerificationKey::try_from(public_key).map_err(SignError::InvalidVerificationKey)?;
         Ok(self.insert(server_name, key_id, key))
@@ -111,7 +111,7 @@ pub fn verify_sequential<'a>(
     }
 
     for value in events {
-        let message = super::try_canonical_redacted_json(value, room_version)
+        let message = super::try_canonical_redacted_json_typed(value, room_version)
             .map_err(SignError::CanonicalRedacted)?
             .into_bytes();
         let Some(sigs_map) = value.get("signatures").and_then(Value::as_object) else {
@@ -147,7 +147,7 @@ pub fn verify_sequential<'a>(
                         SignError::BadSignatureBase64 {
                             server,
                             key_id,
-                            source,
+                            source: crate::errors::Base64DecodeError(source),
                         }
                     }
                     base64::DecodeSliceError::OutputSliceTooSmall => SignError::SignatureLength,
