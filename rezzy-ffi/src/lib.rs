@@ -6,7 +6,7 @@
 //! [`rezzy_free`]; callers never free them with their own allocator.
 
 use rezzy::JsonValue;
-use std::ffi::{CStr, c_char};
+use std::ffi::{c_char, CStr};
 use std::ptr;
 
 const OK: i32 = 0;
@@ -127,6 +127,61 @@ pub unsafe extern "C" fn rezzy_verify_content_hash(
     }
 }
 
+/// Describes every event in a JSONL buffer.
+///
+/// Writes the same report object as `rezzy hash events` to `out`. Each event
+/// record carries its 1-based `line`; a line that cannot be hashed yields an
+/// `error` record and the call still succeeds.
+///
+/// # Safety
+/// See `include/rezzy.h`: pointers must be valid for the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn rezzy_hash_events(
+    room_version: *const c_char,
+    jsonl: *const u8,
+    jsonl_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if !out.is_null() {
+        // SAFETY: non-null `out` is required to point to writable storage.
+        unsafe { *out = ptr::null_mut() };
+    }
+    if !out_len.is_null() {
+        // SAFETY: non-null `out_len` is required to point to writable storage.
+        unsafe { *out_len = 0 };
+    }
+    if room_version.is_null() || jsonl.is_null() || out.is_null() || out_len.is_null() {
+        return BAD_ARG;
+    }
+    // SAFETY: non-null and NUL-terminated per the contract.
+    let Ok(version) = unsafe { CStr::from_ptr(room_version) }.to_str() else {
+        return BAD_ARG;
+    };
+    // SAFETY: non-null, `jsonl_len` readable bytes per the contract.
+    let bytes = unsafe { std::slice::from_raw_parts(jsonl, jsonl_len) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        hand_over(b"input is not valid UTF-8".to_vec(), out, out_len);
+        return ERR;
+    };
+    let records = rezzy::event_report::describe_jsonl(text, version);
+    if records.is_empty() {
+        hand_over(b"no events in input".to_vec(), out, out_len);
+        return ERR;
+    }
+    let report = rezzy::event_report::report(records, version);
+    match rezzy::json::write_string_value(&report) {
+        Ok(json) => {
+            hand_over(json.into_bytes(), out, out_len);
+            OK
+        }
+        Err(error) => {
+            hand_over(error.to_string().into_bytes(), out, out_len);
+            ERR
+        }
+    }
+}
+
 /// Releases a buffer previously returned through `out`.
 ///
 /// # Safety
@@ -215,6 +270,26 @@ mod tests {
             unsafe { rezzy_event_id(ptr::null(), EVENT.as_ptr(), EVENT.len(), &mut out, &mut len) };
         assert_eq!(status, BAD_ARG);
         assert!(out.is_null());
+    }
+
+    #[test]
+    fn hash_events_reports_each_line_and_flags_bad_ones() {
+        let jsonl = format!("{EVENT}\n\nnot json\n");
+        let (status, text) = call(rezzy_hash_events, "12", &jsonl);
+        assert_eq!(status, OK);
+        let actual = JsonValue::parse(&text).unwrap();
+        let expected = rezzy::event_report::report(
+            rezzy::event_report::describe_jsonl(&jsonl, "12"),
+            "12",
+        );
+        assert_eq!(actual, expected);
+        let events = actual.get("events").unwrap().as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].to_string().contains(ID));
+        assert!(events[0].to_string().contains("\"line\":1"));
+        assert!(events[1].to_string().contains("invalid JSON"));
+        assert!(events[1].to_string().contains("\"line\":3"));
+        assert_eq!(call(rezzy_hash_events, "12", "\n").0, ERR);
     }
 
     #[test]

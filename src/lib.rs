@@ -65,6 +65,8 @@ pub mod basespec;
 pub mod bitmap;
 pub mod cuckoo_verify;
 pub mod dense_index;
+#[cfg(feature = "std")]
+pub mod event_report;
 pub mod hamt;
 pub mod incremental;
 pub mod merkle;

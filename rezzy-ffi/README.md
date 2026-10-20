@@ -2,6 +2,8 @@
 
 `rezzy-ffi` exposes event ID calculation and content-hash verification through
 a small C ABI. The C declarations are in [`include/rezzy.h`](include/rezzy.h).
+`rezzy_hash_events` takes a whole JSONL buffer and returns one JSON record per
+line, the same fields as `rezzy hash events`, in one call.
 Returned messages and IDs are UTF-8 byte buffers owned by the library; release
 them with `rezzy_free`.
 
