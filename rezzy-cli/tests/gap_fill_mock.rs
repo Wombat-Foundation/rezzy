@@ -211,6 +211,9 @@ impl Fixture {
         } else {
             cmd.env_remove("REZZY_ALLOW_INSECURE_HTTP");
         }
+        if extra.contains(&"--debug") {
+            cmd.arg("--debug");
+        }
         cmd.args(["federation", "gap-fill", "-i"])
             .arg(self.dir.join("base.jsonl"))
             .args(["--destination", destination, "--room", ROOM])
@@ -224,7 +227,7 @@ impl Fixture {
             .arg(self.dir.join("key.enc"))
             .arg("--output-dir")
             .arg(self.dir.join("out"))
-            .args(extra)
+            .args(extra.iter().filter(|arg| **arg != "--debug"))
             .output()
             .unwrap()
     }
@@ -475,13 +478,13 @@ fn resume_reloads_earlier_rounds_and_continues_numbering() {
 }
 
 #[test]
-fn resume_does_not_re_request_ids_that_already_failed() {
+fn resume_with_skip_tried_does_not_re_request_ids_that_already_failed() {
     let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
     let fx = Fixture::new("resume-no-retry");
     assert!(fx.gap_fill_with(&mock.url, true, "1", &[]).status.success());
     assert_eq!(mock.count(&format!("/event/{STILL_MISSING}")), 1);
     assert!(fx
-        .gap_fill_with(&mock.url, true, "1", &["--resume"])
+        .gap_fill_with(&mock.url, true, "1", &["--resume", "--skip-tried"])
         .status
         .success());
     assert_eq!(
@@ -493,12 +496,12 @@ fn resume_does_not_re_request_ids_that_already_failed() {
 }
 
 #[test]
-fn later_rounds_only_ask_for_newly_discovered_ids() {
+fn skip_tried_makes_later_rounds_ask_only_for_newly_discovered_ids() {
     // Fetching the target reveals its parent as a new gap. Round 1 must ask
     // for that parent, but not again for the ID that already came back 404.
     let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
     let fx = Fixture::without_parent("new-ids-only");
-    let out = fx.gap_fill(&mock.url, true);
+    let out = fx.gap_fill_with(&mock.url, true, "0", &["--skip-tried"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         mock.count(&format!("/event/{STILL_MISSING}")),
@@ -536,4 +539,130 @@ fn resume_survives_a_truncated_last_line() {
         "{}",
         text(&out.stderr)
     );
+}
+
+#[test]
+fn by_default_failed_ids_are_asked_again_in_later_rounds() {
+    // Failures against a real server can be transient, so without --skip-tried
+    // each round asks again for everything still missing.
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::without_parent("retry-default");
+    let out = fx.gap_fill(&mock.url, true);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        mock.count(&format!("/event/{STILL_MISSING}")),
+        2,
+        "{:?}",
+        mock.requests()
+    );
+    assert_eq!(
+        mock.count(&format!("/event/{PARENT}")),
+        2,
+        "{:?}",
+        mock.requests()
+    );
+}
+
+#[test]
+fn resume_retries_failed_ids_by_default() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("resume-retries");
+    assert!(fx.gap_fill_with(&mock.url, true, "1", &[]).status.success());
+    assert!(fx
+        .gap_fill_with(&mock.url, true, "1", &["--resume"])
+        .status
+        .success());
+    assert_eq!(
+        mock.count(&format!("/event/{STILL_MISSING}")),
+        2,
+        "{:?}",
+        mock.requests()
+    );
+}
+
+#[test]
+fn debug_writes_one_log_line_per_request_with_status_and_errcode() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("debug-log");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--debug"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let log = fs::read_to_string(fx.dir.join("out/round-000/requests.jsonl")).unwrap();
+    let compact: Vec<String> = log
+        .lines()
+        .map(|l| l.split_whitespace().collect::<String>())
+        .collect();
+    let find = |needle: &str| {
+        compact
+            .iter()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no log line with {needle}: {log}"))
+            .clone()
+    };
+    let missing = find(&format!("\"event_id\":\"{STILL_MISSING}\""));
+    assert!(missing.contains("\"status\":404"), "{missing}");
+    assert!(missing.contains("\"errcode\":\"M_NOT_FOUND\""), "{missing}");
+    assert!(missing.contains("\"endpoint\":\"event\""), "{missing}");
+    assert!(missing.contains("\"retry\":false"), "{missing}");
+    let target = find(&format!("\"event_id\":\"{TARGET}\""));
+    assert!(target.contains("\"status\":200") && target.contains("\"outcome\":\"ok\""));
+    assert!(find("\"endpoint\":\"backfill\"").contains("\"event_id\":null"));
+    let lower = log.to_ascii_lowercase();
+    for secret in ["x-matrix", "authorization", "key.enc", "passphrase"] {
+        assert!(
+            !lower.contains(secret),
+            "{secret} leaked into the request log"
+        );
+    }
+}
+
+#[test]
+fn request_log_marks_repeat_attempts_as_retries() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("debug-retry");
+    assert!(fx
+        .gap_fill_with(&mock.url, true, "1", &["--debug"])
+        .status
+        .success());
+    let second = fx.gap_fill_with(&mock.url, true, "1", &["--debug", "--resume"]);
+    assert!(second.status.success(), "{}", text(&second.stderr));
+    let log = fs::read_to_string(fx.dir.join("out/round-001/requests.jsonl")).unwrap();
+    let compact: String = log.split_whitespace().collect();
+    assert!(compact.contains("\"retry\":true"), "{log}");
+}
+
+#[test]
+fn no_request_log_without_debug() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("no-debug-log");
+    assert!(fx.gap_fill_with(&mock.url, true, "1", &[]).status.success());
+    assert!(!fx.dir.join("out/round-000/requests.jsonl").exists());
+}
+
+#[test]
+fn round_summary_counts_requests_by_endpoint_and_status() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("summary");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &[]);
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("[info] round 0: requests"), "{stderr}");
+    assert!(stderr.contains("event:200=1"), "{stderr}");
+    assert!(stderr.contains("event:404=1"), "{stderr}");
+    assert!(stderr.contains("backfill:200=1"), "{stderr}");
+}
+
+#[test]
+fn resume_does_not_mistake_the_request_log_for_events() {
+    // requests.jsonl lines carry an `event_id`; reloading them as events made a
+    // resumed run believe a missing event was held and report the DAG closed.
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("log-not-events");
+    assert!(fx
+        .gap_fill_with(&mock.url, true, "1", &["--debug"])
+        .status
+        .success());
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--debug", "--resume"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("incomplete"), "{stdout}");
+    assert!(stdout.contains(STILL_MISSING), "{stdout}");
 }

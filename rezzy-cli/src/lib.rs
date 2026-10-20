@@ -697,6 +697,7 @@ pub fn main_entry() {
     }
     #[cfg(feature = "tls")]
     if let Some(("federation", federation_matches)) = matches.subcommand() {
+        federation::set_debug(matches.get_flag("debug"));
         print_json_command_result(federation::run_from_matches(federation_matches));
     }
     if let Some(("inspect", inspect_matches)) = matches.subcommand() {
