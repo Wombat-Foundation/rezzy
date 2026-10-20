@@ -20,6 +20,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use base64::Engine as _;
 use core::cmp::Ordering;
 use sha2::{Digest, Sha256};
 
@@ -931,6 +932,24 @@ pub fn reference_hash(
     value: &Value,
     room_version: &str,
 ) -> Result<alloc::string::String, alloc::string::String> {
+    let digest = reference_hash_digest(value, room_version)?;
+    let mut encoded = [0_u8; 43];
+    let length = hash_base64_engine(room_version)
+        .encode_slice(digest, &mut encoded)
+        .map_err(|error| alloc::format!("failed to encode reference hash: {error}"))?;
+    let encoded = core::str::from_utf8(&encoded[..length]).map_err(|error| {
+        alloc::format!("reference hash encoder returned invalid UTF-8: {error}")
+    })?;
+    let mut hash = String::with_capacity(43);
+    hash.push_str(encoded);
+    Ok(hash)
+}
+
+/// Computes the reference-hash digest after validating the room version.
+fn reference_hash_digest(
+    value: &Value,
+    room_version: &str,
+) -> Result<[u8; 32], alloc::string::String> {
     let major = room_version
         .split('.')
         .next()
@@ -953,10 +972,7 @@ pub fn reference_hash(
         write_redacted_canonical(&mut w, value, room_version)
             .map_err(|e| alloc::format!("failed to write canonical JSON: {e}"))?;
     }
-    Ok(crate::base64_utils::encode(
-        &hash_base64_engine(room_version),
-        &hasher.finalize(),
-    ))
+    Ok(hasher.finalize().into())
 }
 
 /// Computes the Matrix **content hash** of a PDU `Value` (`hashes.sha256`):
@@ -3507,8 +3523,18 @@ impl LeanEvent<String, Value, String> {
         let event_id = if let Some(id) = value.get(FIELD_EVENT_ID).and_then(|v| v.as_str()) {
             String::from(id)
         } else if let Some(ver) = room_version {
-            let rh = reference_hash(value, ver)?;
-            alloc::format!("${rh}")
+            let digest = reference_hash_digest(value, ver)?;
+            let mut encoded = [0_u8; 43];
+            let length = hash_base64_engine(ver)
+                .encode_slice(digest, &mut encoded)
+                .map_err(|error| alloc::format!("failed to encode reference hash: {error}"))?;
+            let encoded = core::str::from_utf8(&encoded[..length]).map_err(|error| {
+                alloc::format!("reference hash encoder returned invalid UTF-8: {error}")
+            })?;
+            let mut id = String::with_capacity(44);
+            id.push('$');
+            id.push_str(encoded);
+            id
         } else {
             return Err(String::from(
                 "event_id is required; pass `room_version` to `from_value` to derive it via the reference hash",
