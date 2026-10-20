@@ -145,6 +145,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::build(name, true)
+    }
+
+    /// Like `new`, but the target's parent is not held locally, so fetching
+    /// the target reveals a new gap for the next round.
+    fn without_parent(name: &str) -> Self {
+        Self::build(name, false)
+    }
+
+    fn build(name: &str, hold_parent: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("rezzy-gapfill-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -161,12 +171,14 @@ impl Fixture {
                 r#"{{"event_id":"{id}","room_id":"{ROOM}","type":"m.room.message","sender":"@a:x","depth":1,"origin_server_ts":1,"content":{{}},"prev_events":[{list}],"auth_events":[]}}"#
             )
         };
-        let lines = [
+        let mut lines = vec![
             ev("$child", &[TARGET, STILL_MISSING]),
-            ev(PARENT, &[]),
             ev(AUTH_A, &[]),
             ev(AUTH_B, &[]),
         ];
+        if hold_parent {
+            lines.push(ev(PARENT, &[]));
+        }
         fs::write(dir.join("base.jsonl"), lines.join("\n") + "\n").unwrap();
         fs::write(dir.join("key.plain"), format!("{KEY_LINE}\n")).unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_rezzy"))
@@ -182,6 +194,16 @@ impl Fixture {
     }
 
     fn gap_fill(&self, destination: &str, insecure: bool) -> Output {
+        self.gap_fill_with(destination, insecure, "0", &[])
+    }
+
+    fn gap_fill_with(
+        &self,
+        destination: &str,
+        insecure: bool,
+        rounds: &str,
+        extra: &[&str],
+    ) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rezzy"));
         cmd.env("REZZY_KEY_PASSPHRASE", "test");
         if insecure {
@@ -192,12 +214,49 @@ impl Fixture {
         cmd.args(["federation", "gap-fill", "-i"])
             .arg(self.dir.join("base.jsonl"))
             .args(["--destination", destination, "--room", ROOM])
-            .args(["--origin", "test.example", "--rounds", "0", "--signing-key"])
+            .args([
+                "--origin",
+                "test.example",
+                "--rounds",
+                rounds,
+                "--signing-key",
+            ])
             .arg(self.dir.join("key.enc"))
             .arg("--output-dir")
             .arg(self.dir.join("out"))
+            .args(extra)
             .output()
             .unwrap()
+    }
+
+    fn get_remote_dag(&self, destination: &str, insecure: bool) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rezzy"));
+        cmd.env("REZZY_KEY_PASSPHRASE", "test");
+        if insecure {
+            cmd.env("REZZY_ALLOW_INSECURE_HTTP", "1");
+        } else {
+            cmd.env_remove("REZZY_ALLOW_INSECURE_HTTP");
+        }
+        cmd.args([
+            "federation",
+            "get-remote-dag",
+            "--from",
+            TARGET,
+            "--destination",
+            destination,
+            "--room",
+            ROOM,
+            "--origin",
+            "test.example",
+            "--known",
+        ])
+        .arg(self.dir.join("base.jsonl"))
+        .args(["--signing-key"])
+        .arg(self.dir.join("key.enc"))
+        .arg("--output")
+        .arg(self.dir.join("dag.jsonl"))
+        .output()
+        .unwrap()
     }
 
     /// Everything fetched, across rounds.
@@ -305,6 +364,18 @@ fn events_we_already_hold_are_never_requested() {
 }
 
 #[test]
+fn get_remote_dag_known_file_stops_crawling_at_held_events() {
+    let mock = spawn_mock(Backfill::Events, EventShape::Pdus);
+    let fx = Fixture::new("get-remote-known");
+    let out = fx.get_remote_dag(&mock.url, true);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(mock.count("/backfill/") >= 1, "{:?}", mock.requests());
+    assert_eq!(mock.count(PARENT), 0, "{:?}", mock.requests());
+    let fetched = fs::read_to_string(fx.dir.join("dag.jsonl")).unwrap();
+    assert!(fetched.contains(TARGET), "{fetched}");
+}
+
+#[test]
 fn every_request_is_signed() {
     let (mock, _fx, _out) = run("signed", Backfill::Blank, EventShape::Pdus);
     assert!(!mock.requests().is_empty());
@@ -360,4 +431,109 @@ fn plaintext_http_is_refused_without_explicit_opt_in() {
     assert!(text(&out.stderr).contains("REZZY_ALLOW_INSECURE_HTTP"));
     assert!(mock.requests().is_empty(), "signed request sent over http");
     assert!(!fx.fetched().contains(TARGET));
+}
+
+#[test]
+fn a_plain_run_refuses_to_overwrite_existing_rounds() {
+    // Output files are created with truncation, so rerunning into a folder that
+    // already holds rounds used to silently destroy them.
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("no-overwrite");
+    assert!(fx.gap_fill(&mock.url, true).status.success());
+    let round = fx.dir.join("out/round-000/backfill.jsonl");
+    let before = fs::read_to_string(&round).unwrap();
+    assert!(before.contains(TARGET));
+    let again = fx.gap_fill(&mock.url, true);
+    assert!(!again.status.success());
+    assert!(
+        text(&again.stderr).contains("--resume"),
+        "{}",
+        text(&again.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&round).unwrap(),
+        before,
+        "round was clobbered"
+    );
+}
+
+#[test]
+fn resume_reloads_earlier_rounds_and_continues_numbering() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("resume");
+    assert!(fx.gap_fill_with(&mock.url, true, "1", &[]).status.success());
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--resume"]);
+    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("resuming at round 1"), "{stderr}");
+    // 4 local events + the one fetched before the interruption.
+    assert!(
+        text(&out.stdout).contains("\"events\": 5"),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+#[test]
+fn resume_does_not_re_request_ids_that_already_failed() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("resume-no-retry");
+    assert!(fx.gap_fill_with(&mock.url, true, "1", &[]).status.success());
+    assert_eq!(mock.count(&format!("/event/{STILL_MISSING}")), 1);
+    assert!(fx
+        .gap_fill_with(&mock.url, true, "1", &["--resume"])
+        .status
+        .success());
+    assert_eq!(
+        mock.count(&format!("/event/{STILL_MISSING}")),
+        1,
+        "failed ID asked for again: {:?}",
+        mock.requests()
+    );
+}
+
+#[test]
+fn later_rounds_only_ask_for_newly_discovered_ids() {
+    // Fetching the target reveals its parent as a new gap. Round 1 must ask
+    // for that parent, but not again for the ID that already came back 404.
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::without_parent("new-ids-only");
+    let out = fx.gap_fill(&mock.url, true);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        mock.count(&format!("/event/{STILL_MISSING}")),
+        1,
+        "{:?}",
+        mock.requests()
+    );
+    assert_eq!(
+        mock.count(&format!("/event/{PARENT}")),
+        1,
+        "{:?}",
+        mock.requests()
+    );
+    // The crawl already asked for the parent, so round 1 has nothing new to ask.
+    assert!(
+        !text(&out.stderr).contains("round 1: fetching"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn resume_survives_a_truncated_last_line() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("truncated");
+    assert!(fx.gap_fill_with(&mock.url, true, "1", &[]).status.success());
+    let round = fx.dir.join("out/round-000/backfill.jsonl");
+    let mut contents = fs::read_to_string(&round).unwrap();
+    contents.push_str("{\"event_id\":\"$cut\",\"prev_ev");
+    fs::write(&round, contents).unwrap();
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--resume"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("truncated"),
+        "{}",
+        text(&out.stderr)
+    );
 }

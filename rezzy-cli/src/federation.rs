@@ -142,6 +142,7 @@ pub fn command() -> Command {
                         .value_parser(clap::value_parser!(PathBuf))
                         .help("File of newline-delimited seed event IDs; '-' reads stdin"),
                 )
+                .arg(known_events_arg())
                 .arg(
                     Arg::new("emit-missing")
                         .long("emit-missing")
@@ -174,36 +175,60 @@ pub fn command() -> Command {
                 ),
         )
         .subcommand(encrypt_key_command())
-        .subcommand(
-            Command::new("gap-fill")
-                .about("Fetch missing room DAG and authentication events in bounded rounds")
-                .arg(
-                    Arg::new("input")
-                        .long("input")
-                        .short('i')
-                        .required(true)
-                        .num_args(1..)
-                        .value_parser(clap::value_parser!(PathBuf)),
-                )
-                .arg(Arg::new("destination").long("destination").required(true))
-                .arg(Arg::new("room").long("room").required(true))
-                .arg(
-                    Arg::new("output-dir")
-                        .long("output-dir")
-                        .required(true)
-                        .value_parser(clap::value_parser!(PathBuf)),
-                )
-                .arg(Arg::new("origin").long("origin").env("MATRIX_ORIGIN").default_value("matrix.org"))
-                .arg(Arg::new("room-version").long("room-version").default_value("12"))
-                .arg(
-                    Arg::new("rounds")
-                        .long("rounds")
-                        .default_value("5")
-                        .value_parser(clap::value_parser!(u32))
-                        .help("Maximum fetch rounds; 0 means continue until closed or no progress"),
-                )
-                .args(signing_key_args())
-                .arg(Arg::new("no-fallback").long("no-fallback").action(ArgAction::SetTrue)),
+        .subcommand(gap_fill_command())
+}
+
+fn gap_fill_command() -> Command {
+    Command::new("gap-fill")
+        .about("Fetch missing room DAG and authentication events in bounded rounds")
+        .arg(
+            Arg::new("input")
+                .long("input")
+                .short('i')
+                .required(true)
+                .num_args(1..)
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(Arg::new("destination").long("destination").required(true))
+        .arg(Arg::new("room").long("room").required(true))
+        .arg(
+            Arg::new("output-dir")
+                .long("output-dir")
+                .required(true)
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("origin")
+                .long("origin")
+                .env("MATRIX_ORIGIN")
+                .default_value("matrix.org"),
+        )
+        .arg(
+            Arg::new("room-version")
+                .long("room-version")
+                .default_value("12"),
+        )
+        .arg(
+            Arg::new("rounds")
+                .long("rounds")
+                .default_value("5")
+                .value_parser(clap::value_parser!(u32))
+                .help("Maximum fetch rounds; 0 means continue until closed or no progress"),
+        )
+        .arg(
+            Arg::new("resume")
+                .long("resume")
+                .action(ArgAction::SetTrue)
+                .help(
+                    "Continue in an --output-dir that already has round-NNN folders: \
+                             reload them, skip IDs already requested, number new rounds after them",
+                ),
+        )
+        .args(signing_key_args())
+        .arg(
+            Arg::new("no-fallback")
+                .long("no-fallback")
+                .action(ArgAction::SetTrue),
         )
 }
 
@@ -246,6 +271,14 @@ fn signing_key_args() -> [Arg; 1] {
         .value_parser(clap::value_parser!(PathBuf))]
 }
 
+fn known_events_arg() -> Arg {
+    Arg::new("known")
+        .long("known")
+        .action(ArgAction::Append)
+        .value_parser(clap::value_parser!(PathBuf))
+        .help("JSONL file of events already held locally; repeatable")
+}
+
 /// Runs the selected federation subcommand.
 ///
 /// # Errors
@@ -284,18 +317,40 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                     starts.extend(crate::repair::read_event_ids(path)?);
                 }
             }
-            get_remote_dag(&DagRequest {
+            let output = m.get_one::<PathBuf>("output").expect("default");
+            let emit_missing = m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path);
+            let room_version = m.get_one::<String>("room-version").expect("default");
+            let mut known = HashSet::new();
+            if let Some(files) = m.get_many::<PathBuf>("known") {
+                for path in files {
+                    crate::repair::ensure_paths_distinct(path, output)?;
+                    if let Some(missing) = emit_missing {
+                        crate::repair::ensure_paths_distinct(path, missing)?;
+                    }
+                    for event in crate::repair::read_jsonl_events(path)? {
+                        if let Some(id) = crate::repair::event_id_of(&event).or_else(|| {
+                            rezzy::reference_hash(&event, room_version)
+                                .ok()
+                                .map(|hash| format!("${hash}"))
+                        }) {
+                            known.insert(id);
+                        }
+                    }
+                }
+            }
+            let request = DagRequest {
                 origin: m.get_one::<String>("origin").expect("default"),
                 destination: m.get_one::<String>("destination").expect("required"),
                 room_id: m.get_one::<String>("room").expect("required"),
                 starts: &starts,
-                room_version: m.get_one::<String>("room-version").expect("default"),
+                room_version,
                 limit: *m.get_one::<i64>("limit").expect("default"),
-                output: m.get_one::<PathBuf>("output").expect("default"),
+                output,
                 key_path: signing_key_path(m),
                 no_fallback: m.get_flag("no-fallback"),
-                emit_missing: m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path),
-            })
+                emit_missing,
+            };
+            get_remote_dag_with_known(&request, (!known.is_empty()).then_some(&known))
         }
         Some(("encrypt-key", m)) => {
             let out = m.get_one::<PathBuf>("output").expect("required");
@@ -322,6 +377,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 output_dir: m.get_one::<PathBuf>("output-dir").expect("required"),
                 key_path: signing_key_path(m),
                 no_fallback: m.get_flag("no-fallback"),
+                resume: m.get_flag("resume"),
             })
         }
         _ => Err(AppError::new(
@@ -838,7 +894,7 @@ struct DagWalkState {
     failures: FetchFailures,
     output_writer: BufWriter<fs::File>,
     event_count: usize,
-    /// Events the caller already has; see `DagRequest::known`.
+    /// Events the caller already has and the crawl should stop at.
     known: HashSet<String>,
 }
 
@@ -993,7 +1049,7 @@ fn write_dag_event(
 }
 
 enum DagBatch {
-    Events(JsonValue, Vec<String>), // value, returned_ids
+    Events(JsonValue),
     Stop,
 }
 
@@ -1087,7 +1143,7 @@ fn fetch_dag_batch(
 
 /// Record which requested IDs the response actually returned.
 fn finish_batch(value: JsonValue, ids: &[String], state: &mut DagWalkState) -> DagBatch {
-    let returned_ids: Vec<String> = value
+    let returned_ids: HashSet<String> = value
         .get("pdus")
         .and_then(JsonValue::as_array)
         .map(|pdus| pdus.iter().filter_map(crate::repair::event_id_of).collect())
@@ -1098,7 +1154,7 @@ fn finish_batch(value: JsonValue, ids: &[String], state: &mut DagWalkState) -> D
             state.unresolved.push(id.clone());
         }
     }
-    DagBatch::Events(value, returned_ids)
+    DagBatch::Events(value)
 }
 
 ///
@@ -1112,8 +1168,17 @@ fn get_remote_dag_with_known(
     dag_request: &DagRequest<'_>,
     known: Option<&HashSet<String>>,
 ) -> Result<JsonValue, AppError> {
+    get_remote_dag_with_known_and_checkpoint(dag_request, known, None)
+}
+
+fn get_remote_dag_with_known_and_checkpoint(
+    dag_request: &DagRequest<'_>,
+    known: Option<&HashSet<String>>,
+    tried_checkpoint: Option<(&mut HashSet<String>, &Path)>,
+) -> Result<JsonValue, AppError> {
     let room_version = dag_request.room_version;
     let (mut state, max) = initialize_dag(dag_request, known)?;
+    let mut tried_checkpoint = tried_checkpoint;
     while !state.queue.is_empty() && state.seen.len() < max {
         let mut ids = Vec::new();
         while ids.len() < 50 {
@@ -1128,9 +1193,15 @@ fn get_remote_dag_with_known(
         if ids.is_empty() {
             continue;
         }
-        let (value, _returned_ids) = match fetch_dag_batch(dag_request, &ids, &mut state)? {
-            DagBatch::Events(value, returned_ids) => (value, returned_ids),
-            DagBatch::Stop => break,
+        let value = match fetch_dag_batch(dag_request, &ids, &mut state)? {
+            DagBatch::Events(value) => value,
+            DagBatch::Stop => {
+                if let Some((tried, path)) = tried_checkpoint.as_mut() {
+                    tried.extend(ids);
+                    write_tried_file(path, tried)?;
+                }
+                break;
+            }
         };
         let Some(pdus) = value.get("pdus").and_then(JsonValue::as_array) else {
             continue;
@@ -1145,6 +1216,10 @@ fn get_remote_dag_with_known(
         // If interrupted after this point, re-fetching the checkpointed
         // frontier is safe because aggregate deduplicates event IDs.
         state.output_writer.flush()?;
+        if let Some((tried, path)) = tried_checkpoint.as_mut() {
+            tried.extend(ids);
+            write_tried_file(path, tried)?;
+        }
         eprintln!(
             "[progress] fetched {} event(s), {} queued",
             state.event_count,
@@ -1184,6 +1259,89 @@ struct GapFillRequest<'a> {
     output_dir: &'a Path,
     key_path: Option<&'a Path>,
     no_fallback: bool,
+    resume: bool,
+}
+
+/// IDs already requested from the destination, kept so later rounds and
+/// resumed runs do not ask again for events the server has already refused.
+const TRIED_FILE: &str = "tried.txt";
+
+/// `round-NNN` folders already in `output_dir`, in round order.
+fn existing_rounds(output_dir: &Path) -> Result<Vec<(u32, PathBuf)>, AppError> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(output_dir)? {
+        let path = entry?.path();
+        let number = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("round-"))
+            .and_then(|digits| digits.parse::<u32>().ok());
+        if let Some(number) = number.filter(|_| path.is_dir()) {
+            found.push((number, path));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Events from every `*.jsonl` in a round folder. An interrupted run can leave
+/// the last line of a file cut short; that one line is skipped with a warning.
+fn read_round_events(dir: &Path) -> Result<Vec<JsonValue>, AppError> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "jsonl") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    let mut events = Vec::new();
+    for path in files {
+        let text = String::from_utf8_lossy(&fs::read(&path)?).into_owned();
+        let lines = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            match JsonValue::parse(line) {
+                Ok(event) => events.push(event),
+                Err(_) if index.saturating_add(1) == lines.len() => {
+                    eprintln!("[warn] {}: skipping a truncated last line", path.display());
+                }
+                Err(e) => {
+                    return Err(AppError::new(
+                        ErrorCode::MalformedJson,
+                        format!("{}:{}: {e}", path.display(), index.saturating_add(1)),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn read_tried(output_dir: &Path) -> Result<HashSet<String>, AppError> {
+    match fs::read_to_string(output_dir.join(TRIED_FILE)) {
+        Ok(text) => Ok(text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashSet::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_tried(output_dir: &Path, tried: &HashSet<String>) -> Result<(), AppError> {
+    write_tried_file(&output_dir.join(TRIED_FILE), tried)
+}
+
+fn write_tried_file(path: &Path, tried: &HashSet<String>) -> Result<(), AppError> {
+    let mut ids = tried.iter().cloned().collect::<Vec<_>>();
+    ids.sort();
+    write_frontier_checkpoint(path, &ids)
 }
 
 fn gap_fill_result(
@@ -1210,14 +1368,20 @@ fn fetch_gap_round(
     events: &mut Vec<JsonValue>,
     round_dir: &Path,
     round: u32,
+    tried: &mut HashSet<String>,
 ) -> Result<(usize, usize, Vec<PathBuf>, usize), AppError> {
     let before = crate::repair::scan_gaps(events).present.len();
     let report = crate::repair::scan_gaps(events);
     let mut fetched = Vec::new();
     let mut failed_requests = 0_usize;
-    if !report.missing_prev.is_empty() {
+    let starts = report
+        .missing_prev
+        .iter()
+        .filter(|id| !tried.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !starts.is_empty() {
         let path = round_dir.join("backfill.jsonl");
-        let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
         let known = events
             .iter()
             .filter_map(crate::repair::event_id_of)
@@ -1239,7 +1403,11 @@ fn fetch_gap_round(
             no_fallback: request.no_fallback,
             emit_missing: None,
         };
-        let result = get_remote_dag_with_known(&dag_request, Some(&known));
+        let result = get_remote_dag_with_known_and_checkpoint(
+            &dag_request,
+            Some(&known),
+            Some((tried, &request.output_dir.join(TRIED_FILE))),
+        );
         let summary = match result {
             Ok(summary) => summary,
             Err(error) if is_unreachable(&error) => return Err(error),
@@ -1304,18 +1472,44 @@ fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         ..
     } = *request;
     fs::create_dir_all(output_dir)?;
+    let earlier = existing_rounds(output_dir)?;
+    if !earlier.is_empty() && !request.resume {
+        return Err(AppError::new(
+            ErrorCode::IoError,
+            format!(
+                "{} already has {} round folder(s); pass --resume to continue after them, \
+                 or use a different --output-dir (a plain run would overwrite them)",
+                output_dir.display(),
+                earlier.len()
+            ),
+        ));
+    }
     let mut events = Vec::new();
     for input in inputs {
         events.extend(crate::repair::read_jsonl_events(input)?);
     }
+    let mut tried = HashSet::new();
+    let mut round = 0_u32;
+    if request.resume {
+        for (number, dir) in &earlier {
+            events.extend(read_round_events(dir)?);
+            round = round.max(number.saturating_add(1));
+        }
+        tried = read_tried(output_dir)?;
+        eprintln!(
+            "[info] resuming at round {round}: {} earlier round(s) reloaded, {} ID(s) already requested",
+            earlier.len(),
+            tried.len()
+        );
+    }
 
     let mut fetched = Vec::new();
-    let mut completed_rounds = 0_u32;
+    let mut completed_rounds = round;
     let mut failed_requests = 0_usize;
     let mut closed = false;
-    let mut round = 0_u32;
+    let mut ran = 0_u32;
     loop {
-        if rounds != 0 && round >= rounds {
+        if rounds != 0 && ran >= rounds {
             break;
         }
         if crate::repair::scan_gaps(&events).is_closed() {
@@ -1325,7 +1519,9 @@ fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         let round_dir = output_dir.join(format!("round-{round:03}"));
         fs::create_dir_all(&round_dir)?;
         let (before, after, round_fetched, round_failures) =
-            fetch_gap_round(request, &mut events, &round_dir, round)?;
+            fetch_gap_round(request, &mut events, &round_dir, round, &mut tried)?;
+        write_tried(output_dir, &tried)?;
+        ran = ran.saturating_add(1);
         fetched.extend(round_fetched);
         failed_requests = failed_requests.saturating_add(round_failures);
         round = round.saturating_add(1);

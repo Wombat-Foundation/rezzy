@@ -207,8 +207,12 @@ MATRIX_ORIGIN=example.org \
 MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
 rezzy federation get-remote-dag --origin example.org \
   --destination remote.example --room '!room:example.org' \
-  --from '$event:example.org' --output remote.jsonl
+  --from '$event:example.org' --known local-room.jsonl --output remote.jsonl
 ```
+
+`--known` can be repeated. Each JSONL file supplies events already held
+locally; the crawl stops at those event IDs instead of fetching their history
+again. This is useful when fetching a missing frontier from a partial local DAG.
 
 Signing keys are read from a passphrase-encrypted file (Argon2id +
 XChaCha20-Poly1305). Plaintext key files are rejected. Point at the file with
