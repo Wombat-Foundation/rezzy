@@ -235,7 +235,8 @@ fn gap_fill_command() -> Command {
                 .action(ArgAction::SetTrue)
                 .help(
                     "Continue in an --output-dir that already has round-NNN folders: \
-                             reload them, skip IDs already requested, number new rounds after them",
+                             reload them and number new rounds after them; previously requested IDs are \
+                             asked again unless --skip-tried is also set",
                 ),
         )
         .args(signing_key_args())
@@ -1183,6 +1184,8 @@ struct DagWalkState {
     log_attempts: bool,
     /// Events dropped by `--max-depth`.
     skipped_deep: usize,
+    /// Whether fetched events' `prev_events` should be queued for crawling.
+    follow_prev_events: bool,
 }
 
 impl DagWalkState {
@@ -1244,6 +1247,7 @@ fn initialize_dag(
             attempts: Vec::new(),
             log_attempts: false,
             skipped_deep: 0,
+            follow_prev_events: true,
         },
         max,
     ))
@@ -1341,7 +1345,11 @@ fn write_dag_event(
     if let Some(obj) = line.as_object_mut() {
         obj.insert("event_id".to_owned(), JsonValue::String(event_id));
     }
-    if let Some(prev) = line.get("prev_events").and_then(JsonValue::as_array) {
+    let prev = line
+        .get("prev_events")
+        .and_then(JsonValue::as_array)
+        .filter(|_| state.follow_prev_events);
+    if let Some(prev) = prev {
         for item in prev {
             let id = item.as_str().or_else(|| {
                 item.as_array()
@@ -1496,6 +1504,25 @@ fn get_remote_dag_with_known(
     known: Option<&HashSet<String>>,
 ) -> Result<JsonValue, AppError> {
     get_remote_dag_with_known_and_checkpoint(dag_request, known, None)
+}
+
+/// Fetches only the requested IDs, without crawling their `prev_events`.
+///
+/// # Errors
+/// Returns an error if the destination is unreachable or writing fetched events fails.
+pub(super) fn get_remote_events_by_id(
+    dag_request: &DagRequest<'_>,
+    known: Option<&HashSet<String>>,
+) -> Result<JsonValue, AppError> {
+    let (mut state, max) = initialize_dag(dag_request, known)?;
+    state.follow_prev_events = false;
+    let pdus = fetch_events_individually(dag_request, dag_request.starts, &mut state)?;
+    for pdu in pdus {
+        if !write_dag_event(&pdu, dag_request.room_version, max, &mut state)? {
+            break;
+        }
+    }
+    finalize_dag(state, dag_request)
 }
 
 fn get_remote_dag_with_known_and_checkpoint(

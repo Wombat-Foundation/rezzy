@@ -1163,6 +1163,44 @@ fn state_diff_fetch_gets_the_missing_events_by_id() {
 }
 
 #[test]
+fn state_diff_fetch_does_not_crawl_unknown_parents() {
+    let only_target = StateIds {
+        pdu_ids: vec![TARGET],
+        auth_chain_ids: vec![],
+    };
+    let a = spawn_mock_with(Backfill::Events, EventShape::Pdus, Some(only_target));
+    let fx = Fixture::without_parent("sd-fetch-no-crawl");
+    let out = fx.state_diff(&[&a.url], ROOM, &["--fetch"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        a.count(&format!("/event/{TARGET}")),
+        1,
+        "{:?}",
+        a.requests()
+    );
+    assert_eq!(
+        a.count(&format!("/event/{PARENT}")),
+        0,
+        "{:?}",
+        a.requests()
+    );
+
+    let fetched: String = fs::read_dir(fx.dir.join("sd"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".state.jsonl")
+        })
+        .map(|entry| fs::read_to_string(entry.path()).unwrap())
+        .collect();
+    assert!(fetched.contains(TARGET), "{fetched}");
+    assert_eq!(fetched.lines().count(), 1, "{fetched}");
+}
+
+#[test]
 fn state_diff_without_fetch_fetches_nothing() {
     let only_target = StateIds {
         pdu_ids: vec![TARGET],
