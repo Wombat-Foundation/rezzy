@@ -70,7 +70,20 @@ fn respond(stream: &mut TcpStream, code: u16, body: &str) {
     let _ = stream.write_all(body.as_bytes());
 }
 
-fn handle(mut stream: TcpStream, backfill: Backfill, shape: EventShape, log: &Mutex<Vec<String>>) {
+/// What `/state_ids` answers: state event IDs and auth-chain IDs.
+#[derive(Clone)]
+struct StateIds {
+    pdu_ids: Vec<&'static str>,
+    auth_chain_ids: Vec<&'static str>,
+}
+
+fn handle(
+    mut stream: TcpStream,
+    backfill: Backfill,
+    shape: EventShape,
+    state: Option<&StateIds>,
+    log: &Mutex<Vec<String>>,
+) {
     let mut buf = Vec::new();
     let mut chunk = [0_u8; 1024];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -111,6 +124,28 @@ fn handle(mut stream: TcpStream, backfill: Backfill, shape: EventShape, log: &Mu
                 r#"{"errcode":"M_FORBIDDEN","error":"Host not in room."}"#,
             ),
         }
+    } else if path.contains("/federation/v1/state_ids/") {
+        match state {
+            Some(st) => {
+                let list = |ids: &[&str]| {
+                    ids.iter()
+                        .map(|i| format!("\"{i}\""))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                let body = format!(
+                    r#"{{"pdu_ids":[{}],"auth_chain_ids":[{}]}}"#,
+                    list(&st.pdu_ids),
+                    list(&st.auth_chain_ids)
+                );
+                respond(&mut stream, 200, &body);
+            }
+            None => respond(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"no state"}"#,
+            ),
+        }
     } else if path.contains("/federation/v1/event/") {
         if path.ends_with(TARGET) {
             let body = match shape {
@@ -133,6 +168,10 @@ fn handle(mut stream: TcpStream, backfill: Backfill, shape: EventShape, log: &Mu
 }
 
 fn spawn_mock(backfill: Backfill, shape: EventShape) -> Mock {
+    spawn_mock_with(backfill, shape, None)
+}
+
+fn spawn_mock_with(backfill: Backfill, shape: EventShape, state: Option<StateIds>) -> Mock {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -140,7 +179,7 @@ fn spawn_mock(backfill: Backfill, shape: EventShape) -> Mock {
     // Serves until the test process exits.
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            handle(stream, backfill, shape, &log);
+            handle(stream, backfill, shape, state.as_ref(), &log);
         }
     });
     Mock { url, requests }
@@ -211,6 +250,17 @@ impl Fixture {
         rounds: &str,
         extra: &[&str],
     ) -> Output {
+        self.gap_fill_room(destination, ROOM, insecure, rounds, extra)
+    }
+
+    fn gap_fill_room(
+        &self,
+        destination: &str,
+        room: &str,
+        insecure: bool,
+        rounds: &str,
+        extra: &[&str],
+    ) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rezzy"));
         cmd.env("REZZY_KEY_PASSPHRASE", "test");
         if insecure {
@@ -223,7 +273,7 @@ impl Fixture {
         }
         cmd.args(["federation", "gap-fill", "-i"])
             .arg(self.dir.join("base.jsonl"))
-            .args(["--destination", destination, "--room", ROOM])
+            .args(["--destination", destination, "--room", room])
             .args([
                 "--origin",
                 "test.example",
@@ -239,7 +289,35 @@ impl Fixture {
             .unwrap()
     }
 
+    /// `federation state-diff` at the event `$child`, which the fixture holds.
+    fn state_diff(&self, destinations: &[&str], room: &str, extra: &[&str]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rezzy"));
+        cmd.env("REZZY_KEY_PASSPHRASE", "test")
+            .env("REZZY_ALLOW_INSECURE_HTTP", "1")
+            .args(["federation", "state-diff", "--room", room])
+            .args(["--event", "$child", "--origin", "test.example", "--known"])
+            .arg(self.dir.join("base.jsonl"))
+            .arg("--signing-key")
+            .arg(self.dir.join("key.enc"))
+            .arg("--output-dir")
+            .arg(self.dir.join("sd"));
+        for destination in destinations {
+            cmd.args(["--destination", destination]);
+        }
+        cmd.args(extra).output().unwrap()
+    }
+
     fn get_remote_dag(&self, destination: &str, insecure: bool) -> Output {
+        self.get_remote_dag_with(destination, insecure, ROOM, &[])
+    }
+
+    fn get_remote_dag_with(
+        &self,
+        destination: &str,
+        insecure: bool,
+        room: &str,
+        extra: &[&str],
+    ) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rezzy"));
         cmd.env("REZZY_KEY_PASSPHRASE", "test");
         if insecure {
@@ -255,7 +333,7 @@ impl Fixture {
             "--destination",
             destination,
             "--room",
-            ROOM,
+            room,
             "--origin",
             "test.example",
             "--known",
@@ -265,6 +343,7 @@ impl Fixture {
         .arg(self.dir.join("key.enc"))
         .arg("--output")
         .arg(self.dir.join("dag.jsonl"))
+        .args(extra)
         .output()
         .unwrap()
     }
@@ -711,4 +790,344 @@ fn no_backfill_cannot_be_combined_with_no_fallback() {
         text(&out.stderr)
     );
     assert!(mock.requests().is_empty(), "{:?}", mock.requests());
+}
+
+// --- room ID guard -------------------------------------------------------
+
+#[test]
+fn a_room_id_without_the_sigil_is_rejected_before_any_request() {
+    // In an interactive bash, "!$R" is rewritten by history expansion and the
+    // server then sees a room it is not in. Refuse such values up front.
+    let mock = spawn_mock(Backfill::Events, EventShape::Pdus);
+    let fx = Fixture::new("bad-room");
+    for room in [
+        "clearR",
+        "L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI",
+        "!",
+        "! x",
+        "",
+    ] {
+        let out = fx.gap_fill_room(&mock.url, room, true, "1", &[]);
+        let stderr = text(&out.stderr);
+        assert!(!out.status.success(), "{room:?} was accepted");
+        assert!(
+            stderr.contains("must be a Matrix room ID"),
+            "{room:?}: {stderr}"
+        );
+        assert!(stderr.contains("history expansion"), "{room:?}: {stderr}");
+    }
+    assert!(mock.requests().is_empty(), "{:?}", mock.requests());
+}
+
+#[test]
+fn get_remote_dag_also_rejects_a_room_without_the_sigil() {
+    let mock = spawn_mock(Backfill::Events, EventShape::Pdus);
+    let fx = Fixture::new("bad-room-dag");
+    let out = fx.get_remote_dag_with(&mock.url, true, "clearR", &[]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("must be a Matrix room ID"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(mock.requests().is_empty(), "{:?}", mock.requests());
+}
+
+#[test]
+fn a_forbidden_backfill_prints_a_hint_naming_the_room() {
+    let mock = spawn_mock(Backfill::Forbidden, EventShape::Pdus);
+    let fx = Fixture::new("hint");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("[hint]"), "{stderr}");
+    assert!(stderr.contains("Host not in room"), "{stderr}");
+    assert!(stderr.contains(ROOM), "{stderr}");
+    assert!(stderr.contains("--room"), "{stderr}");
+}
+
+#[test]
+fn the_not_in_room_hint_is_printed_only_once() {
+    // Several batches and rounds all get 403; one hint is enough.
+    let mock = spawn_mock(Backfill::Forbidden, EventShape::Pdus);
+    let fx = Fixture::without_parent("hint-once");
+    let out = fx.gap_fill_with(&mock.url, true, "0", &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(mock.count("/backfill/") >= 2, "{:?}", mock.requests());
+    assert_eq!(
+        text(&out.stderr).matches("[hint]").count(),
+        1,
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn request_log_records_the_room_id_sent() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::new("log-room");
+    assert!(fx
+        .gap_fill_with(&mock.url, true, "1", &["--debug"])
+        .status
+        .success());
+    let log = fs::read_to_string(fx.dir.join("out/round-000/requests.jsonl")).unwrap();
+    let backfill = log
+        .lines()
+        .map(|l| l.split_whitespace().collect::<String>())
+        .find(|l| l.contains("\"endpoint\":\"backfill\""))
+        .expect("a backfill line");
+    assert!(
+        backfill.contains(&format!("\"room_id\":\"{ROOM}\"")),
+        "{backfill}"
+    );
+}
+
+// --- --max-depth ---------------------------------------------------------
+// The served target event has depth 265.
+
+#[test]
+fn max_depth_skips_deeper_events_and_does_not_follow_their_parents() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::without_parent("depth-skip");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--max-depth", "100"]);
+    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        mock.count(&format!("/event/{TARGET}")) >= 1,
+        "{:?}",
+        mock.requests()
+    );
+    assert!(
+        !fx.fetched().contains("A nice sunny day"),
+        "deep event was written"
+    );
+    // Its parent is only reachable through the skipped event.
+    assert_eq!(mock.count(PARENT), 0, "{:?}", mock.requests());
+    assert!(
+        stderr.contains("skipped 1 event(s) deeper than --max-depth 100"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn max_depth_equal_to_an_events_depth_keeps_it() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::without_parent("depth-equal");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--max-depth", "265"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(fx.fetched().contains(TARGET));
+    assert!(
+        mock.count(&format!("/event/{PARENT}")) >= 1,
+        "{:?}",
+        mock.requests()
+    );
+    assert!(
+        !text(&out.stderr).contains("deeper than --max-depth"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn get_remote_dag_max_depth_skips_and_reports_deeper_events() {
+    let mock = spawn_mock(Backfill::Events, EventShape::Pdus);
+    let fx = Fixture::new("depth-dag");
+    let out = fx.get_remote_dag_with(&mock.url, true, ROOM, &["--max-depth", "100"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let dag = fs::read_to_string(fx.dir.join("dag.jsonl")).unwrap_or_default();
+    assert!(!dag.contains("A nice sunny day"), "{dag}");
+    assert!(
+        text(&out.stdout).contains("\"skipped_too_deep\": 1"),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+#[test]
+fn max_depth_is_off_by_default() {
+    let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
+    let fx = Fixture::without_parent("depth-off");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(fx.fetched().contains(TARGET));
+    assert!(!text(&out.stderr).contains("deeper than --max-depth"));
+}
+
+// --- federation state-diff -----------------------------------------------
+// The fixture holds $child, PARENT, AUTH_A and AUTH_B.
+
+fn two_servers() -> (Mock, Mock) {
+    let a = StateIds {
+        pdu_ids: vec![TARGET, "$onlyA", PARENT],
+        auth_chain_ids: vec![AUTH_A],
+    };
+    // Deliberately asymmetric: A has 4 IDs, B has 5, and they share 3.
+    let b = StateIds {
+        pdu_ids: vec![TARGET, "$onlyB", PARENT],
+        auth_chain_ids: vec![AUTH_A, AUTH_B],
+    };
+    (
+        spawn_mock_with(Backfill::Blank, EventShape::Pdus, Some(a)),
+        spawn_mock_with(Backfill::Blank, EventShape::Pdus, Some(b)),
+    )
+}
+
+fn compact(bytes: &[u8]) -> String {
+    text(bytes).split_whitespace().collect()
+}
+
+#[test]
+fn state_diff_counts_what_you_lack_and_how_the_servers_differ() {
+    let (a, b) = two_servers();
+    let fx = Fixture::new("sd-counts");
+    let out = fx.state_diff(&[&a.url, &b.url], ROOM, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let json = compact(&out.stdout);
+    // A reports four IDs and B five; each lacks two of its own locally.
+    assert_eq!(json.matches("\"state_and_auth\":4").count(), 1, "{json}");
+    assert_eq!(json.matches("\"state_and_auth\":5").count(), 1, "{json}");
+    assert_eq!(json.matches("\"missing_locally\":2").count(), 2, "{json}");
+    // A alone has {onlyA}; B alone has {onlyB, AUTH_B}; they share three.
+    assert!(json.contains("\"only_first\":1"), "{json}");
+    assert!(json.contains("\"only_second\":2"), "{json}");
+    assert!(json.contains("\"common\":3"), "{json}");
+}
+
+#[test]
+fn state_diff_first_and_second_follow_the_order_of_the_destination_flags() {
+    // Output used to be ordered by server name, which made the pair order
+    // depend on the (random) mock ports. It must follow the command line.
+    let (a, b) = two_servers();
+    let fx = Fixture::new("sd-order");
+    let out = fx.state_diff(&[&b.url, &a.url], ROOM, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let json = compact(&out.stdout);
+    assert!(json.contains("\"only_first\":2"), "{json}");
+    assert!(json.contains("\"only_second\":1"), "{json}");
+    assert!(json.contains("\"common\":3"), "{json}");
+}
+
+#[test]
+fn state_diff_writes_the_id_lists_it_describes() {
+    let (a, b) = two_servers();
+    let fx = Fixture::new("sd-files");
+    assert!(fx.state_diff(&[&a.url, &b.url], ROOM, &[]).status.success());
+    let read = |suffix: &str| -> Vec<String> {
+        let mut found: Vec<String> = fs::read_dir(fx.dir.join("sd"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(suffix))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        found.sort();
+        found
+    };
+    let missing = read(".missing").join("\n");
+    assert!(
+        missing.contains("$onlyA") && missing.contains("$onlyB"),
+        "{missing}"
+    );
+    assert!(missing.contains(TARGET), "{missing}");
+    assert!(
+        !missing.contains(PARENT) && !missing.contains(AUTH_A),
+        "held IDs listed: {missing}"
+    );
+    let first = read(".only-first").join("\n");
+    assert!(first.contains("$onlyA"), "{first}");
+    assert!(
+        !first.contains("$onlyB") && !first.contains(PARENT) && !first.contains(TARGET),
+        "{first}"
+    );
+    let second = read(".only-second").join("\n");
+    assert!(
+        second.contains("$onlyB") && second.contains(AUTH_B),
+        "{second}"
+    );
+    assert!(
+        !second.contains("$onlyA") && !second.contains(PARENT),
+        "{second}"
+    );
+}
+
+#[test]
+fn state_diff_asks_for_the_state_at_the_given_event_in_the_given_room() {
+    let (a, _b) = two_servers();
+    let fx = Fixture::new("sd-request");
+    assert!(fx.state_diff(&[&a.url], ROOM, &[]).status.success());
+    let wanted = format!("/state_ids/%21{}?event_id=$child", &ROOM[1..]);
+    assert!(
+        a.requests()
+            .iter()
+            .any(|r| r.contains(&wanted) && !r.ends_with("UNSIGNED")),
+        "{:?}",
+        a.requests()
+    );
+}
+
+#[test]
+fn state_diff_reports_a_refusing_server_and_still_compares_the_rest() {
+    let (a, _b) = two_servers();
+    let refuses = spawn_mock(Backfill::Blank, EventShape::Pdus); // no state: 404
+    let fx = Fixture::new("sd-refusal");
+    let out = fx.state_diff(&[&a.url, &refuses.url], ROOM, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let json = compact(&out.stdout);
+    assert!(json.contains("\"error\":"), "{json}");
+    assert!(json.contains("404"), "{json}");
+    assert!(json.contains("\"state_and_auth\":4"), "{json}");
+}
+
+#[test]
+fn state_diff_fetch_gets_the_missing_events_by_id() {
+    let only_target = StateIds {
+        pdu_ids: vec![TARGET],
+        auth_chain_ids: vec![],
+    };
+    let a = spawn_mock_with(Backfill::Events, EventShape::Pdus, Some(only_target));
+    let fx = Fixture::new("sd-fetch");
+    let out = fx.state_diff(&[&a.url], ROOM, &["--fetch"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        a.requests()
+            .iter()
+            .any(|r| r.contains(&format!("/event/{TARGET}"))),
+        "{:?}",
+        a.requests()
+    );
+    // The state IDs are known exactly, so /backfill is not used.
+    assert_eq!(a.count("/backfill/"), 0, "{:?}", a.requests());
+    let fetched: String = fs::read_dir(fx.dir.join("sd"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".state.jsonl"))
+        .map(|e| fs::read_to_string(e.path()).unwrap())
+        .collect();
+    assert!(fetched.contains(TARGET), "{fetched}");
+}
+
+#[test]
+fn state_diff_without_fetch_fetches_nothing() {
+    let only_target = StateIds {
+        pdu_ids: vec![TARGET],
+        auth_chain_ids: vec![],
+    };
+    let a = spawn_mock_with(Backfill::Events, EventShape::Pdus, Some(only_target));
+    let fx = Fixture::new("sd-nofetch");
+    assert!(fx.state_diff(&[&a.url], ROOM, &[]).status.success());
+    assert_eq!(a.count("/event/"), 0, "{:?}", a.requests());
+    assert_eq!(a.count("/backfill/"), 0, "{:?}", a.requests());
+}
+
+#[test]
+fn state_diff_rejects_a_room_without_the_sigil_before_any_request() {
+    let (a, _b) = two_servers();
+    let fx = Fixture::new("sd-bad-room");
+    let out = fx.state_diff(&[&a.url], "clearR", &[]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("must be a Matrix room ID"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(a.requests().is_empty(), "{:?}", a.requests());
 }

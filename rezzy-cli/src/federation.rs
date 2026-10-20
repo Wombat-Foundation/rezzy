@@ -8,11 +8,13 @@ use base64::{
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ed25519_zebra::SigningKey;
 use rezzy::JsonValue;
+mod state_diff;
+
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -174,10 +176,11 @@ pub fn command() -> Command {
                         .long("no-fallback")
                         .action(ArgAction::SetTrue),
                 )
-                .args(backfill_args()),
+                .args(crawl_args()),
         )
         .subcommand(encrypt_key_command())
         .subcommand(gap_fill_command())
+        .subcommand(state_diff::command())
 }
 
 fn gap_fill_command() -> Command {
@@ -241,15 +244,25 @@ fn gap_fill_command() -> Command {
                 .long("no-fallback")
                 .action(ArgAction::SetTrue),
         )
-        .args(backfill_args())
+        .args(crawl_args())
 }
 
-fn backfill_args() -> [Arg; 1] {
-    [Arg::new("no-backfill")
-        .long("no-backfill")
-        .action(ArgAction::SetTrue)
-        .conflicts_with("no-fallback")
-        .help("Never call /backfill; fetch every event with /event/{id}")]
+fn crawl_args() -> [Arg; 2] {
+    [
+        Arg::new("no-backfill")
+            .long("no-backfill")
+            .action(ArgAction::SetTrue)
+            .conflicts_with("no-fallback")
+            .help("Never call /backfill; fetch every event with /event/{id}"),
+        Arg::new("max-depth")
+            .long("max-depth")
+            .value_parser(clap::value_parser!(u64))
+            .help(
+                "Ignore events deeper than N and do not follow their parents. \
+                 An event's ancestors are always shallower, so a cap at the deepest \
+                 wanted event loses nothing needed to close it",
+            ),
+    ]
 }
 
 fn encrypt_key_command() -> Command {
@@ -299,6 +312,33 @@ fn known_events_arg() -> Arg {
         .help("JSONL file of events already held locally; repeatable")
 }
 
+/// A room ID must start with the `!` sigil. A shell can silently rewrite it:
+/// in an interactive bash, `"!$R"` is history expansion (the previous
+/// command's last word followed by `R`), which then reaches the server as a
+/// room it is not in and fails with `403 Host not in room`.
+fn validate_room_id(room: &str) -> Result<(), AppError> {
+    if room.len() > 1 && room.starts_with('!') && !room.contains(char::is_whitespace) {
+        return Ok(());
+    }
+    Err(AppError::new(
+        ErrorCode::MissingInputFlag,
+        format!(
+            "--room must be a Matrix room ID starting with '!', got {room:?}. \
+             In an interactive bash, \"!$VAR\" is rewritten by history expansion; \
+             use single quotes ('!room') or ROOM='!'\"$VAR\""
+        ),
+    ))
+}
+
+/// Checks and process-wide switches shared by `get-remote-dag` and `gap-fill`.
+fn prepare_crawl(m: &ArgMatches) -> Result<(), AppError> {
+    validate_room_id(m.get_one::<String>("room").expect("required"))?;
+    NO_BACKFILL.store(m.get_flag("no-backfill"), Ordering::Relaxed);
+    let max_depth = m.get_one::<u64>("max-depth").copied().unwrap_or(u64::MAX);
+    MAX_DEPTH.store(max_depth, Ordering::Relaxed);
+    Ok(())
+}
+
 /// Event IDs from the repeatable `--known` JSONL files: events the caller
 /// already holds, which the crawl stops at.
 fn load_known_ids(
@@ -333,12 +373,14 @@ fn load_known_ids(
 /// # Panics
 /// Panics if a required default argument is absent from a parsed subcommand.
 pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
-    if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
+    if let Some(("request" | "get-remote-dag" | "gap-fill" | "state-diff", m)) =
+        matches.subcommand()
+    {
         let origin = m.get_one::<String>("origin").expect("default");
         load_signing_key(origin, signing_key_path(m))?;
     }
     if let Some(("get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
-        NO_BACKFILL.store(m.get_flag("no-backfill"), Ordering::Relaxed);
+        prepare_crawl(m)?;
     }
     match matches.subcommand() {
         Some(("request", m)) => {
@@ -413,9 +455,10 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
                 skip_tried: m.get_flag("skip-tried"),
             })
         }
+        Some(("state-diff", m)) => state_diff::run(m),
         _ => Err(AppError::new(
             ErrorCode::MissingInputFlag,
-            "choose `request`, `get-remote-dag`, or `gap-fill`",
+            "choose `request`, `get-remote-dag`, `gap-fill`, or `state-diff`",
         )),
     }
 }
@@ -929,8 +972,29 @@ fn debug_enabled() -> bool {
     DEBUG.load(Ordering::Relaxed)
 }
 
+static FORBIDDEN_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// `403 Host not in room` from `/backfill` usually means the room ID sent was
+/// not the room meant (see `validate_room_id`); say so once.
+fn hint_if_not_in_room(result: &Result<JsonValue, AppError>, room_id: &str) {
+    let refused = result.as_ref().err().is_some_and(|e| {
+        let text = e.to_string();
+        http_status_of(&text) == Some(403) && text.contains("Host not in room")
+    });
+    if refused && !FORBIDDEN_HINT_SHOWN.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[hint] /backfill answered 403 \"Host not in room\" for room {room_id:?}. \
+             Check --room is exactly the room ID (a shell can rewrite \"!$VAR\"); \
+             events requested by ID may still work, since /event/{{id}} does not use it"
+        );
+    }
+}
+
 /// Set by `--no-backfill`: never call `/backfill`.
 static NO_BACKFILL: AtomicBool = AtomicBool::new(false);
+
+/// Set by `--max-depth`: events deeper than this are skipped, not followed.
+static MAX_DEPTH: AtomicU64 = AtomicU64::new(u64::MAX);
 
 fn backfill_allowed() -> bool {
     !NO_BACKFILL.load(Ordering::Relaxed)
@@ -1041,6 +1105,7 @@ fn append_attempts(
         put("time", rezzy::json!(when));
         put("round", rezzy::json!(u64::from(round)));
         put("event_id", opt_str(a.event_id.as_deref()));
+        put("room_id", opt_str(Some(dag_request.room_id)));
         put("origin", opt_str(Some(dag_request.origin)));
         put("destination", opt_str(Some(dag_request.destination)));
         put("endpoint", opt_str(Some(a.endpoint)));
@@ -1116,6 +1181,8 @@ struct DagWalkState {
     /// Requests made since the last checkpoint, kept only when logging them.
     attempts: Vec<Attempt>,
     log_attempts: bool,
+    /// Events dropped by `--max-depth`.
+    skipped_deep: usize,
 }
 
 impl DagWalkState {
@@ -1176,6 +1243,7 @@ fn initialize_dag(
             stats: BTreeMap::new(),
             attempts: Vec::new(),
             log_attempts: false,
+            skipped_deep: 0,
         },
         max,
     ))
@@ -1214,6 +1282,8 @@ fn finalize_dag(mut state: DagWalkState, request: &DagRequest<'_>) -> Result<Jso
         "remaining_frontier": remaining_frontier,
     });
     let _ = result.insert(String::from("request_stats"), request_stats);
+    let skipped = u64::try_from(state.skipped_deep).unwrap_or(u64::MAX);
+    let _ = result.insert(String::from("skipped_too_deep"), rezzy::json!(skipped));
     if !state.failures.is_empty() {
         let _ = result.insert(
             String::from("failed_requests"),
@@ -1244,6 +1314,14 @@ fn write_dag_event(
     let Some(object) = pdu.as_object() else {
         return Ok(true);
     };
+    let too_deep = object
+        .get("depth")
+        .and_then(JsonValue::as_u64)
+        .is_some_and(|depth| depth > MAX_DEPTH.load(Ordering::Relaxed));
+    if too_deep {
+        state.skipped_deep = state.skipped_deep.saturating_add(1);
+        return Ok(true);
+    }
     let event_id = object
         .get("event_id")
         .and_then(JsonValue::as_str)
@@ -1363,6 +1441,7 @@ fn fetch_dag_batch(
         dag_request.key_path,
     );
     state.record(attempt_of(None, "backfill", &response, started));
+    hint_if_not_in_room(&response, dag_request.room_id);
     let mut fell_back = false;
     let mut value = match response {
         Ok(v) => v,
@@ -1499,6 +1578,13 @@ fn get_remote_dag_with_known_and_checkpoint(
             "[info] round {}: requests {}",
             cp.round,
             summarize_stats(&state.stats)
+        );
+    }
+    if state.skipped_deep > 0 {
+        eprintln!(
+            "[info] skipped {} event(s) deeper than --max-depth {}",
+            state.skipped_deep,
+            MAX_DEPTH.load(Ordering::Relaxed)
         );
     }
     finalize_dag(state, dag_request)
