@@ -32,9 +32,9 @@ int rezzy_verify_content_hash(const char *room_version,
                               uint8_t **out, size_t *out_len);
 
 /*
- * Describes every event in a JSONL buffer. On REZZY_OK, *out holds one JSON
- * record per line, in input order, with the fields `rezzy hash events` prints
- * (event_id, claimed_event_id, content_hash_ok, links, and a 1-based "line").
+ * Describes every event in a JSONL buffer. On REZZY_OK, *out holds the same
+ * JSON report object as `rezzy hash events`, including event records with
+ * event_id, claimed_event_id, content_hash_ok, links, and a 1-based "line".
  * A line that cannot be hashed yields an {"error": ...} record and the call
  * still succeeds. REZZY_ERR (message in *out) means no events or invalid UTF-8.
  */

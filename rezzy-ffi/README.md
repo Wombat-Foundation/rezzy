@@ -2,8 +2,9 @@
 
 `rezzy-ffi` exposes event ID calculation and content-hash verification through
 a small C ABI. The C declarations are in [`include/rezzy.h`](include/rezzy.h).
-`rezzy_hash_events` takes a whole JSONL buffer and returns one JSON record per
-line, the same fields as `rezzy hash events`, in one call.
+`rezzy_hash_events` takes a whole JSONL buffer and returns the same report
+object as `rezzy hash events`, in one call. It uses the shared library-level
+report builder, so the CLI and FFI apply the same hashing and redaction rules.
 Returned messages and IDs are UTF-8 byte buffers owned by the library; release
 them with `rezzy_free`.
 
@@ -20,6 +21,7 @@ root, run:
 cd rezzy-ffi/examples/go
 go run . event-id 12 event.json
 go run . verify-content-hash 12 event.json
+go run . hash-events 12 events.jsonl
 ```
 
 Python uses `ctypes` and loads the built library automatically:
@@ -27,6 +29,7 @@ Python uses `ctypes` and loads the built library automatically:
 ```sh
 python3 rezzy-ffi/examples/event_id.py event-id 12 event.json
 python3 rezzy-ffi/examples/event_id.py verify-content-hash 12 event.json
+python3 rezzy-ffi/examples/event_id.py hash-events 12 events.jsonl
 ```
 
 Both examples require a built `librezzy_ffi` in the workspace's `target/debug`

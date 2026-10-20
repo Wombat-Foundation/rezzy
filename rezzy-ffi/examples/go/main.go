@@ -18,21 +18,32 @@ import (
 	"unsafe"
 )
 
+const (
+	eventIDOperation = iota
+	verifyContentHashOperation
+	hashEventsOperation
+)
+
 // EventID returns the event ID of a JSON event under roomVersion.
 func EventID(roomVersion string, event []byte) (string, error) {
-	return call(roomVersion, event, false)
+	return call(roomVersion, event, eventIDOperation)
 }
 
 // VerifyContentHash checks the event's hashes.sha256 under roomVersion.
 func VerifyContentHash(roomVersion string, event []byte) error {
-	_, err := call(roomVersion, event, true)
+	_, err := call(roomVersion, event, verifyContentHashOperation)
 	return err
+}
+
+// HashEventsJSONL returns the same JSON report as `rezzy hash events`.
+func HashEventsJSONL(roomVersion string, jsonl []byte) (string, error) {
+	return call(roomVersion, jsonl, hashEventsOperation)
 }
 
 func call(
 	roomVersion string,
 	event []byte,
-	verifyContentHash bool,
+	operation int,
 ) (string, error) {
 	version := C.CString(roomVersion)
 	defer C.free(unsafe.Pointer(version))
@@ -43,9 +54,12 @@ func call(
 		first = (*C.uint8_t)(unsafe.Pointer(&event[0]))
 	}
 	var status C.int
-	if verifyContentHash {
+	switch operation {
+	case verifyContentHashOperation:
 		status = C.rezzy_verify_content_hash(version, first, C.size_t(len(event)), &out, &outLen)
-	} else {
+	case hashEventsOperation:
+		status = C.rezzy_hash_events(version, first, C.size_t(len(event)), &out, &outLen)
+	default:
 		status = C.rezzy_event_id(version, first, C.size_t(len(event)), &out, &outLen)
 	}
 	var text string
@@ -61,7 +75,7 @@ func call(
 
 func main() {
 	if len(os.Args) != 4 {
-		fmt.Fprintf(os.Stderr, "usage: %s <event-id|verify-content-hash> <room-version> <event.json>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s <event-id|verify-content-hash|hash-events> <room-version> <event.jsonl>\n", os.Args[0])
 		os.Exit(2)
 	}
 	action, roomVersion, path := os.Args[1], os.Args[2], os.Args[3]
@@ -84,8 +98,15 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("content hash valid")
+	case "hash-events":
+		report, err := HashEventsJSONL(roomVersion, event)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(report)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown action %q (use event-id or verify-content-hash)\n", action)
+		fmt.Fprintf(os.Stderr, "unknown action %q (use event-id, verify-content-hash, or hash-events)\n", action)
 		os.Exit(2)
 	}
 }

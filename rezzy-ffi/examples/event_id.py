@@ -16,7 +16,7 @@ def load(path=None):
         target = pathlib.Path(__file__).resolve().parents[2] / "target" / "debug"
         path = next(target.glob("librezzy_ffi.*"), None) or target / "rezzy_ffi.dll"
     lib = ctypes.CDLL(str(path))
-    for name in ("rezzy_event_id", "rezzy_verify_content_hash"):
+    for name in ("rezzy_event_id", "rezzy_verify_content_hash", "rezzy_hash_events"):
         fn = getattr(lib, name)
         fn.argtypes = [
             ctypes.c_char_p,
@@ -49,7 +49,7 @@ def call(lib, name, room_version, event: bytes):
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print(
-            f"usage: {sys.argv[0]} <event-id|verify-content-hash> <room-version> <event.json>",
+            f"usage: {sys.argv[0]} <event-id|verify-content-hash|hash-events> <room-version> <event.jsonl>",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -57,9 +57,13 @@ if __name__ == "__main__":
     function = {
         "event-id": "rezzy_event_id",
         "verify-content-hash": "rezzy_verify_content_hash",
+        "hash-events": "rezzy_hash_events",
     }.get(action)
     if function is None:
-        print("action must be event-id or verify-content-hash", file=sys.stderr)
+        print(
+            "action must be event-id, verify-content-hash, or hash-events",
+            file=sys.stderr,
+        )
         sys.exit(2)
     status, text = call(load(), function, version, pathlib.Path(path).read_bytes())
     print(text if text else "content hash valid")

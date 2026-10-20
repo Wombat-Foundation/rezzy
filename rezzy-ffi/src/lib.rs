@@ -278,17 +278,21 @@ mod tests {
         let (status, text) = call(rezzy_hash_events, "12", &jsonl);
         assert_eq!(status, OK);
         let actual = JsonValue::parse(&text).unwrap();
-        let expected = rezzy::event_report::report(
-            rezzy::event_report::describe_jsonl(&jsonl, "12"),
-            "12",
-        );
+        let expected =
+            rezzy::event_report::report(rezzy::event_report::describe_jsonl(&jsonl, "12"), "12");
         assert_eq!(actual, expected);
         let events = actual.get("events").unwrap().as_array().unwrap();
         assert_eq!(events.len(), 2);
-        assert!(events[0].to_string().contains(ID));
-        assert!(events[0].to_string().contains("\"line\":1"));
-        assert!(events[1].to_string().contains("invalid JSON"));
-        assert!(events[1].to_string().contains("\"line\":3"));
+        assert_eq!(
+            events[0].get("event_id").and_then(JsonValue::as_str),
+            Some(ID)
+        );
+        assert_eq!(events[0].get("line").and_then(JsonValue::as_u64), Some(1));
+        assert!(events[1]
+            .get("error")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|error| error.contains("invalid JSON")));
+        assert_eq!(events[1].get("line").and_then(JsonValue::as_u64), Some(3));
         assert_eq!(call(rezzy_hash_events, "12", "\n").0, ERR);
     }
 
