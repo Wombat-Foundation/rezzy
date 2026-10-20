@@ -320,7 +320,7 @@ fn print_summary(answers: &Answers) {
         );
     }
     for (i, (a, ra)) in answers.iter().enumerate() {
-        for (b, rb) in answers.iter().skip(i + 1) {
+        for (b, rb) in answers.iter().skip(i.saturating_add(1)) {
             for (kind, x, y) in [
                 ("state", &ra.state, &rb.state),
                 ("auth chain", &ra.auth_chain, &rb.auth_chain),
