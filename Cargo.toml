@@ -269,3 +269,11 @@ debug = 0
 strip = "debuginfo"
 incremental = true
 codegen-units = 256
+
+# Argon2id key derivation runs once per spawned CLI in the integration tests;
+# unoptimized it dominates their runtime.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
