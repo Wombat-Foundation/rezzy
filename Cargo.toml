@@ -65,7 +65,7 @@ ignored = ["zeroize"]
 
 [workspace]
 resolver = "2"
-members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
+members = ["rezzy-cli", "rezzy-ffi", "rezzy-json", "rezzy-recon"]
 
 [workspace.package]
 version = "0.6.0-rc.1"

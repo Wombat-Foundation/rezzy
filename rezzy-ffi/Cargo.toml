@@ -1,0 +1,20 @@
+[package]
+name = "rezzy-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "C ABI for rezzy event hashing, for cgo, ctypes and other FFI callers."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+rezzy = { workspace = true, default-features = false, features = ["std", "cli"] }
+
+# The C boundary needs raw pointers; every `unsafe` block states its contract.
+[lints.rust]
+unsafe_code = "allow"

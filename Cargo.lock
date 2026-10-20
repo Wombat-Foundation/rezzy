@@ -618,6 +618,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rezzy-ffi"
+version = "0.6.0-rc.1"
+dependencies = [
+ "rezzy",
+]
+
+[[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
 dependencies = [
