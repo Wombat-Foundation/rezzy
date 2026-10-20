@@ -296,6 +296,8 @@ mod disk {
         path: PathBuf,
         file: File,
         slot: usize,
+        /// Probed direct-I/O alignment; `slot` is a multiple of it.
+        align: usize,
         index: HashMap<StructuralHash, (u64, usize)>,
     }
 
@@ -390,6 +392,7 @@ mod disk {
                 path,
                 file: w.try_clone()?,
                 slot: 0,
+                align: 0,
                 index: HashMap::new(),
             };
             // Probe direct-I/O support on a small prefix first; only then
@@ -439,6 +442,7 @@ mod disk {
             drop(w);
             store.file = direct;
             store.slot = slot;
+            store.align = align;
             Ok(store)
         }
 
@@ -507,7 +511,7 @@ mod disk {
             store.index.len(),
             store.slot
         );
-        let mut buf = AlignedBuf::new(store.slot, store.slot);
+        let mut buf = AlignedBuf::new(store.slot, store.align);
         for layers in 0..depth {
             let a = cache_layers(&base, layers);
             let mut samples: Vec<(Duration, u64, usize)> = Vec::with_capacity(SAMPLES);

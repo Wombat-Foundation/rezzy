@@ -8,8 +8,8 @@
 //! by walking `prev_events`.
 
 use super::{
-    get_remote_dag_with_known, known_events_arg, load_known_ids, origin_arg, quote, request,
-    signing_key_args, signing_key_path, validate_room_id, DagRequest, NO_BACKFILL,
+    get_remote_events_by_id, known_events_arg, load_known_ids, origin_arg, quote, request,
+    signing_key_args, signing_key_path, validate_room_id, DagRequest,
 };
 use crate::error::AppError;
 use clap::{Arg, ArgAction, ArgMatches, Command};
@@ -17,7 +17,6 @@ use rezzy::JsonValue;
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 pub(super) fn command() -> Command {
     Command::new("state-diff")
@@ -275,8 +274,8 @@ fn fetch_missing(
     let origin = m.get_one::<String>("origin").expect("default");
     let room = m.get_one::<String>("room").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("default");
-    // The IDs are known exactly, so ask for them directly.
-    NO_BACKFILL.store(true, Ordering::Relaxed);
+    // The IDs are known exactly, so ask for them directly and do not follow
+    // `prev_events` from what comes back.
     let mut fetched = rezzy::json!({});
     for (dest, reported) in answers {
         let starts: Vec<String> = reported
@@ -301,7 +300,7 @@ fn fetch_missing(
             no_fallback: false,
             emit_missing: None,
         };
-        let outcome = match get_remote_dag_with_known(&dag, Some(known)) {
+        let outcome = match get_remote_events_by_id(&dag, Some(known)) {
             Ok(result) => result.get("count").cloned().unwrap_or(JsonValue::Null),
             Err(error) => JsonValue::String(error.to_string().chars().take(200).collect()),
         };

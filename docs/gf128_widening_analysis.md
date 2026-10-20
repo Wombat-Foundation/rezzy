@@ -351,8 +351,8 @@ behaviors must be re-specified:
 | Document the limit and keep GF(2^64)                                                   | accepts ~2^37 accumulator forgery, which only hides the attacker's own events and blocks repair of a split the attacker caused | zero                                                                                                                        |
 
 Note that these are complementary, not exclusive: the field widening buys the
-pair-cost floor, the keyed placement hash buys the liveness attack, and the
-accumulator choice buys residual forgery resistance.
+pair-cost floor, the local no-amplification retry policy bounds the liveness
+attack, and the accumulator choice buys residual forgery resistance.
 
 Related implementation update: the sibling `gomatrixcrypto` repository's
 `lthash` package added an AES-256-CTR LtHash accumulator alongside its BLAKE3
