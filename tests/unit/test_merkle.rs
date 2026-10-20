@@ -361,36 +361,20 @@ fn nul_in_field_name_rejected() {
 }
 
 #[test]
-fn oversized_field_name_rejected_before_error_payload() {
-    // Names longer than `FieldName::MAX_LEN` cannot be stored exactly, so the
-    // validated entry points reject them instead of truncating. Otherwise two
-    // distinct over-long names sharing a prefix would compare equal once the
-    // derived `Eq` on `MerkleError` sees the truncated `FieldName`.
+fn long_field_names_are_hashed_and_kept_whole_in_error_payloads() {
+    // `FieldName` stores names in full, so over-long names are valid and two
+    // names sharing a long prefix stay distinct inside `MerkleError`.
     let long = "a".repeat(merkle::FieldName::MAX_LEN + 1);
-    assert_eq!(
-        merkle::leaf_hash(&long, b"null").unwrap_err(),
-        MerkleError::InvalidFieldName
-    );
-    assert_eq!(
-        merkle::leaf_hash_bytes(long.as_bytes(), b"null").unwrap_err(),
-        MerkleError::InvalidFieldName
-    );
-    assert_eq!(
-        merkle::component_hash(&long, &json!("v")).unwrap_err(),
-        MerkleError::InvalidFieldName
-    );
+    assert!(merkle::leaf_hash(&long, b"null").is_ok());
+    assert!(merkle::leaf_hash_bytes(long.as_bytes(), b"null").is_ok());
+    assert!(merkle::component_hash(&long, &json!("v")).is_ok());
 
-    // `leaf_path` validates before it can report `FieldNotFound`, so the
-    // oversized name never reaches the error payload.
     let fields = [Field::new("depth", json!(7))];
-    assert!(matches!(
-        merkle::leaf_path(&fields, &long),
-        Err(MerkleError::InvalidFieldName)
-    ));
-
-    // A name exactly at the cap is still accepted.
-    let exact = "b".repeat(merkle::FieldName::MAX_LEN);
-    assert!(merkle::leaf_hash(&exact, b"null").is_ok());
+    let other = format!("{long}b");
+    let err_long = merkle::leaf_path(&fields, &long).unwrap_err();
+    let err_other = merkle::leaf_path(&fields, &other).unwrap_err();
+    assert_eq!(err_long, MerkleError::FieldNotFound(long.as_str().into()));
+    assert_ne!(err_long, err_other);
 }
 
 #[test]

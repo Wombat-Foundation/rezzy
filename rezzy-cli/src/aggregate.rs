@@ -713,7 +713,12 @@ fn check_current(
         match fs::symlink_metadata(sidecar_path) {
             Ok(_) => return Err(stale_error(sidecar_path)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(stale_error(sidecar_path)),
+            Err(error) => {
+                return Err(AppError::new(
+                    ErrorCode::AggregateStale,
+                    format!("cannot check provenance sidecar: {error}"),
+                ));
+            }
         }
     }
     Ok(rezzy::json!({"status": "current", "unique_events": event_count}))
@@ -1790,7 +1795,17 @@ mod tests {
         opts.provenance = false;
         aggregate(&opts).unwrap();
         assert!(root.join("merged/room.jsonl").exists());
-        assert!(!root.join("merged/room.rezzy-meta.jsonl").exists());
+        let sidecar = root.join("merged/room.rezzy-meta.jsonl");
+        assert!(!sidecar.exists());
+
+        // A normal no-provenance publish would remove this stale sidecar, so
+        // check mode must not report the output pair as current while it exists.
+        fs::write(&sidecar, "stale metadata\n").unwrap();
+        opts.check = true;
+        assert_eq!(
+            aggregate(&opts).unwrap_err().code(),
+            ErrorCode::AggregateStale
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

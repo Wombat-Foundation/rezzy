@@ -143,66 +143,13 @@ pub struct ElementHash {
 }
 
 impl ElementHash {
-    // TODO(prefix-grinding): `h64` is derived unkeyed from the element
-    // digest below. For V3/V4+ Matrix event IDs the digest *is* a content
-    // hash the event's author controls (message body, custom content keys,
-    // timestamp within clock-skew tolerance all give grinding room), so an
-    // attacker with grinding room can search offline for events whose h64
-    // shares a long common prefix -- roughly 2^k SHA-256/BLAKE-family
-    // hashes for k bits, i.e. seconds of commodity CPU for k in the
-    // mid-20s. Note this needs more than "can post events": an event that
-    // replicated normally is present in both sides' sets and cancels out
-    // of the symmetric difference, so it never reaches the bucket splitter
-    // at all. The attacker needs the ground events to actually be *in* the
-    // difference at reconciliation time -- e.g. selective federation, or
-    // an attacker-operated homeserver that delivers them to some peers and
-    // withholds them from others. A materially lower bar than compromising
-    // a server, but a different (and narrower) threat model than "any room
-    // member," and worth stating precisely before this goes into 4511-C.
-    //
-    // Given that precondition, `client.rs`'s bucket splitter descends one
-    // h64 bit per round (`bucket_range_start`/the depth-increment in
-    // `select_action`) over `MAX_RECONCILIATION_ROUNDS` (20) rounds before
-    // giving up to `ClientAction::ExtremityDiff`, so a ~20+ bit shared
-    // prefix reliably exhausts every round on that bucket before any real
-    // split happens. This isn't a one-off cost either: h64 is fixed
-    // forever once an event exists, so a single grinding pass taxes
-    // *every future* pairwise reconciliation of the room that touches
-    // those events (subject to the withholding precondition above), on
-    // any pair of servers, indefinitely -- not just the session the
-    // attacker ran it against.
-    //
-    // The fix from the literature (Yang et al., "Practical Rateless Set
-    // Reconciliation" §4.3) is a keyed hash (e.g. SipHash) negotiated
-    // per-session so placement isn't predictable offline. That is NOT a
-    // drop-in here: `ResidentKernel` (resident.rs) is deliberately a
-    // server-local structure built once and incrementally maintained
-    // across the room's lifetime, then reused to serve *any* peer that
-    // reconciles against it -- the whole point is amortizing the
-    // build cost across many peers/sessions rather than rebuilding
-    // per-session. Keying `h64` per-session breaks that: the bucket
-    // geometry (and therefore the resident trie's shape) would become
-    // session-specific, so the server would need either a separate
-    // resident structure per active peer (defeats the amortization this
-    // module exists for) or a coarser shared secret.
-    //
-    // A *static* room-scoped key doesn't solve it: the realistic
-    // adversary is a room member grinding their own event content, and a
-    // static room-scoped key is known to every room member by
-    // construction. But what defeats grinding isn't secrecy of the key --
-    // it's unpredictability at authoring time. Event IDs (and therefore
-    // h64) are fixed when the event is created; if the placement key
-    // didn't exist yet, no amount of offline grinding could have targeted
-    // it. A room-scoped key that *rotates on an epoch* is still public to
-    // every member and still defeats precomputation, because a
-    // pre-ground event lands in an unpredictable bucket after the next
-    // rotation. That preserves `ResidentKernel`'s amortization within an
-    // epoch (one rebuild per rotation, not per session) -- a materially
-    // different, more promising tradeoff than per-session keying. Needs
-    // an MSC-level design decision (epoch-rotated placement key vs.
-    // accepting the bounded liveness cost and documenting it, informed by
-    // the client-side mitigation noted on `MAX_RECONCILIATION_ROUNDS` in
-    // client.rs), not a code-level patch -- see 4511-C.
+    // Placement is predictable because the event digest is fixed at authoring
+    // time. Reconciliation bounds the consequences locally: small populations
+    // use one overflow decode, larger failed nodes fan out by up to seven bits,
+    // and terminal failures are returned as node-scoped prefixes for bounded ID
+    // fallback. Grinding can force transfer of the attacker's own symmetric-
+    // difference events, but does not amplify defender work through a long
+    // region-wide ladder. See docs/2026-10-12-h64-prefix-grinding.md.
     /// Derives the MSC4521 profile truncations from a canonical 32-byte element digest.
     #[must_use]
     pub fn from_digest32(digest: [u8; 32]) -> Self {
@@ -255,6 +202,20 @@ impl ElementHash {
         format: EventIdFormat,
     ) -> Result<Self, AlgebraicError> {
         Self::matrix_event_digest32(event_id, format).map(Self::from_digest32)
+    }
+
+    /// Derives an element hash from an event ID of unknown room-version format.
+    ///
+    /// Tries [`EventIdFormat::V4Plus`], then [`EventIdFormat::V3`]. The
+    /// alphabets differ only in the `+/` versus `-_` characters, so an ID that
+    /// decodes under both decodes to the same digest and the result is never
+    /// ambiguous.
+    ///
+    /// # Errors
+    /// Returns the V3 error when the ID is valid under neither format.
+    pub fn from_matrix_event_id_any(event_id: &str) -> Result<Self, AlgebraicError> {
+        Self::from_matrix_event_id(event_id, EventIdFormat::V4Plus)
+            .or_else(|_| Self::from_matrix_event_id(event_id, EventIdFormat::V3))
     }
 
     /// Derives the MSC4521 Matrix event-ID binding digest `D(e)`.
@@ -439,11 +400,20 @@ pub struct SyndromeSketch {
 
 impl SyndromeSketch {
     pub(crate) fn from_coordinates(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
-        Self::from_coordinates_checked(coordinates)
+        Self::from_coordinates_checked(coordinates, MAX_SKETCH_CAPACITY)
     }
 
-    fn from_coordinates_checked(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
-        if coordinates.is_empty() || coordinates.len() > MAX_SKETCH_CAPACITY {
+    /// Like [`from_coordinates`](Self::from_coordinates) but admits the
+    /// overflow capacity range, for buckets requested with `overflow = true`.
+    pub(crate) fn from_overflow_coordinates(coordinates: Vec<u64>) -> Result<Self, AlgebraicError> {
+        Self::from_coordinates_checked(coordinates, MAX_OVERFLOW_SKETCH_CAPACITY)
+    }
+
+    fn from_coordinates_checked(
+        coordinates: Vec<u64>,
+        max_capacity: usize,
+    ) -> Result<Self, AlgebraicError> {
+        if coordinates.is_empty() || coordinates.len() > max_capacity {
             return Err(AlgebraicError::InvalidSketchCapacity);
         }
         Ok(Self { coordinates })
@@ -549,12 +519,32 @@ impl SyndromeSketch {
         budget: &mut usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_LOCAL_SKETCH_DECODE_CAPACITY)?;
+        if self.coordinates.iter().all(|&coordinate| coordinate == 0) {
+            return Ok(Vec::new());
+        }
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],
             max_elements,
             budget,
         )?;
         self.validate_decoded_elements(decoded)
+    }
+
+    pub(crate) fn decode_elements_overflow_with_shared_budget(
+        &self,
+        max_elements: usize,
+        budget: &mut usize,
+    ) -> Result<Vec<u64>, AlgebraicError> {
+        self.validate_decode_capacity(max_elements, MAX_OVERFLOW_SKETCH_CAPACITY)?;
+        if self.coordinates.iter().all(|&coordinate| coordinate == 0) {
+            return Ok(Vec::new());
+        }
+        let decoded = super::pinsketch::decode_with_budget(
+            &self.coordinates[..max_elements],
+            max_elements,
+            budget,
+        )?;
+        self.validate_decoded_overflow(decoded)
     }
 
     const fn validate_decode_capacity(
@@ -720,6 +710,9 @@ impl SyndromeSketch {
         budget: usize,
     ) -> Result<Vec<u64>, AlgebraicError> {
         self.validate_decode_capacity(max_elements, MAX_OVERFLOW_SKETCH_CAPACITY)?;
+        if self.coordinates.iter().all(|&coordinate| coordinate == 0) {
+            return Ok(Vec::new());
+        }
         let mut remaining = budget;
         let decoded = super::pinsketch::decode_with_budget(
             &self.coordinates[..max_elements],
@@ -740,6 +733,25 @@ mod tests {
     use std::vec;
 
     use super::*;
+
+    #[test]
+    fn event_id_any_falls_back_to_v3_and_matches_explicit_format() {
+        // 0xFB.. bytes force '+'/'/' (V3) or '-'/'_' (V4+) characters.
+        let digest = [0xFB_u8; 32];
+        let v3 = encode_base64(&STANDARD_NO_PAD, &digest);
+        let v4 = encode_base64(&URL_SAFE_NO_PAD, &digest);
+        assert_ne!(v3, v4);
+        let expect = ElementHash::from_digest32(digest);
+        assert_eq!(
+            ElementHash::from_matrix_event_id_any(&std::format!("${v3}")),
+            Ok(expect)
+        );
+        assert_eq!(
+            ElementHash::from_matrix_event_id_any(&std::format!("${v4}")),
+            Ok(expect)
+        );
+        assert!(ElementHash::from_matrix_event_id_any("nope").is_err());
+    }
 
     #[test]
     fn h128_comes_from_the_trailing_half_disjoint_from_h64() {
@@ -952,6 +964,28 @@ mod tests {
         }
         let res = sketch.decode_elements_overflow_budget(64, 100);
         assert_eq!(res, Err(AlgebraicError::BudgetExhausted));
+    }
+
+    #[test]
+    fn overflow_decode_checks_coordinates_beyond_element_limit() {
+        let mut sketch = SyndromeSketch::new_overflow(64).unwrap();
+        sketch.coordinates[40] = 1;
+
+        assert_eq!(
+            sketch.decode_elements_overflow_budget(32, 8_000_000),
+            Err(AlgebraicError::DecodeFailure)
+        );
+    }
+
+    #[test]
+    fn standard_decode_checks_coordinates_beyond_element_limit() {
+        let mut sketch = SyndromeSketch::new(32).unwrap();
+        sketch.coordinates[20] = 1;
+
+        assert_eq!(
+            sketch.decode_elements_with_budget(10, 8_000_000),
+            Err(AlgebraicError::DecodeFailure)
+        );
     }
 
     /// Fast unit test for the capacity-mismatch check itself: a

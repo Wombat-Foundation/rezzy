@@ -697,6 +697,25 @@ mod state_dag_branch_coverage_tests {
     }
 
     #[test]
+    fn state_before_rejects_pre_v2_2_room_versions() {
+        let empty_key = String::new();
+        let event = event("$event", Some(""));
+        let events = TestMap::default();
+
+        assert!(matches!(
+            compute_state_before_from_dag(&DagInputs::new(
+                &event,
+                &events,
+                StateResVersion::V1,
+                &empty_key
+            )),
+            Err(StateDagError::Validation(
+                StateDagValidationError::UnsupportedVersionForDag { version }
+            )) if version == StateResVersion::V1
+        ));
+    }
+
+    #[test]
     fn state_before_resolves_multiple_parent_states_and_detects_cycles() {
         let empty_key = String::new();
         let mut create = event("$create", Some(""));

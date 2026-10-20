@@ -207,8 +207,12 @@ MATRIX_ORIGIN=example.org \
 MATRIX_SERVER_SIGNING_KEY=/etc/rezzy/example.org.key \
 rezzy federation get-remote-dag --origin example.org \
   --destination remote.example --room '!room:example.org' \
-  --from '$event:example.org' --output remote.jsonl
+  --from '$event:example.org' --known local-room.jsonl --output remote.jsonl
 ```
+
+`--known` can be repeated. Each JSONL file supplies events already held
+locally; the crawl stops at those event IDs instead of fetching their history
+again. This is useful when fetching a missing frontier from a partial local DAG.
 
 Signing keys are read from a passphrase-encrypted file (Argon2id +
 XChaCha20-Poly1305). Plaintext key files are rejected. Point at the file with
@@ -237,10 +241,13 @@ cargo build -p rezzy-cli --features tls
 ```
 
 Create the encrypted file from a plaintext `ed25519:<id> <seed>` line, then
-delete the plaintext:
+delete the plaintext. Pass `--origin` when encrypting to use a domain-scoped
+passphrase; for `your.server`, that variable is
+`REZZY_KEY_PASSPHRASE_YOUR_SERVER`:
 
 ```sh
-rezzy federation encrypt-key --input plain.key --output your.server.key && \
+rezzy federation encrypt-key --origin your.server \
+  --input plain.key --output your.server.key && \
   shred -u plain.key
 
 rezzy federation request --origin your.server \
@@ -250,6 +257,8 @@ rezzy federation request --origin your.server \
 ```
 
 The CLI prompts for the passphrase on the terminal. For unattended runs set
-`REZZY_KEY_PASSPHRASE` (weaker: visible to anything that can read the process
-environment). Each (origin, key file) is decrypted once per process; restart the
-CLI after rotating a key.
+`REZZY_KEY_PASSPHRASE_<DOMAIN>` (for example, `REZZY_KEY_PASSPHRASE_NUTRA_TK`)
+or the legacy fallback `REZZY_KEY_PASSPHRASE`. Domain-scoped variables take
+precedence. Both are weaker than prompting because they are visible to
+processes that can inspect the environment. Each (origin, key file) is
+decrypted once per process; restart the CLI after rotating a key.
