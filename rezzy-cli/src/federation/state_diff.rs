@@ -44,6 +44,15 @@ pub(super) fn command() -> Command {
         )
         .arg(known_events_arg())
         .arg(
+            Arg::new("max-depth")
+                .long("max-depth")
+                .value_parser(clap::value_parser!(u64))
+                .help(
+                    "Ignore IDs whose depth is above N. /state_ids carries no depth, \
+                     so only events in --known can be judged; unknown IDs are kept",
+                ),
+        )
+        .arg(
             Arg::new("output-dir")
                 .long("output-dir")
                 .default_value("state-diff")
@@ -98,20 +107,77 @@ fn write_lines(path: &Path, ids: &BTreeSet<String>) -> Result<(), AppError> {
     Ok(())
 }
 
+/// What one server reported: the state event IDs and, separately, the IDs of
+/// the auth chain behind them. They answer different questions (what the state
+/// is, versus the history that justifies it), so they are never merged.
+struct Reported {
+    state: BTreeSet<String>,
+    auth_chain: BTreeSet<String>,
+}
+
 /// In the order the `--destination` flags were given, so "first" and "second"
 /// in the output mean what the command line says.
-type Reported = Vec<(String, BTreeSet<String>)>;
+type Answers = Vec<(String, Reported)>;
 
-/// Ask each destination for its state IDs; write `<stem>.ids` / `<stem>.missing`.
-/// Returns what each reported and a per-server summary (or its error).
+/// IDs in the `--known` files deeper than `--max-depth`. Empty without the flag.
+fn too_deep_ids(m: &ArgMatches) -> Result<HashSet<String>, AppError> {
+    let mut deep = HashSet::new();
+    let Some(cap) = m.get_one::<u64>("max-depth").copied() else {
+        return Ok(deep);
+    };
+    for path in m.get_many::<PathBuf>("known").into_iter().flatten() {
+        for event in crate::repair::read_jsonl_events(path)? {
+            let too_deep = event
+                .get("depth")
+                .and_then(JsonValue::as_u64)
+                .is_some_and(|depth| depth > cap);
+            if too_deep {
+                deep.extend(crate::repair::event_id_of(&event));
+            }
+        }
+    }
+    Ok(deep)
+}
+
+fn without(ids: impl Iterator<Item = String>, deep: &HashSet<String>) -> BTreeSet<String> {
+    ids.filter(|id| !deep.contains(id)).collect()
+}
+
+fn not_held(ids: &BTreeSet<String>, known: &HashSet<String>) -> BTreeSet<String> {
+    ids.iter()
+        .filter(|id| !known.contains(*id))
+        .cloned()
+        .collect()
+}
+
+/// `{"ids": n, "missing_locally": m}` for one list, and write both lists.
+fn summarize_list(
+    out_dir: &Path,
+    stem: &str,
+    kind: &str,
+    ids: &BTreeSet<String>,
+    known: &HashSet<String>,
+) -> Result<JsonValue, AppError> {
+    let missing = not_held(ids, known);
+    write_lines(&out_dir.join(format!("{stem}.{kind}.ids")), ids)?;
+    write_lines(&out_dir.join(format!("{stem}.{kind}.missing")), &missing)?;
+    let mut entry = rezzy::json!({});
+    let _ = entry.insert(String::from("ids"), count(ids.len()));
+    let _ = entry.insert(String::from("missing_locally"), count(missing.len()));
+    Ok(entry)
+}
+
+/// Ask each destination for its state IDs. Returns what each reported and a
+/// per-server summary (or its error).
 fn ask_servers(
     m: &ArgMatches,
     uri: &str,
     out_dir: &Path,
     known: &HashSet<String>,
-) -> Result<(Reported, JsonValue), AppError> {
+    deep: &HashSet<String>,
+) -> Result<(Answers, JsonValue), AppError> {
     let origin = m.get_one::<String>("origin").expect("default");
-    let mut reported = Reported::new();
+    let mut answers = Answers::new();
     let mut servers = rezzy::json!({});
     for dest in m.get_many::<String>("destination").expect("required") {
         let mut entry = rezzy::json!({});
@@ -124,20 +190,17 @@ fn ask_servers(
             signing_key_path(m),
         ) {
             Ok(response) => {
-                let ids: BTreeSet<String> = ids_in(&response, "pdu_ids")
-                    .chain(ids_in(&response, "auth_chain_ids"))
-                    .collect();
-                let missing: BTreeSet<String> = ids
-                    .iter()
-                    .filter(|id| !known.contains(*id))
-                    .cloned()
-                    .collect();
+                let reported = Reported {
+                    state: without(ids_in(&response, "pdu_ids"), deep),
+                    auth_chain: without(ids_in(&response, "auth_chain_ids"), deep),
+                };
                 let stem = file_stem(dest);
-                write_lines(&out_dir.join(format!("{stem}.ids")), &ids)?;
-                write_lines(&out_dir.join(format!("{stem}.missing")), &missing)?;
-                let _ = entry.insert(String::from("state_and_auth"), count(ids.len()));
-                let _ = entry.insert(String::from("missing_locally"), count(missing.len()));
-                reported.push((dest.clone(), ids));
+                let state = summarize_list(out_dir, &stem, "state", &reported.state, known)?;
+                let auth =
+                    summarize_list(out_dir, &stem, "auth_chain", &reported.auth_chain, known)?;
+                let _ = entry.insert(String::from("state"), state);
+                let _ = entry.insert(String::from("auth_chain"), auth);
+                answers.push((dest.clone(), reported));
             }
             Err(error) => {
                 let message: String = error.to_string().chars().take(200).collect();
@@ -146,34 +209,66 @@ fn ask_servers(
         }
         let _ = servers.insert(dest.clone(), entry);
     }
-    Ok((reported, servers))
+    Ok((answers, servers))
 }
 
-/// Compare every pair of servers that answered; write the one-sided ID lists.
-fn compare_pairs(reported: &Reported, out_dir: &Path) -> Result<JsonValue, AppError> {
+/// Compare one kind of list between two servers; write the one-sided IDs.
+fn compare_lists(
+    out_dir: &Path,
+    stem: &str,
+    kind: &str,
+    first: &BTreeSet<String>,
+    second: &BTreeSet<String>,
+) -> Result<JsonValue, AppError> {
+    let only_first: BTreeSet<String> = first.difference(second).cloned().collect();
+    let only_second: BTreeSet<String> = second.difference(first).cloned().collect();
+    write_lines(
+        &out_dir.join(format!("{stem}.{kind}.only-first")),
+        &only_first,
+    )?;
+    write_lines(
+        &out_dir.join(format!("{stem}.{kind}.only-second")),
+        &only_second,
+    )?;
+    let mut entry = rezzy::json!({});
+    let _ = entry.insert(String::from("only_first"), count(only_first.len()));
+    let _ = entry.insert(String::from("only_second"), count(only_second.len()));
+    let _ = entry.insert(
+        String::from("common"),
+        count(first.intersection(second).count()),
+    );
+    Ok(entry)
+}
+
+/// Compare every pair of servers that answered, state against state and auth
+/// chain against auth chain.
+fn compare_pairs(answers: &Answers, out_dir: &Path) -> Result<JsonValue, AppError> {
     let mut pairs = rezzy::json!({});
-    for (i, (a, set_a)) in reported.iter().enumerate() {
-        for (b, set_b) in reported.iter().skip(i.saturating_add(1)) {
-            let only_a: BTreeSet<String> = set_a.difference(set_b).cloned().collect();
-            let only_b: BTreeSet<String> = set_b.difference(set_a).cloned().collect();
+    for (i, (a, left)) in answers.iter().enumerate() {
+        for (b, right) in answers.iter().skip(i.saturating_add(1)) {
             let stem = format!("{}__vs__{}", file_stem(a), file_stem(b));
-            write_lines(&out_dir.join(format!("{stem}.only-first")), &only_a)?;
-            write_lines(&out_dir.join(format!("{stem}.only-second")), &only_b)?;
+            let state = compare_lists(out_dir, &stem, "state", &left.state, &right.state)?;
+            let auth = compare_lists(
+                out_dir,
+                &stem,
+                "auth_chain",
+                &left.auth_chain,
+                &right.auth_chain,
+            )?;
             let mut pair = rezzy::json!({});
-            let _ = pair.insert(String::from("only_first"), count(only_a.len()));
-            let _ = pair.insert(String::from("only_second"), count(only_b.len()));
-            let common = set_a.intersection(set_b).count();
-            let _ = pair.insert(String::from("common"), count(common));
+            let _ = pair.insert(String::from("state"), state);
+            let _ = pair.insert(String::from("auth_chain"), auth);
             let _ = pairs.insert(format!("{a} vs {b}"), pair);
         }
     }
     Ok(pairs)
 }
 
-/// `--fetch`: get each server's missing events with `/event/{id}`.
+/// `--fetch`: get each server's missing events (state and auth chain) with
+/// `/event/{id}`.
 fn fetch_missing(
     m: &ArgMatches,
-    reported: &Reported,
+    answers: &Answers,
     out_dir: &Path,
     known: &HashSet<String>,
 ) -> JsonValue {
@@ -183,9 +278,10 @@ fn fetch_missing(
     // The IDs are known exactly, so ask for them directly.
     NO_BACKFILL.store(true, Ordering::Relaxed);
     let mut fetched = rezzy::json!({});
-    for (dest, ids) in reported {
-        let starts: Vec<String> = ids
-            .iter()
+    for (dest, reported) in answers {
+        let starts: Vec<String> = reported
+            .state
+            .union(&reported.auth_chain)
             .filter(|id| !known.contains(*id))
             .cloned()
             .collect();
@@ -214,6 +310,32 @@ fn fetch_missing(
     fetched
 }
 
+/// Plain one-line-per-number summary on stderr, so stdout stays pure JSON.
+fn print_summary(answers: &Answers) {
+    for (dest, r) in answers {
+        eprintln!(
+            "{dest}: {} state IDs, {} auth chain IDs",
+            r.state.len(),
+            r.auth_chain.len()
+        );
+    }
+    for (i, (a, ra)) in answers.iter().enumerate() {
+        for (b, rb) in answers.iter().skip(i + 1) {
+            for (kind, x, y) in [
+                ("state", &ra.state, &rb.state),
+                ("auth chain", &ra.auth_chain, &rb.auth_chain),
+            ] {
+                eprintln!(
+                    "{a} vs {b}, {kind}: {} in both, {} only on {a}, {} only on {b}",
+                    x.intersection(y).count(),
+                    x.difference(y).count(),
+                    y.difference(x).count()
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let room = m.get_one::<String>("room").expect("required");
     validate_room_id(room)?;
@@ -227,13 +349,14 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
         quote(room),
         quote(event)
     );
-    let (reported, servers) = ask_servers(m, &uri, out_dir, &known)?;
-    let pairs = compare_pairs(&reported, out_dir)?;
+    let (answers, servers) = ask_servers(m, &uri, out_dir, &known, &too_deep_ids(m)?)?;
+    let pairs = compare_pairs(&answers, out_dir)?;
     let fetched = if m.get_flag("fetch") {
-        fetch_missing(m, &reported, out_dir, &known)
+        fetch_missing(m, &answers, out_dir, &known)
     } else {
         rezzy::json!({})
     };
+    print_summary(&answers);
     let mut result = rezzy::json!({
         "event": event.clone(),
         "output_dir": out_dir.display().to_string(),

@@ -961,7 +961,7 @@ fn two_servers() -> (Mock, Mock) {
         pdu_ids: vec![TARGET, "$onlyA", PARENT],
         auth_chain_ids: vec![AUTH_A],
     };
-    // Deliberately asymmetric: A has 4 IDs, B has 5, and they share 3.
+    // Deliberately asymmetric: A has 3 state and 1 auth-chain ID; B has 3 and 2.
     let b = StateIds {
         pdu_ids: vec![TARGET, "$onlyB", PARENT],
         auth_chain_ids: vec![AUTH_A, AUTH_B],
@@ -977,20 +977,64 @@ fn compact(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn state_diff_counts_what_you_lack_and_how_the_servers_differ() {
+fn state_diff_counts_state_and_auth_chain_separately() {
     let (a, b) = two_servers();
     let fx = Fixture::new("sd-counts");
     let out = fx.state_diff(&[&a.url, &b.url], ROOM, &[]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let json = compact(&out.stdout);
-    // A reports four IDs and B five; each lacks two of its own locally.
-    assert_eq!(json.matches("\"state_and_auth\":4").count(), 1, "{json}");
-    assert_eq!(json.matches("\"state_and_auth\":5").count(), 1, "{json}");
-    assert_eq!(json.matches("\"missing_locally\":2").count(), 2, "{json}");
-    // A alone has {onlyA}; B alone has {onlyB, AUTH_B}; they share three.
-    assert!(json.contains("\"only_first\":1"), "{json}");
-    assert!(json.contains("\"only_second\":2"), "{json}");
-    assert!(json.contains("\"common\":3"), "{json}");
+    // A: 3 state IDs (2 not held) and 1 auth-chain ID (held).
+    assert!(
+        json.contains("\"auth_chain\":{\"ids\":1,\"missing_locally\":0},\"state\":{\"ids\":3,\"missing_locally\":2}"),
+        "{json}"
+    );
+    // B: 3 state IDs (2 not held) and 2 auth-chain IDs (both held).
+    assert!(
+        json.contains("\"auth_chain\":{\"ids\":2,\"missing_locally\":0},\"state\":{\"ids\":3,\"missing_locally\":2}"),
+        "{json}"
+    );
+    // State: A alone {onlyA}, B alone {onlyB}, shared {TARGET, PARENT}.
+    assert!(
+        json.contains("\"state\":{\"common\":2,\"only_first\":1,\"only_second\":1}"),
+        "{json}"
+    );
+    // Auth chain: nothing only in A, {AUTH_B} only in B, shared {AUTH_A}.
+    assert!(
+        json.contains("\"auth_chain\":{\"common\":1,\"only_first\":0,\"only_second\":1}"),
+        "{json}"
+    );
+}
+
+#[test]
+fn state_diff_max_depth_drops_known_events_deeper_than_the_cap() {
+    // Every event in the fixture base is at depth 1; $onlyA and $onlyB are not
+    // in it, so their depth is unknown and they are kept.
+    let (a, b) = two_servers();
+    let fx = Fixture::new("sd-depth");
+    let out = fx.state_diff(&[&a.url, &b.url], ROOM, &["--max-depth", "0"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let json = compact(&out.stdout);
+    assert!(
+        json.contains("\"auth_chain\":{\"ids\":0,\"missing_locally\":0},\"state\":{\"ids\":2,\"missing_locally\":2}"),
+        "{json}"
+    );
+    let kept = fx.state_diff(&[&a.url, &b.url], ROOM, &["--max-depth", "1"]);
+    assert!(
+        compact(&kept.stdout)
+            .contains("\"auth_chain\":{\"ids\":1,\"missing_locally\":0},\"state\":{\"ids\":3"),
+        "{}",
+        compact(&kept.stdout)
+    );
+}
+
+#[test]
+fn state_diff_prints_plain_summary_lines_on_stderr() {
+    let (a, b) = two_servers();
+    let fx = Fixture::new("sd-plain");
+    let out = fx.state_diff(&[&a.url, &b.url], ROOM, &[]);
+    let err = text(&out.stderr);
+    assert!(err.contains("3 state IDs, 1 auth chain IDs"), "{err}");
+    assert!(err.contains("auth chain: 1 in both, 0 only on"), "{err}");
 }
 
 #[test]
@@ -1002,13 +1046,15 @@ fn state_diff_first_and_second_follow_the_order_of_the_destination_flags() {
     let out = fx.state_diff(&[&b.url, &a.url], ROOM, &[]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let json = compact(&out.stdout);
-    assert!(json.contains("\"only_first\":2"), "{json}");
-    assert!(json.contains("\"only_second\":1"), "{json}");
-    assert!(json.contains("\"common\":3"), "{json}");
+    // With B first, the auth-chain ID only B has is now "only_first".
+    assert!(
+        json.contains("\"auth_chain\":{\"common\":1,\"only_first\":1,\"only_second\":0}"),
+        "{json}"
+    );
 }
 
 #[test]
-fn state_diff_writes_the_id_lists_it_describes() {
+fn state_diff_writes_separate_state_and_auth_chain_lists() {
     let (a, b) = two_servers();
     let fx = Fixture::new("sd-files");
     assert!(fx.state_diff(&[&a.url, &b.url], ROOM, &[]).status.success());
@@ -1022,30 +1068,38 @@ fn state_diff_writes_the_id_lists_it_describes() {
         found.sort();
         found
     };
-    let missing = read(".missing").join("\n");
+    // IDs not held locally: state events only; the auth chain is all held.
+    let missing = read(".state.missing").join("\n");
     assert!(
-        missing.contains("$onlyA") && missing.contains("$onlyB"),
+        missing.contains("$onlyA") && missing.contains("$onlyB") && missing.contains(TARGET),
         "{missing}"
     );
-    assert!(missing.contains(TARGET), "{missing}");
+    assert!(!missing.contains(PARENT), "held ID listed: {missing}");
+    assert!(read(".auth_chain.missing")
+        .iter()
+        .all(|f| f.trim().is_empty()));
+    // One-sided state IDs.
+    let first = read(".state.only-first").join("\n");
     assert!(
-        !missing.contains(PARENT) && !missing.contains(AUTH_A),
-        "held IDs listed: {missing}"
-    );
-    let first = read(".only-first").join("\n");
-    assert!(first.contains("$onlyA"), "{first}");
-    assert!(
-        !first.contains("$onlyB") && !first.contains(PARENT) && !first.contains(TARGET),
+        first.contains("$onlyA") && !first.contains("$onlyB") && !first.contains(PARENT),
         "{first}"
     );
-    let second = read(".only-second").join("\n");
+    let second = read(".state.only-second").join("\n");
     assert!(
-        second.contains("$onlyB") && second.contains(AUTH_B),
+        second.contains("$onlyB") && !second.contains("$onlyA"),
         "{second}"
     );
+    // The auth-chain ID only B has is in the auth-chain file, never the state one.
+    assert!(read(".auth_chain.only-second").join("\n").contains(AUTH_B));
+    assert!(!second.contains(AUTH_B) && !first.contains(AUTH_B));
+    assert!(read(".auth_chain.only-first")
+        .iter()
+        .all(|f| f.trim().is_empty()));
+    // The per-server lists never mix the two kinds.
+    let state_ids = read(".state.ids").join("\n");
     assert!(
-        !second.contains("$onlyA") && !second.contains(PARENT),
-        "{second}"
+        !state_ids.contains(AUTH_A) && !state_ids.contains(AUTH_B),
+        "{state_ids}"
     );
 }
 
@@ -1074,7 +1128,10 @@ fn state_diff_reports_a_refusing_server_and_still_compares_the_rest() {
     let json = compact(&out.stdout);
     assert!(json.contains("\"error\":"), "{json}");
     assert!(json.contains("404"), "{json}");
-    assert!(json.contains("\"state_and_auth\":4"), "{json}");
+    assert!(
+        json.contains("\"state\":{\"ids\":3,\"missing_locally\":2}"),
+        "{json}"
+    );
 }
 
 #[test]
