@@ -838,9 +838,14 @@ struct DagWalkState {
     failures: FetchFailures,
     output_writer: BufWriter<fs::File>,
     event_count: usize,
+    /// Events the caller already has; see `DagRequest::known`.
+    known: HashSet<String>,
 }
 
-fn initialize_dag(request: &DagRequest<'_>) -> Result<(DagWalkState, usize), AppError> {
+fn initialize_dag(
+    request: &DagRequest<'_>,
+    known: Option<&HashSet<String>>,
+) -> Result<(DagWalkState, usize), AppError> {
     if request.starts.is_empty() {
         return Err(AppError::new(
             ErrorCode::MissingInputFlag,
@@ -881,6 +886,7 @@ fn initialize_dag(request: &DagRequest<'_>) -> Result<(DagWalkState, usize), App
             failures: FetchFailures::default(),
             output_writer,
             event_count: 0,
+            known: known.cloned().unwrap_or_default(),
         },
         max,
     ))
@@ -955,7 +961,7 @@ fn write_dag_event(
     let Some(event_id) = event_id else {
         return Ok(true);
     };
-    if !state.seen.insert(event_id.clone()) {
+    if state.known.contains(&event_id) || !state.seen.insert(event_id.clone()) {
         return Ok(true);
     }
     let mut line = pdu.clone();
@@ -970,7 +976,10 @@ fn write_dag_event(
                     .and_then(JsonValue::as_str)
             });
             if let Some(id) = id {
-                if !state.seen.contains(id) && state.queued.insert(id.to_owned()) {
+                if !state.known.contains(id)
+                    && !state.seen.contains(id)
+                    && state.queued.insert(id.to_owned())
+                {
                     state.queue.push_back(id.to_owned());
                 }
             }
@@ -1073,7 +1082,11 @@ fn fetch_dag_batch(
     if empty && !fell_back {
         value = rezzy::json!({"pdus": fetch_events_individually(dag_request, ids, state)?});
     }
-    // Track which requested IDs were actually returned in the response.
+    Ok(finish_batch(value, ids, state))
+}
+
+/// Record which requested IDs the response actually returned.
+fn finish_batch(value: JsonValue, ids: &[String], state: &mut DagWalkState) -> DagBatch {
     let returned_ids: Vec<String> = value
         .get("pdus")
         .and_then(JsonValue::as_array)
@@ -1085,15 +1098,22 @@ fn fetch_dag_batch(
             state.unresolved.push(id.clone());
         }
     }
-    Ok(DagBatch::Events(value, returned_ids))
+    DagBatch::Events(value, returned_ids)
 }
 
 ///
 /// # Errors
 /// Returns an error if fetching, parsing, or writing the crawl fails.
 pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
+    get_remote_dag_with_known(dag_request, None)
+}
+
+fn get_remote_dag_with_known(
+    dag_request: &DagRequest<'_>,
+    known: Option<&HashSet<String>>,
+) -> Result<JsonValue, AppError> {
     let room_version = dag_request.room_version;
-    let (mut state, max) = initialize_dag(dag_request)?;
+    let (mut state, max) = initialize_dag(dag_request, known)?;
     while !state.queue.is_empty() && state.seen.len() < max {
         let mut ids = Vec::new();
         while ids.len() < 50 {
@@ -1125,6 +1145,11 @@ pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppErro
         // If interrupted after this point, re-fetching the checkpointed
         // frontier is safe because aggregate deduplicates event IDs.
         state.output_writer.flush()?;
+        eprintln!(
+            "[progress] fetched {} event(s), {} queued",
+            state.event_count,
+            state.queue.len()
+        );
         let frontier = state
             .queue
             .iter()
@@ -1193,7 +1218,16 @@ fn fetch_gap_round(
     if !report.missing_prev.is_empty() {
         let path = round_dir.join("backfill.jsonl");
         let starts = report.missing_prev.iter().cloned().collect::<Vec<_>>();
-        let result = get_remote_dag(&DagRequest {
+        let known = events
+            .iter()
+            .filter_map(crate::repair::event_id_of)
+            .collect::<HashSet<_>>();
+        eprintln!(
+            "[info] round {round}: fetching {} missing prev event(s) from {}",
+            starts.len(),
+            request.destination
+        );
+        let dag_request = DagRequest {
             origin: request.origin,
             destination: request.destination,
             room_id: request.room_id,
@@ -1204,7 +1238,8 @@ fn fetch_gap_round(
             key_path: request.key_path,
             no_fallback: request.no_fallback,
             emit_missing: None,
-        });
+        };
+        let result = get_remote_dag_with_known(&dag_request, Some(&known));
         let summary = match result {
             Ok(summary) => summary,
             Err(error) if is_unreachable(&error) => return Err(error),
@@ -1440,6 +1475,40 @@ mod tests {
     use super::{domain_env_suffix, parse_signing_key, AppError, ErrorCode, FetchFailures};
 
     #[test]
+    fn crawl_skips_known_events_and_does_not_requeue_their_ids() {
+        use std::collections::HashSet;
+        let dir = std::env::temp_dir().join(format!("rezzy-known-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("dag.jsonl");
+        let starts = vec!["$new".to_owned()];
+        let known: HashSet<String> = HashSet::from(["$have".to_owned()]);
+        let request = super::DagRequest {
+            origin: "o",
+            destination: "d",
+            room_id: "!r",
+            starts: &starts,
+            room_version: "12",
+            limit: -1,
+            output: &out,
+            key_path: None,
+            no_fallback: false,
+            emit_missing: None,
+        };
+        let (mut state, max) = super::initialize_dag(&request, Some(&known)).unwrap();
+        // A fetched event whose parents are one we hold and one we do not.
+        let fetched = rezzy::json!({"event_id": "$new", "prev_events": ["$have", "$gap"]});
+        assert!(super::write_dag_event(&fetched, "12", max, &mut state).unwrap());
+        let queued: Vec<String> = state.queue.iter().cloned().collect();
+        assert_eq!(queued, vec!["$new".to_owned(), "$gap".to_owned()]);
+        // An event we already hold is neither written nor crawled through.
+        let held = rezzy::json!({"event_id": "$have", "prev_events": ["$deeper"]});
+        assert!(super::write_dag_event(&held, "12", max, &mut state).unwrap());
+        assert_eq!(state.event_count, 1);
+        assert!(!state.queue.iter().any(|id| id == "$deeper"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn domain_environment_names_match_token_convention() {
         assert_eq!(
             domain_env_suffix("https://matrix.example:8448"),
@@ -1493,7 +1562,7 @@ mod tests {
             no_fallback: false,
             emit_missing: Some(&alias),
         };
-        assert!(super::initialize_dag(&request).is_err());
+        assert!(super::initialize_dag(&request, None).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
