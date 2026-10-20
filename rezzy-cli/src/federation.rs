@@ -1008,12 +1008,25 @@ fn fetch_events_individually(
             &rezzy::json!({}),
             dag_request.key_path,
         ) {
-            Ok(v) => pdus.push(v.get("pdu").cloned().unwrap_or(v)),
+            Ok(v) => pdus.extend(event_pdus_from_response(v)),
             Err(e) if is_unreachable(&e) => return Err(e),
             Err(e) => state.failures.record(&e),
         }
     }
     Ok(pdus)
+}
+
+/// Extract event objects from the common federation event response shapes.
+/// Matrix servers may return a single `pdu` or a `pdus` array; older/custom
+/// endpoints can return the PDU object directly.
+fn event_pdus_from_response(response: JsonValue) -> Vec<JsonValue> {
+    if let Some(pdu) = response.get("pdu") {
+        return vec![pdu.clone()];
+    }
+    if let Some(pdus) = response.get("pdus").and_then(JsonValue::as_array) {
+        return pdus.clone();
+    }
+    vec![response]
 }
 
 fn fetch_dag_batch(
