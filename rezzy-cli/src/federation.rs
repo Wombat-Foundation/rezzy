@@ -211,6 +211,12 @@ fn encrypt_key_command() -> Command {
     Command::new("encrypt-key")
         .about("Encrypt a plaintext signing key into a passphrase-protected file")
         .arg(
+            Arg::new("origin")
+                .long("origin")
+                .env("MATRIX_ORIGIN")
+                .help("Origin server, used to select REZZY_KEY_PASSPHRASE_<DOMAIN>"),
+        )
+        .arg(
             Arg::new("input")
                 .long("input")
                 .short('i')
@@ -293,7 +299,11 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
         }
         Some(("encrypt-key", m)) => {
             let out = m.get_one::<PathBuf>("output").expect("required");
-            encrypt_key_file(m.get_one::<PathBuf>("input").expect("required"), out)?;
+            encrypt_key_file_with_origin(
+                m.get_one::<PathBuf>("input").expect("required"),
+                out,
+                m.get_one::<String>("origin").map(String::as_str),
+            )?;
             Ok(rezzy::json!({ "written": out.display().to_string() }))
         }
         Some(("gap-fill", m)) => {
@@ -343,16 +353,30 @@ fn domain_env_suffix(domain: &str) -> String {
     domain.to_ascii_uppercase().replace(['.', '-'], "_")
 }
 
-/// Read the key-file passphrase from `REZZY_KEY_PASSPHRASE` (unattended use,
-/// weaker: visible to the process environment) or prompt on the terminal.
-fn read_passphrase(path: &Path) -> Result<String, AppError> {
-    if let Ok(pw) = std::env::var("REZZY_KEY_PASSPHRASE") {
+fn scoped_passphrase_env_name(origin: &str) -> String {
+    format!("REZZY_KEY_PASSPHRASE_{}", domain_env_suffix(origin))
+}
+
+/// Resolve the passphrase for `origin`, falling back to the legacy global
+/// variable. Environment variables are visible to processes that can inspect
+/// this process.
+fn configured_passphrase(origin: Option<&str>) -> Option<String> {
+    origin
+        .map(scoped_passphrase_env_name)
+        .and_then(|name| std::env::var(name).ok())
+        .or_else(|| std::env::var("REZZY_KEY_PASSPHRASE").ok())
+}
+
+/// Read a key-file passphrase from the domain-scoped or legacy global
+/// environment variable, or prompt on the terminal.
+fn read_passphrase(path: &Path, origin: Option<&str>) -> Result<String, AppError> {
+    if let Some(pw) = configured_passphrase(origin) {
         return Ok(pw);
     }
     rpassword::prompt_password(format!("Passphrase for {}: ", path.display())).map_err(|e| {
         AppError::new(
             ErrorCode::SigningKey,
-            format!("could not read passphrase (set REZZY_KEY_PASSPHRASE for unattended use): {e}"),
+            format!("could not read passphrase (set REZZY_KEY_PASSPHRASE_<DOMAIN> or REZZY_KEY_PASSPHRASE for unattended use): {e}"),
         )
     })
 }
@@ -395,7 +419,7 @@ pub fn load_signing_key(origin: &str, explicit: Option<&Path>) -> Result<Signing
         )
     };
     let file = fs::read(&path).map_err(|e| err(e.to_string()))?;
-    let passphrase = read_passphrase(&path)?;
+    let passphrase = read_passphrase(&path, Some(origin))?;
     let plain = crate::keyfile::open(&file, passphrase.as_bytes()).map_err(err)?;
     let text = String::from_utf8(plain).map_err(|_| err("decrypted key is not UTF-8".into()))?;
     let spec = parse_signing_key(&text).map_err(err)?;
@@ -406,15 +430,24 @@ pub fn load_signing_key(origin: &str, explicit: Option<&Path>) -> Result<Signing
 }
 
 /// Encrypt a plaintext signing key (read from `input`) into `output`, prompting for a
-/// passphrase twice (or using `REZZY_KEY_PASSPHRASE`).
+/// passphrase twice (or using `REZZY_KEY_PASSPHRASE`). The CLI command also
+/// supports domain-scoped passphrases when `--origin` is supplied.
 ///
 /// # Errors
 /// Returns an error on I/O failure, mismatched passphrases, or an invalid key.
 pub fn encrypt_key_file(input: &Path, output: &Path) -> Result<(), AppError> {
+    encrypt_key_file_with_origin(input, output, None)
+}
+
+fn encrypt_key_file_with_origin(
+    input: &Path,
+    output: &Path,
+    origin: Option<&str>,
+) -> Result<(), AppError> {
     let err = |m: String| AppError::new(ErrorCode::SigningKey, m);
     let plain = fs::read_to_string(input)?;
     parse_signing_key(&plain).map_err(|m| err(format!("{}: {m}", input.display())))?;
-    let pw = if let Ok(pw) = std::env::var("REZZY_KEY_PASSPHRASE") {
+    let pw = if let Some(pw) = configured_passphrase(origin) {
         pw
     } else {
         let a = rpassword::prompt_password("New passphrase: ")?;
