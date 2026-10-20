@@ -61,6 +61,24 @@ fn a_real_event_hashes_to_its_known_id_with_its_links() {
 }
 
 #[test]
+fn an_event_id_field_on_the_event_is_not_part_of_what_is_hashed() {
+    // Exports and bounty submissions carry `event_id`; the wire PDU does not.
+    // It must not change the reference hash or the content-hash check.
+    let with_id = PDU.replacen('{', &format!("{{\"event_id\":\"{TARGET}\","), 1);
+    let out = hash_events("with-id", &[with_id], "12");
+    let json = compact(&out);
+    assert!(
+        json.contains(&format!("\"event_id\":\"{TARGET}\"")),
+        "{json}"
+    );
+    assert!(
+        json.contains(&format!("\"claimed_event_id\":\"{TARGET}\"")),
+        "{json}"
+    );
+    assert!(json.contains("\"content_hash_ok\":true"), "{json}");
+}
+
+#[test]
 fn a_content_hash_mismatch_is_flagged_and_the_redacted_form_is_given() {
     // The body is dropped by redaction, so the ID is unchanged, but the content
     // hash no longer covers the content.

@@ -46,16 +46,27 @@ fn linked_ids(event: &JsonValue, field: &str) -> JsonValue {
     JsonValue::Array(ids)
 }
 
+/// The event as it travels on the wire: the `event_id` field of an export is
+/// derived data, so it is not part of what the hashes cover.
+fn without_event_id(event: &JsonValue) -> JsonValue {
+    let mut wire = event.clone();
+    if let Some(object) = wire.as_object_mut() {
+        let _ = object.remove("event_id");
+    }
+    wire
+}
+
 fn describe(event: &JsonValue, room_version: &str) -> JsonValue {
     let mut record = rezzy::json!({});
-    let reference = match rezzy::reference_hash(event, room_version) {
+    let wire = without_event_id(event);
+    let reference = match rezzy::reference_hash(&wire, room_version) {
         Ok(hash) => hash,
         Err(error) => {
             let _ = record.insert(String::from("error"), JsonValue::String(error));
             return record;
         }
     };
-    let content_hash_ok = rezzy::verify_content_hash(event, room_version).is_ok();
+    let content_hash_ok = rezzy::verify_content_hash(&wire, room_version).is_ok();
     let _ = record.insert(
         String::from("event_id"),
         JsonValue::String(format!("${reference}")),
