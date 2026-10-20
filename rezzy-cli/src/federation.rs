@@ -173,7 +173,8 @@ pub fn command() -> Command {
                     Arg::new("no-fallback")
                         .long("no-fallback")
                         .action(ArgAction::SetTrue),
-                ),
+                )
+                .args(backfill_args()),
         )
         .subcommand(encrypt_key_command())
         .subcommand(gap_fill_command())
@@ -240,6 +241,15 @@ fn gap_fill_command() -> Command {
                 .long("no-fallback")
                 .action(ArgAction::SetTrue),
         )
+        .args(backfill_args())
+}
+
+fn backfill_args() -> [Arg; 1] {
+    [Arg::new("no-backfill")
+        .long("no-backfill")
+        .action(ArgAction::SetTrue)
+        .conflicts_with("no-fallback")
+        .help("Never call /backfill; fetch every event with /event/{id}")]
 }
 
 fn encrypt_key_command() -> Command {
@@ -289,6 +299,32 @@ fn known_events_arg() -> Arg {
         .help("JSONL file of events already held locally; repeatable")
 }
 
+/// Event IDs from the repeatable `--known` JSONL files: events the caller
+/// already holds, which the crawl stops at.
+fn load_known_ids(
+    m: &ArgMatches,
+    output: &Path,
+    emit_missing: Option<&Path>,
+    room_version: &str,
+) -> Result<HashSet<String>, AppError> {
+    let mut known = HashSet::new();
+    for path in m.get_many::<PathBuf>("known").into_iter().flatten() {
+        crate::repair::ensure_paths_distinct(path, output)?;
+        if let Some(missing) = emit_missing {
+            crate::repair::ensure_paths_distinct(path, missing)?;
+        }
+        for event in crate::repair::read_jsonl_events(path)? {
+            let id = crate::repair::event_id_of(&event).or_else(|| {
+                rezzy::reference_hash(&event, room_version)
+                    .ok()
+                    .map(|hash| format!("${hash}"))
+            });
+            known.extend(id);
+        }
+    }
+    Ok(known)
+}
+
 /// Runs the selected federation subcommand.
 ///
 /// # Errors
@@ -300,6 +336,9 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
     if let Some(("request" | "get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
         let origin = m.get_one::<String>("origin").expect("default");
         load_signing_key(origin, signing_key_path(m))?;
+    }
+    if let Some(("get-remote-dag" | "gap-fill", m)) = matches.subcommand() {
+        NO_BACKFILL.store(m.get_flag("no-backfill"), Ordering::Relaxed);
     }
     match matches.subcommand() {
         Some(("request", m)) => {
@@ -330,24 +369,7 @@ pub fn run_from_matches(matches: &ArgMatches) -> Result<JsonValue, AppError> {
             let output = m.get_one::<PathBuf>("output").expect("default");
             let emit_missing = m.get_one::<PathBuf>("emit-missing").map(PathBuf::as_path);
             let room_version = m.get_one::<String>("room-version").expect("default");
-            let mut known = HashSet::new();
-            if let Some(files) = m.get_many::<PathBuf>("known") {
-                for path in files {
-                    crate::repair::ensure_paths_distinct(path, output)?;
-                    if let Some(missing) = emit_missing {
-                        crate::repair::ensure_paths_distinct(path, missing)?;
-                    }
-                    for event in crate::repair::read_jsonl_events(path)? {
-                        if let Some(id) = crate::repair::event_id_of(&event).or_else(|| {
-                            rezzy::reference_hash(&event, room_version)
-                                .ok()
-                                .map(|hash| format!("${hash}"))
-                        }) {
-                            known.insert(id);
-                        }
-                    }
-                }
-            }
+            let known = load_known_ids(m, output, emit_missing, room_version)?;
             let request = DagRequest {
                 origin: m.get_one::<String>("origin").expect("default"),
                 destination: m.get_one::<String>("destination").expect("required"),
@@ -907,6 +929,13 @@ fn debug_enabled() -> bool {
     DEBUG.load(Ordering::Relaxed)
 }
 
+/// Set by `--no-backfill`: never call `/backfill`.
+static NO_BACKFILL: AtomicBool = AtomicBool::new(false);
+
+fn backfill_allowed() -> bool {
+    !NO_BACKFILL.load(Ordering::Relaxed)
+}
+
 /// One request made during a fetch, kept for the debug-only `requests.jsonl`.
 struct Attempt {
     event_id: Option<String>,
@@ -1312,6 +1341,10 @@ fn fetch_dag_batch(
     ids: &[String],
     state: &mut DagWalkState,
 ) -> Result<DagBatch, AppError> {
+    if !backfill_allowed() {
+        let value = rezzy::json!({"pdus": fetch_events_individually(dag_request, ids, state)?});
+        return Ok(finish_batch(value, ids, state));
+    }
     let uri = format!(
         "/_matrix/federation/v1/backfill/{}?{}&limit=500",
         quote(dag_request.room_id),

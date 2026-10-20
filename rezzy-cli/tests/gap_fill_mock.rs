@@ -32,6 +32,8 @@ enum Backfill {
     Blank,
     /// HTTP 500.
     Error,
+    /// HTTP 403 "Host not in room", as matrix.org answers a non-member.
+    Forbidden,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +105,11 @@ fn handle(mut stream: TcpStream, backfill: Backfill, shape: EventShape, log: &Mu
                 r#"{"origin":"mock","origin_server_ts":1,"pdus":[]}"#,
             ),
             Backfill::Error => respond(&mut stream, 500, r#"{"errcode":"M_UNKNOWN"}"#),
+            Backfill::Forbidden => respond(
+                &mut stream,
+                403,
+                r#"{"errcode":"M_FORBIDDEN","error":"Host not in room."}"#,
+            ),
         }
     } else if path.contains("/federation/v1/event/") {
         if path.ends_with(TARGET) {
@@ -665,4 +672,43 @@ fn resume_does_not_mistake_the_request_log_for_events() {
     let stdout = text(&out.stdout);
     assert!(stdout.contains("incomplete"), "{stdout}");
     assert!(stdout.contains(STILL_MISSING), "{stdout}");
+}
+
+#[test]
+fn no_backfill_never_calls_backfill() {
+    let mock = spawn_mock(Backfill::Events, EventShape::Pdus);
+    let fx = Fixture::new("no-backfill");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--no-backfill"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(mock.count("/backfill/"), 0, "{:?}", mock.requests());
+    assert!(
+        mock.count(&format!("/event/{TARGET}")) >= 1,
+        "{:?}",
+        mock.requests()
+    );
+    assert!(fx.fetched().contains(TARGET));
+}
+
+#[test]
+fn backfill_is_retried_every_batch_by_default_even_when_refused() {
+    let mock = spawn_mock(Backfill::Forbidden, EventShape::Pdus);
+    let fx = Fixture::without_parent("refused-default");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    // Batch one (target + missing id), then batch two (the discovered parent).
+    assert!(mock.count("/backfill/") >= 2, "{:?}", mock.requests());
+}
+
+#[test]
+fn no_backfill_cannot_be_combined_with_no_fallback() {
+    let mock = spawn_mock(Backfill::Events, EventShape::Pdus);
+    let fx = Fixture::new("conflict");
+    let out = fx.gap_fill_with(&mock.url, true, "1", &["--no-backfill", "--no-fallback"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("cannot be used with"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(mock.requests().is_empty(), "{:?}", mock.requests());
 }
