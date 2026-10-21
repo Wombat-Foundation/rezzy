@@ -5,6 +5,8 @@
 //! The mock speaks plain HTTP, which rezzy only allows with
 //! `REZZY_ALLOW_INSECURE_HTTP=1`. Keys are throwaway; nothing leaves localhost.
 
+#![cfg(feature = "tls")]
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -357,6 +359,10 @@ impl Fixture {
         rounds.sort();
         for round in rounds {
             for file in fs::read_dir(&round).into_iter().flatten().flatten() {
+                // The request log names every ID asked for, fetched or not.
+                if file.file_name() == "requests.jsonl" {
+                    continue;
+                }
                 all.push_str(&fs::read_to_string(file.path()).unwrap_or_default());
             }
         }
@@ -1198,6 +1204,38 @@ fn state_diff_fetch_does_not_crawl_unknown_parents() {
         .collect();
     assert!(fetched.contains(TARGET), "{fetched}");
     assert_eq!(fetched.lines().count(), 1, "{fetched}");
+}
+
+#[test]
+fn state_diff_fetch_refuses_to_overwrite_a_known_file() {
+    let only_target = StateIds {
+        pdu_ids: vec![TARGET],
+        auth_chain_ids: vec![],
+    };
+    let server = spawn_mock_with(Backfill::Events, EventShape::Pdus, Some(only_target));
+    let fx = Fixture::new("sd-fetch-output-alias");
+    let stem = server
+        .url
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-._".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let output = fx.dir.join("sd").join(format!("{stem}.state.jsonl"));
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::write(&output, "held input\n").unwrap();
+    let out = fx.state_diff(
+        &[&server.url],
+        ROOM,
+        &["--fetch", "--known", output.to_str().unwrap()],
+    );
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert_eq!(fs::read_to_string(output).unwrap(), "held input\n");
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
 
 #[test]

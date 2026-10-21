@@ -1,7 +1,7 @@
 // Compute an event ID from Go through the C ABI.
 //
 //	cargo build -p rezzy-ffi
-//	cd rezzy-ffi/examples/go && go run . 12 event.json
+//	cd rezzy-ffi/examples/go && go run . event-id 12 event.json
 package main
 
 /*
@@ -49,7 +49,10 @@ func call(
 	defer C.free(unsafe.Pointer(version))
 	var out *C.uint8_t
 	var outLen C.size_t
-	var first *C.uint8_t
+	// Never pass NULL: the ABI rejects it, and an empty input should reach the
+	// library so it can report its own message.
+	var empty C.uint8_t
+	first := &empty
 	if len(event) > 0 {
 		first = (*C.uint8_t)(unsafe.Pointer(&event[0]))
 	}

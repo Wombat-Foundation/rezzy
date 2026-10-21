@@ -13,24 +13,49 @@ use std::vec::Vec;
 
 /// The event IDs in `prev_events` or `auth_events`: bare strings (v3+) or the
 /// `[id, {hashes}]` pairs older versions use.
-fn linked_ids(event: &JsonValue, field: &str) -> JsonValue {
-    let ids = event
-        .get(field)
-        .and_then(JsonValue::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.as_str().or_else(|| item.as_array()?.first()?.as_str()))
-        .map(|id| JsonValue::String(String::from(id)))
-        .collect();
-    JsonValue::Array(ids)
+fn linked_ids(event: &JsonValue, field: &str) -> Result<JsonValue, String> {
+    let Some(value) = event.get(field) else {
+        return Ok(JsonValue::Array(Vec::new()));
+    };
+    let Some(items) = value.as_array() else {
+        return Err(std::format!("`{field}` must be an array"));
+    };
+    let mut ids = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item.as_str().or_else(|| {
+            let tuple = item.as_array()?;
+            tuple.first()?.as_str()
+        });
+        let Some(id) = id else {
+            return Err(std::format!(
+                "`{field}` contains a malformed event reference"
+            ));
+        };
+        ids.push(JsonValue::String(String::from(id)));
+    }
+    Ok(JsonValue::Array(ids))
 }
 
-/// The event as it travels on the wire: the `event_id` field of an export is
-/// derived data, so it is not part of what the hashes cover.
-fn without_event_id(event: &JsonValue) -> JsonValue {
+/// Room versions 1 and 2 give events a server-assigned `event_id` that the
+/// content hash covers and that no hash can derive.
+fn has_opaque_event_ids(room_version: &str) -> bool {
+    room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major <= 2)
+}
+
+/// The event as the hashes see it. From v3 on, the `event_id` field of an
+/// export is derived data, so it is dropped; v1/v2 keep it because the content
+/// hash covers it.
+#[must_use]
+pub fn wire_event(event: &JsonValue, room_version: &str) -> JsonValue {
     let mut wire = event.clone();
-    if let Some(object) = wire.as_object_mut() {
-        let _ = object.remove("event_id");
+    if !has_opaque_event_ids(room_version) {
+        if let Some(object) = wire.as_object_mut() {
+            let _ = object.remove("event_id");
+        }
     }
     wire
 }
@@ -39,19 +64,40 @@ fn without_event_id(event: &JsonValue) -> JsonValue {
 #[must_use]
 pub fn describe_event(event: &JsonValue, room_version: &str) -> JsonValue {
     let mut record = crate::json!({});
-    let wire = without_event_id(event);
-    let reference = match crate::reference_hash(&wire, room_version) {
-        Ok(hash) => hash,
-        Err(error) => {
-            let _ = record.insert(String::from("error"), JsonValue::String(error));
-            return record;
+    if !event.is_object() {
+        let _ = record.insert(
+            String::from("error"),
+            JsonValue::String(String::from("event must be a JSON object")),
+        );
+        return record;
+    }
+    let mut links = Vec::new();
+    for field in ["prev_events", "auth_events"] {
+        match linked_ids(event, field) {
+            Ok(value) => links.push((field, value)),
+            Err(error) => {
+                let _ = record.insert(String::from("error"), JsonValue::String(error));
+                return record;
+            }
         }
-    };
-    let content_hash_ok = crate::verify_content_hash(&wire, room_version).is_ok();
-    let _ = record.insert(
-        String::from("event_id"),
-        JsonValue::String(std::format!("${reference}")),
-    );
+    }
+    let wire = wire_event(event, room_version);
+    if !has_opaque_event_ids(room_version) {
+        match crate::reference_hash(&wire, room_version) {
+            Ok(hash) => {
+                let _ = record.insert(
+                    String::from("event_id"),
+                    JsonValue::String(std::format!("${hash}")),
+                );
+            }
+            Err(error) => {
+                let _ = record.insert(String::from("error"), JsonValue::String(error));
+                return record;
+            }
+        }
+    }
+    let content_hash = crate::verify_content_hash(&wire, room_version);
+    let content_hash_ok = content_hash.is_ok();
     let _ = record.insert(
         String::from("claimed_event_id"),
         event.get("event_id").cloned().unwrap_or(JsonValue::Null),
@@ -60,14 +106,17 @@ pub fn describe_event(event: &JsonValue, room_version: &str) -> JsonValue {
         String::from("content_hash_ok"),
         JsonValue::Bool(content_hash_ok),
     );
+    if let Err(error) = content_hash {
+        let _ = record.insert(String::from("content_hash_error"), JsonValue::String(error));
+    }
     for field in ["room_id", "type", "state_key", "depth"] {
         let _ = record.insert(
             String::from(field),
             event.get(field).cloned().unwrap_or(JsonValue::Null),
         );
     }
-    for field in ["prev_events", "auth_events"] {
-        let _ = record.insert(String::from(field), linked_ids(event, field));
+    for (field, value) in links {
+        let _ = record.insert(String::from(field), value);
     }
     if !content_hash_ok {
         // The form to keep when the content hash does not cover the content.
@@ -94,7 +143,7 @@ pub fn describe_jsonl(jsonl: &str, room_version: &str) -> Vec<JsonValue> {
                 let mut bad = crate::json!({});
                 let _ = bad.insert(
                     String::from("error"),
-                    JsonValue::String(std::format!("invalid JSON: {error}")),
+                    JsonValue::String(std::format!("{error}")),
                 );
                 bad
             }
@@ -118,4 +167,44 @@ pub fn report(records: Vec<JsonValue>, room_version: &str) -> JsonValue {
     );
     let _ = result.insert(String::from("events"), JsonValue::Array(records));
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_event;
+    use crate::JsonValue;
+
+    #[test]
+    fn malformed_event_links_produce_an_error_record() {
+        for event in [
+            r#"{"prev_events":{}}"#,
+            r#"{"auth_events":["$valid",7]}"#,
+            r#"{"prev_events":[[]]}"#,
+        ] {
+            let event = JsonValue::parse(event).unwrap();
+            let record = describe_event(&event, "12");
+            assert!(record.get("error").and_then(JsonValue::as_str).is_some());
+            assert!(record.get("event_id").is_none());
+            assert!(record.get("content_hash_ok").is_none());
+        }
+    }
+
+    #[test]
+    fn legacy_room_versions_keep_claimed_ids_and_do_not_derive_them() {
+        let event = JsonValue::parse(r#"{"event_id":"$opaque","content":{}}"#).unwrap();
+        for version in ["1", "2"] {
+            let wire = super::wire_event(&event, version);
+            assert_eq!(
+                wire.get("event_id").and_then(JsonValue::as_str),
+                Some("$opaque")
+            );
+            let record = describe_event(&event, version);
+            assert!(record.get("event_id").is_none());
+            assert_eq!(
+                record.get("claimed_event_id").and_then(JsonValue::as_str),
+                Some("$opaque")
+            );
+            assert!(record.get("content_hash_error").is_some());
+        }
+    }
 }

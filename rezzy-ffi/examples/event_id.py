@@ -1,7 +1,7 @@
 """Compute an event ID through the C ABI with ctypes.
 
 cargo build -p rezzy-ffi
-python3 rezzy-ffi/examples/event_id.py 12 event.json
+python3 rezzy-ffi/examples/event_id.py event-id 12 event.json
 """
 
 import ctypes
@@ -14,7 +14,14 @@ REZZY_OK = 0
 def load(path=None):
     if path is None:
         target = pathlib.Path(__file__).resolve().parents[2] / "target" / "debug"
-        path = next(target.glob("librezzy_ffi.*"), None) or target / "rezzy_ffi.dll"
+        names = {
+            "win32": ("rezzy_ffi.dll",),
+            "darwin": ("librezzy_ffi.dylib",),
+        }.get(sys.platform, ("librezzy_ffi.so",))
+        path = next(
+            (target / name for name in names if (target / name).exists()),
+            target / "rezzy_ffi.dll",
+        )
     lib = ctypes.CDLL(str(path))
     for name in ("rezzy_event_id", "rezzy_verify_content_hash", "rezzy_hash_events"):
         fn = getattr(lib, name)
@@ -66,5 +73,8 @@ if __name__ == "__main__":
         )
         sys.exit(2)
     status, text = call(load(), function, version, pathlib.Path(path).read_bytes())
-    print(text if text else "content hash valid")
-    sys.exit(0 if status == REZZY_OK else 1)
+    if status == REZZY_OK:
+        print(text if text else "content hash valid")
+        sys.exit(0)
+    print(text or f"rezzy failed with status {status}", file=sys.stderr)
+    sys.exit(1)

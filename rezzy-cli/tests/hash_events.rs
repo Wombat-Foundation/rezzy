@@ -91,7 +91,7 @@ fn a_content_hash_mismatch_is_flagged_and_the_redacted_form_is_given() {
     );
     assert!(json.contains("\"content_hash_ok\":false"), "{json}");
     assert!(json.contains("\"redacted\""), "{json}");
-    assert!(!json.contains("different day"), "{json}");
+    assert!(!json.contains("different"), "{json}");
 }
 
 #[test]
@@ -124,13 +124,15 @@ fn a_bad_line_gets_an_error_record_and_the_rest_are_still_hashed() {
 }
 
 #[test]
-fn an_unknown_room_version_is_an_error_per_event_not_a_guess() {
-    let json = compact(&hash_events("version", &[PDU.to_owned()], "999"));
-    assert!(json.contains("\"error\""), "{json}");
-    assert!(
-        !json.contains(&format!("\"event_id\":\"{TARGET}\"")),
-        "{json}"
-    );
+fn an_unknown_room_version_fails_the_run_instead_of_guessing() {
+    for version in ["999", "11x"] {
+        let out = hash_events("version", &[PDU.to_owned()], version);
+        assert!(!out.status.success(), "{version}");
+        assert!(
+            !compact(&out).contains(&format!("\"event_id\":\"{TARGET}\"")),
+            "{version}"
+        );
+    }
 }
 
 #[test]

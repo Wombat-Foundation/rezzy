@@ -80,16 +80,22 @@ fn file_stem(destination: &str) -> String {
         .collect()
 }
 
-fn ids_in(response: &JsonValue, key: &str) -> impl Iterator<Item = String> {
-    response
+/// The strings in `response[key]`. A missing field, a non-array, or a
+/// non-string entry is a malformed answer, not an empty one.
+fn ids_in(response: &JsonValue, key: &str) -> Result<Vec<String>, String> {
+    let list = response
         .get(key)
         .and_then(JsonValue::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(JsonValue::as_str)
-        .map(str::to_owned)
-        .collect::<Vec<_>>()
-        .into_iter()
+        .ok_or_else(|| {
+            format!("malformed /state_ids answer: `{key}` is missing or not an array")
+        })?;
+    list.iter()
+        .map(|item| {
+            item.as_str().map(str::to_owned).ok_or_else(|| {
+                format!("malformed /state_ids answer: `{key}` has a non-string entry")
+            })
+        })
+        .collect()
 }
 
 fn count(n: usize) -> JsonValue {
@@ -119,7 +125,7 @@ struct Reported {
 type Answers = Vec<(String, Reported)>;
 
 /// IDs in the `--known` files deeper than `--max-depth`. Empty without the flag.
-fn too_deep_ids(m: &ArgMatches) -> Result<HashSet<String>, AppError> {
+fn too_deep_ids(m: &ArgMatches, room_version: &str) -> Result<HashSet<String>, AppError> {
     let mut deep = HashSet::new();
     let Some(cap) = m.get_one::<u64>("max-depth").copied() else {
         return Ok(deep);
@@ -131,7 +137,12 @@ fn too_deep_ids(m: &ArgMatches) -> Result<HashSet<String>, AppError> {
                 .and_then(JsonValue::as_u64)
                 .is_some_and(|depth| depth > cap);
             if too_deep {
-                deep.extend(crate::repair::event_id_of(&event));
+                // Same derivation as `load_known_ids`, so wire events count too.
+                deep.extend(crate::repair::event_id_of(&event).or_else(|| {
+                    rezzy::reference_hash(&event, room_version)
+                        .ok()
+                        .map(|hash| format!("${hash}"))
+                }));
             }
         }
     }
@@ -189,9 +200,21 @@ fn ask_servers(
             signing_key_path(m),
         ) {
             Ok(response) => {
+                let lists = ids_in(&response, "pdu_ids").and_then(|state| {
+                    ids_in(&response, "auth_chain_ids").map(|auth_chain| (state, auth_chain))
+                });
+                let (state_ids, auth_ids) = match lists {
+                    Ok(lists) => lists,
+                    Err(message) => {
+                        eprintln!("{dest}: {message}");
+                        let _ = entry.insert(String::from("error"), JsonValue::String(message));
+                        let _ = servers.insert(dest.clone(), entry);
+                        continue;
+                    }
+                };
                 let reported = Reported {
-                    state: without(ids_in(&response, "pdu_ids"), deep),
-                    auth_chain: without(ids_in(&response, "auth_chain_ids"), deep),
+                    state: without(state_ids.into_iter(), deep),
+                    auth_chain: without(auth_ids.into_iter(), deep),
                 };
                 let stem = file_stem(dest);
                 let state = summarize_list(out_dir, &stem, "state", &reported.state, known)?;
@@ -203,6 +226,7 @@ fn ask_servers(
             }
             Err(error) => {
                 let message: String = error.to_string().chars().take(200).collect();
+                eprintln!("{dest}: {message}");
                 let _ = entry.insert(String::from("error"), JsonValue::String(message));
             }
         }
@@ -275,6 +299,10 @@ fn fetch_missing(
     let room = m.get_one::<String>("room").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("default");
     // The IDs are exact; do not crawl `prev_events` from what comes back.
+    super::MAX_DEPTH.store(
+        m.get_one::<u64>("max-depth").copied().unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let mut fetched = rezzy::json!({});
     for (dest, reported) in answers {
         let starts: Vec<String> = reported
@@ -300,8 +328,14 @@ fn fetch_missing(
             emit_missing: None,
         };
         let outcome = match get_remote_events_by_id(&dag, Some(known)) {
-            Ok(result) => result.get("count").cloned().unwrap_or(JsonValue::Null),
-            Err(error) => JsonValue::String(error.to_string().chars().take(200).collect()),
+            // Keep the whole summary: failures and the unresolved frontier say
+            // whether the fetch was complete.
+            Ok(result) => result,
+            Err(error) => rezzy::json!({
+                "count": 0,
+                "error": error.to_string().chars().take(200).collect::<String>(),
+                "remaining_frontier": starts,
+            }),
         };
         let _ = fetched.insert(dest.clone(), outcome);
     }
@@ -334,12 +368,58 @@ fn print_summary(answers: &Answers) {
     }
 }
 
+/// Every file this command may write under `out_dir` for the given
+/// destinations, so none of them can be a `--known` input.
+fn generated_paths<'a>(
+    out_dir: &Path,
+    destinations: impl Iterator<Item = &'a String>,
+    fetch: bool,
+) -> Vec<PathBuf> {
+    const KINDS: [&str; 2] = ["state", "auth_chain"];
+    let stems: Vec<String> = destinations.map(|d| file_stem(d)).collect();
+    let mut paths = Vec::new();
+    for stem in &stems {
+        for kind in KINDS {
+            for ext in ["ids", "missing"] {
+                paths.push(out_dir.join(format!("{stem}.{kind}.{ext}")));
+            }
+        }
+        if fetch {
+            paths.push(out_dir.join(format!("{stem}.state.jsonl")));
+        }
+    }
+    for (i, a) in stems.iter().enumerate() {
+        for b in stems.iter().skip(i.saturating_add(1)) {
+            for kind in KINDS {
+                for side in ["only-first", "only-second"] {
+                    paths.push(out_dir.join(format!("{a}__vs__{b}.{kind}.{side}")));
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// Rejects a `--known` file that this run would overwrite, such as the
+/// `<destination>.state.jsonl` of an earlier `--fetch`.
+fn ensure_known_not_overwritten(m: &ArgMatches, out_dir: &Path) -> Result<(), AppError> {
+    let destinations = m.get_many::<String>("destination").into_iter().flatten();
+    let outputs = generated_paths(out_dir, destinations, m.get_flag("fetch"));
+    for known in m.get_many::<PathBuf>("known").into_iter().flatten() {
+        for output in &outputs {
+            crate::repair::ensure_paths_distinct(known, output)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let room = m.get_one::<String>("room").expect("required");
     validate_room_id(room)?;
     let event = m.get_one::<String>("event").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("default");
     let out_dir = m.get_one::<PathBuf>("output-dir").expect("default");
+    ensure_known_not_overwritten(m, out_dir)?;
     fs::create_dir_all(out_dir)?;
     let known = load_known_ids(m, out_dir, None, room_version)?;
     let uri = format!(
@@ -347,7 +427,8 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
         quote(room),
         quote(event)
     );
-    let (answers, servers) = ask_servers(m, &uri, out_dir, &known, &too_deep_ids(m)?)?;
+    let (answers, servers) =
+        ask_servers(m, &uri, out_dir, &known, &too_deep_ids(m, room_version)?)?;
     let pairs = compare_pairs(&answers, out_dir)?;
     let fetched = if m.get_flag("fetch") {
         fetch_missing(m, &answers, out_dir, &known)
@@ -363,4 +444,29 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let _ = result.insert(String::from("pairs"), pairs);
     let _ = result.insert(String::from("fetched"), fetched);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generated_paths, ids_in};
+    use rezzy::JsonValue;
+    use std::path::Path;
+
+    #[test]
+    fn generated_paths_include_the_fetch_output_a_known_file_could_alias() {
+        let dests = [String::from("a.org"), String::from("b.org")];
+        let paths = generated_paths(Path::new("out"), dests.iter(), true);
+        assert!(paths.contains(&Path::new("out").join("a.org.state.jsonl")));
+        assert!(paths.contains(&Path::new("out").join("a.org__vs__b.org.state.only-first")));
+    }
+
+    #[test]
+    fn malformed_state_ids_answers_are_errors_not_empty_lists() {
+        let empty = JsonValue::parse("{}").unwrap();
+        assert!(ids_in(&empty, "pdu_ids").is_err());
+        let bad = JsonValue::parse(r#"{"pdu_ids":["$a",1]}"#).unwrap();
+        assert!(ids_in(&bad, "pdu_ids").is_err());
+        let good = JsonValue::parse(r#"{"pdu_ids":["$a"]}"#).unwrap();
+        assert_eq!(ids_in(&good, "pdu_ids").unwrap(), vec![String::from("$a")]);
+    }
 }

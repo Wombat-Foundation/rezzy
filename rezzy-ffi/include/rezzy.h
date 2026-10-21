@@ -41,7 +41,11 @@ int rezzy_verify_content_hash(const char *room_version,
 int rezzy_hash_events(const char *room_version, const uint8_t *jsonl,
                       size_t jsonl_len, uint8_t **out, size_t *out_len);
 
-/* Releases a buffer returned through *out. Accepts NULL. */
+/*
+ * Releases a buffer returned through *out. Pass the exact out_len that came
+ * back with it, and free each buffer once; a wrong length or a second free is
+ * undefined behaviour. Accepts NULL.
+ */
 void rezzy_free(uint8_t *ptr, size_t len);
 
 #ifdef __cplusplus

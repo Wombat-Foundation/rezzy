@@ -10,7 +10,6 @@
 use crate::error::{AppError, ErrorCode};
 use clap::{Arg, ArgMatches, Command};
 use rezzy::JsonValue;
-use std::io::Read;
 use std::path::PathBuf;
 
 pub(super) fn command() -> Command {
@@ -32,20 +31,12 @@ pub(super) fn command() -> Command {
         )
 }
 
-fn read_input(path: &PathBuf) -> Result<String, AppError> {
-    if path.as_os_str() == "-" {
-        let mut text = String::new();
-        std::io::stdin().read_to_string(&mut text)?;
-        Ok(text)
-    } else {
-        Ok(std::fs::read_to_string(path)?)
-    }
-}
-
 pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let path = m.get_one::<PathBuf>("input").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("required");
-    let text = read_input(path)?;
+    // A typo'd version should fail the run, not turn every event into an error record.
+    crate::utils::parse_room_version(room_version)?;
+    let text = super::read_input(path)?;
     let records = rezzy::event_report::describe_jsonl(&text, room_version);
     if records.is_empty() {
         return Err(AppError::new(ErrorCode::EmptyInput, "no events in input"));

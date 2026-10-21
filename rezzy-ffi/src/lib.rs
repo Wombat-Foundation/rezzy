@@ -1,5 +1,7 @@
 //! C ABI over rezzy's event hashing, for callers that cannot link Rust
 //! (cgo, Python `ctypes`). See `include/rezzy.h` for the contract.
+
+#![allow(unsafe_code)]
 //!
 //! Every function returns a status code and hands results back through
 //! `out`/`out_len`. Buffers are allocated here and released with
@@ -23,6 +25,17 @@ fn hand_over(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
         *out = raw;
         *out_len = len;
     }
+}
+
+/// Runs `body`, turning a panic into `ERR` with a message so it never unwinds
+/// across the C boundary (which would abort the host process).
+fn guard(out: *mut *mut u8, out_len: *mut usize, body: impl FnOnce() -> i32) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        if !out.is_null() && !out_len.is_null() {
+            hand_over(b"internal error: rezzy panicked".to_vec(), out, out_len);
+        }
+        ERR
+    })
 }
 
 /// Reads and parses the arguments shared by every entry point.
@@ -56,13 +69,7 @@ unsafe fn parse_args(
     // SAFETY: non-null, `event_len` readable bytes per the contract.
     let bytes = unsafe { std::slice::from_raw_parts(event_json, event_len) };
     match JsonValue::parse_bytes(bytes) {
-        Ok(mut event) => {
-            // `event_id` in an export is derived data, not covered by the hashes.
-            if let Some(object) = event.as_object_mut() {
-                let _ = object.remove("event_id");
-            }
-            Ok((version, event))
-        }
+        Ok(event) => Ok((version, event)),
         Err(error) => {
             hand_over(error.to_string().into_bytes(), out, out_len);
             Err(ERR)
@@ -83,12 +90,29 @@ pub unsafe extern "C" fn rezzy_event_id(
     out_len: *mut usize,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
+    guard(out, out_len, || unsafe {
+        rezzy_event_id_inner(room_version, event_json, event_len, out, out_len)
+    })
+}
+
+/// Unguarded body of [`rezzy_event_id`].
+///
+/// # Safety
+/// Same contract as [`rezzy_event_id`].
+unsafe fn rezzy_event_id_inner(
+    room_version: *const c_char,
+    event_json: *const u8,
+    event_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
     let (version, event) =
         match unsafe { parse_args(room_version, event_json, event_len, out, out_len) } {
             Ok(parsed) => parsed,
             Err(status) => return status,
         };
-    match rezzy::reference_hash(&event, &version) {
+    match rezzy::reference_hash(&rezzy::event_report::wire_event(&event, &version), &version) {
         Ok(hash) => {
             hand_over(format!("${hash}").into_bytes(), out, out_len);
             OK
@@ -113,12 +137,29 @@ pub unsafe extern "C" fn rezzy_verify_content_hash(
     out_len: *mut usize,
 ) -> i32 {
     // SAFETY: forwarded from this function's contract.
+    guard(out, out_len, || unsafe {
+        rezzy_verify_content_hash_inner(room_version, event_json, event_len, out, out_len)
+    })
+}
+
+/// Unguarded body of [`rezzy_verify_content_hash`].
+///
+/// # Safety
+/// Same contract as [`rezzy_verify_content_hash`].
+unsafe fn rezzy_verify_content_hash_inner(
+    room_version: *const c_char,
+    event_json: *const u8,
+    event_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
     let (version, event) =
         match unsafe { parse_args(room_version, event_json, event_len, out, out_len) } {
             Ok(parsed) => parsed,
             Err(status) => return status,
         };
-    match rezzy::verify_content_hash(&event, &version) {
+    match rezzy::verify_content_hash(&rezzy::event_report::wire_event(&event, &version), &version) {
         Ok(()) => OK,
         Err(error) => {
             hand_over(error.into_bytes(), out, out_len);
@@ -137,6 +178,23 @@ pub unsafe extern "C" fn rezzy_verify_content_hash(
 /// See `include/rezzy.h`: pointers must be valid for the stated lengths.
 #[no_mangle]
 pub unsafe extern "C" fn rezzy_hash_events(
+    room_version: *const c_char,
+    jsonl: *const u8,
+    jsonl_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: forwarded from this function's contract.
+    guard(out, out_len, || unsafe {
+        rezzy_hash_events_inner(room_version, jsonl, jsonl_len, out, out_len)
+    })
+}
+
+/// Unguarded body of [`rezzy_hash_events`].
+///
+/// # Safety
+/// Same contract as [`rezzy_hash_events`].
+unsafe fn rezzy_hash_events_inner(
     room_version: *const c_char,
     jsonl: *const u8,
     jsonl_len: usize,
@@ -218,8 +276,8 @@ mod tests {
                 version.as_ptr(),
                 event.as_ptr(),
                 event.len(),
-                &mut out,
-                &mut len,
+                &raw mut out,
+                &raw mut len,
             )
         };
         let text = if out.is_null() {
@@ -229,6 +287,7 @@ mod tests {
             let text = unsafe {
                 String::from_utf8_lossy(std::slice::from_raw_parts(out, len)).into_owned()
             };
+            // SAFETY: freeing the buffer just returned, once.
             unsafe { rezzy_free(out, len) };
             text
         };
@@ -266,8 +325,15 @@ mod tests {
         let mut out = ptr::null_mut();
         let mut len = 0;
         // SAFETY: null room version is rejected before any dereference.
-        let status =
-            unsafe { rezzy_event_id(ptr::null(), EVENT.as_ptr(), EVENT.len(), &mut out, &mut len) };
+        let status = unsafe {
+            rezzy_event_id(
+                ptr::null(),
+                EVENT.as_ptr(),
+                EVENT.len(),
+                &raw mut out,
+                &raw mut len,
+            )
+        };
         assert_eq!(status, BAD_ARG);
         assert!(out.is_null());
     }
@@ -300,5 +366,17 @@ mod tests {
     fn free_accepts_null() {
         // SAFETY: NULL is documented as a no-op.
         unsafe { rezzy_free(ptr::null_mut(), 0) };
+    }
+
+    #[test]
+    fn panic_guard_returns_an_error_without_unwinding() {
+        let mut out = ptr::null_mut();
+        let mut len = 0;
+        let status = guard(&raw mut out, &raw mut len, || panic!("test panic"));
+        assert_eq!(status, ERR);
+        let message = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(out, len)) };
+        assert!(message.contains("panicked"));
+        // SAFETY: this is the buffer returned by the guard, freed once.
+        unsafe { rezzy_free(out, len) };
     }
 }

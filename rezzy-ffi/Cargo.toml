@@ -15,6 +15,5 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 rezzy = { workspace = true, default-features = false, features = ["std"] }
 
-# The C boundary needs raw pointers; every `unsafe` block states its contract.
-[lints.rust]
-unsafe_code = "allow"
+[lints]
+workspace = true

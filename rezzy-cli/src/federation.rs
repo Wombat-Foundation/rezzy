@@ -225,7 +225,7 @@ fn gap_fill_command() -> Command {
                 .long("skip-tried")
                 .action(ArgAction::SetTrue)
                 .help(
-                    "Do not ask again for IDs already requested (listed in tried.txt). \
+                    "Do not ask again for IDs already requested (listed in tried.txt or auth-tried.txt). \
                      Off by default: failures here can be transient, so later rounds retry them",
                 ),
         )
@@ -1136,6 +1136,8 @@ struct Checkpoint<'a> {
     tried_path: &'a Path,
     requests_path: Option<&'a Path>,
     round: u32,
+    /// Do not queue IDs already in `tried`, including parents found mid-crawl.
+    skip_tried: bool,
 }
 
 fn checkpoint_batch(
@@ -1154,7 +1156,12 @@ fn checkpoint_batch(
         )?;
     }
     state.attempts.clear();
-    checkpoint.tried.extend(ids);
+    for id in ids {
+        checkpoint.tried.insert(id.clone());
+        if checkpoint.skip_tried {
+            state.skip.insert(id);
+        }
+    }
     write_tried_file(checkpoint.tried_path, checkpoint.tried)
 }
 
@@ -1186,6 +1193,8 @@ struct DagWalkState {
     skipped_deep: usize,
     /// Whether fetched events' `prev_events` should be queued for crawling.
     follow_prev_events: bool,
+    /// IDs a resumed gap-fill run was told not to ask for again.
+    skip: HashSet<String>,
 }
 
 impl DagWalkState {
@@ -1214,6 +1223,10 @@ fn initialize_dag(
     let mut queue = VecDeque::new();
     let mut queued = HashSet::new();
     for id in request.starts {
+        // Events the caller already holds need no request, even as seeds.
+        if known.is_some_and(|held| held.contains(id)) {
+            continue;
+        }
         if queued.insert(id.clone()) {
             queue.push_back(id.clone());
         }
@@ -1248,19 +1261,28 @@ fn initialize_dag(
             log_attempts: false,
             skipped_deep: 0,
             follow_prev_events: true,
+            skip: HashSet::new(),
         },
         max,
     ))
 }
 
-fn finalize_dag(mut state: DagWalkState, request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
+fn finalize_dag(state: DagWalkState, request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
+    finalize_dag_with_all_failed_error(state, request, true)
+}
+
+fn finalize_dag_with_all_failed_error(
+    mut state: DagWalkState,
+    request: &DagRequest<'_>,
+    all_failed_is_error: bool,
+) -> Result<JsonValue, AppError> {
     state.output_writer.flush()?;
     let mut request_stats = rezzy::json!({});
     for (label, count) in &state.stats {
         let count = u64::try_from(*count).unwrap_or(u64::MAX);
         let _ = request_stats.insert(label.clone(), rezzy::json!(count));
     }
-    if state.event_count == 0 && !state.failures.is_empty() {
+    if all_failed_is_error && state.event_count == 0 && !state.failures.is_empty() {
         return Err(AppError::new(
             ErrorCode::NetworkError,
             format!(
@@ -1358,6 +1380,7 @@ fn write_dag_event(
             });
             if let Some(id) = id {
                 if !state.known.contains(id)
+                    && !state.skip.contains(id)
                     && !state.seen.contains(id)
                     && state.queued.insert(id.to_owned())
                 {
@@ -1516,13 +1539,49 @@ pub(super) fn get_remote_events_by_id(
 ) -> Result<JsonValue, AppError> {
     let (mut state, max) = initialize_dag(dag_request, known)?;
     state.follow_prev_events = false;
-    let pdus = fetch_events_individually(dag_request, dag_request.starts, &mut state)?;
-    for pdu in pdus {
-        if !write_dag_event(&pdu, dag_request.room_version, max, &mut state)? {
-            break;
+    // One ID at a time, writing as we go, so an unreachable server late in the
+    // list does not discard what was already fetched.
+    for (index, id) in dag_request.starts.iter().enumerate() {
+        if known.is_some_and(|held| held.contains(id)) {
+            continue;
         }
+        let pdus =
+            match fetch_events_individually(dag_request, std::slice::from_ref(id), &mut state) {
+                Ok(pdus) => pdus,
+                Err(error) => {
+                    state.unresolved.push(id.clone());
+                    state.failures.record(&error);
+                    if is_unreachable(&error) {
+                        state.unresolved.extend(
+                            dag_request
+                                .starts
+                                .iter()
+                                .skip(index.saturating_add(1))
+                                .cloned(),
+                        );
+                        break;
+                    }
+                    continue;
+                }
+            };
+        let found = pdus.iter().any(|pdu| {
+            crate::repair::event_id_of(pdu)
+                .or_else(|| {
+                    rezzy::reference_hash(pdu, dag_request.room_version)
+                        .ok()
+                        .map(|hash| format!("${hash}"))
+                })
+                .is_some_and(|returned| returned == *id)
+        });
+        if !found {
+            state.unresolved.push(id.clone());
+        }
+        for pdu in pdus {
+            let _ = write_dag_event(&pdu, dag_request.room_version, max, &mut state)?;
+        }
+        state.output_writer.flush()?;
     }
-    finalize_dag(state, dag_request)
+    finalize_dag_with_all_failed_error(state, dag_request, true)
 }
 
 fn get_remote_dag_with_known_and_checkpoint(
@@ -1536,6 +1595,11 @@ fn get_remote_dag_with_known_and_checkpoint(
     state.log_attempts = tried_checkpoint
         .as_ref()
         .is_some_and(|cp| cp.requests_path.is_some());
+    if let Some(cp) = tried_checkpoint.as_ref().filter(|cp| cp.skip_tried) {
+        state.skip.clone_from(cp.tried);
+        state.queue.retain(|id| !state.skip.contains(id));
+        state.queued.retain(|id| !state.skip.contains(id));
+    }
     while !state.queue.is_empty() && state.seen.len() < max {
         let mut ids = Vec::new();
         while ids.len() < 50 {
@@ -1550,9 +1614,19 @@ fn get_remote_dag_with_known_and_checkpoint(
         if ids.is_empty() {
             continue;
         }
-        let value = match fetch_dag_batch(dag_request, &ids, &mut state)? {
-            DagBatch::Events(value) => value,
-            DagBatch::Stop => {
+        let value = match fetch_dag_batch(dag_request, &ids, &mut state) {
+            Err(error) => {
+                state.output_writer.flush()?;
+                if let Some(cp) = tried_checkpoint.as_mut() {
+                    if let Some(path) = cp.requests_path {
+                        append_attempts(path, cp.round, cp.tried, dag_request, &state.attempts)?;
+                    }
+                    state.attempts.clear();
+                }
+                return Err(error);
+            }
+            Ok(DagBatch::Events(value)) => value,
+            Ok(DagBatch::Stop) => {
                 if let Some(cp) = tried_checkpoint.as_mut() {
                     checkpoint_batch(cp, dag_request, &mut state, ids)?;
                 }
@@ -1635,6 +1709,7 @@ struct GapFillRequest<'a> {
 /// IDs already requested from the destination, kept so later rounds and
 /// resumed runs do not ask again for events the server has already refused.
 const TRIED_FILE: &str = "tried.txt";
+const AUTH_TRIED_FILE: &str = "auth-tried.txt";
 
 /// Debug-only log of every request in a round. It is not event data, so it must
 /// never be reloaded as events when resuming.
@@ -1698,7 +1773,11 @@ fn read_round_events(dir: &Path) -> Result<Vec<JsonValue>, AppError> {
 }
 
 fn read_tried(output_dir: &Path) -> Result<HashSet<String>, AppError> {
-    match fs::read_to_string(output_dir.join(TRIED_FILE)) {
+    read_tried_file(&output_dir.join(TRIED_FILE))
+}
+
+fn read_tried_file(path: &Path) -> Result<HashSet<String>, AppError> {
+    match fs::read_to_string(path) {
         Ok(text) => Ok(text
             .lines()
             .map(str::trim)
@@ -1745,11 +1824,13 @@ fn fetch_gap_round(
     round_dir: &Path,
     round: u32,
     tried: &mut HashSet<String>,
+    auth_tried: &mut HashSet<String>,
 ) -> Result<(usize, usize, Vec<PathBuf>, usize), AppError> {
     let before = crate::repair::scan_gaps(events).present.len();
     let report = crate::repair::scan_gaps(events);
     let mut fetched = Vec::new();
     let mut failed_requests = 0_usize;
+    let requests_path = debug_enabled().then(|| round_dir.join(REQUESTS_FILE));
     let starts = report
         .missing_prev
         .iter()
@@ -1780,7 +1861,6 @@ fn fetch_gap_round(
             emit_missing: None,
         };
         let tried_path = request.output_dir.join(TRIED_FILE);
-        let requests_path = debug_enabled().then(|| round_dir.join(REQUESTS_FILE));
         let result = get_remote_dag_with_known_and_checkpoint(
             &dag_request,
             Some(&known),
@@ -1789,6 +1869,7 @@ fn fetch_gap_round(
                 tried_path: &tried_path,
                 requests_path: requests_path.as_deref(),
                 round,
+                skip_tried: request.skip_tried,
             }),
         );
         let summary = match result {
@@ -1826,6 +1907,11 @@ fn fetch_gap_round(
             &report,
             &path,
             request.key_path,
+            auth_tried,
+            &request.output_dir.join(AUTH_TRIED_FILE),
+            requests_path.as_deref(),
+            round,
+            request.skip_tried,
         )?;
         if !failures.is_empty() {
             failed_requests = failed_requests.saturating_add(failures.total());
@@ -1872,6 +1958,7 @@ fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         events.extend(crate::repair::read_jsonl_events(input)?);
     }
     let mut tried = HashSet::new();
+    let mut auth_tried = HashSet::new();
     let mut round = 0_u32;
     if request.resume {
         for (number, dir) in &earlier {
@@ -1879,10 +1966,11 @@ fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
             round = round.max(number.saturating_add(1));
         }
         tried = read_tried(output_dir)?;
+        auth_tried = read_tried_file(&output_dir.join(AUTH_TRIED_FILE))?;
         eprintln!(
             "[info] resuming at round {round}: {} earlier round(s) reloaded, {} ID(s) requested before (re-asked unless --skip-tried)",
             earlier.len(),
-            tried.len()
+            tried.len().saturating_add(auth_tried.len())
         );
     }
 
@@ -1901,8 +1989,14 @@ fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
         }
         let round_dir = output_dir.join(format!("round-{round:03}"));
         fs::create_dir_all(&round_dir)?;
-        let (before, after, round_fetched, round_failures) =
-            fetch_gap_round(request, &mut events, &round_dir, round, &mut tried)?;
+        let (before, after, round_fetched, round_failures) = fetch_gap_round(
+            request,
+            &mut events,
+            &round_dir,
+            round,
+            &mut tried,
+            &mut auth_tried,
+        )?;
         write_tried(output_dir, &tried)?;
         ran = ran.saturating_add(1);
         fetched.extend(round_fetched);
@@ -1969,6 +2063,11 @@ fn fetch_auth_batches(
     report: &crate::repair::GapReport,
     output: &Path,
     key_path: Option<&Path>,
+    auth_tried: &mut HashSet<String>,
+    auth_tried_path: &Path,
+    requests_path: Option<&Path>,
+    round: u32,
+    skip_tried: bool,
 ) -> Result<(usize, FetchFailures), AppError> {
     let mut referencing = std::collections::BTreeSet::new();
     for reference in &report.references {
@@ -1981,24 +2080,37 @@ fn fetch_auth_batches(
     let mut failures = FetchFailures::default();
     let mut written = 0_usize;
     for event_id in referencing {
+        if skip_tried && auth_tried.contains(&event_id) {
+            continue;
+        }
         let uri = format!(
             "/_matrix/federation/v1/event_auth/{}/{}",
             quote(room_id),
             quote(&event_id)
         );
-        let value = match request(
+        let started = Instant::now();
+        let result = request(
             origin,
             destination,
             "GET",
             &uri,
             &rezzy::json!({}),
             key_path,
-        ) {
-            Ok(value) => value,
+        );
+        let attempt = attempt_of(Some(&event_id), "event_auth", &result, started);
+        if let Some(path) = requests_path {
+            append_auth_attempt(path, round, origin, destination, room_id, auth_tried, &attempt)?;
+        }
+        let value = match result {
+            Ok(value) => {
+                record_auth_tried(auth_tried_path, auth_tried, &event_id)?;
+                value
+            }
             Err(error) => {
                 if is_unreachable(&error) {
                     return Err(error);
                 }
+                record_auth_tried(auth_tried_path, auth_tried, &event_id)?;
                 failures.record(&error);
                 continue;
             }
@@ -2025,6 +2137,60 @@ fn fetch_auth_batches(
     }
     output_writer.flush()?;
     Ok((written, failures))
+}
+
+fn append_auth_attempt(
+    path: &Path,
+    round: u32,
+    origin: &str,
+    destination: &str,
+    room_id: &str,
+    auth_tried: &HashSet<String>,
+    attempt: &Attempt,
+) -> Result<(), AppError> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let when = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let retry = attempt
+        .event_id
+        .as_ref()
+        .is_some_and(|id| auth_tried.contains(id));
+    let line = rezzy::json!({
+        "time": when,
+        "round": u64::from(round),
+        "event_id": opt_str(attempt.event_id.as_deref()),
+        "room_id": room_id,
+        "origin": origin,
+        "destination": destination,
+        "endpoint": attempt.endpoint,
+        "outcome": attempt.outcome,
+        "status": attempt.status.map(u64::from),
+        "errcode": opt_str(attempt.errcode.as_deref()),
+        "message": attempt.message.clone(),
+        "millis": attempt.millis,
+        "retry": retry,
+    });
+    let encoded = rezzy::json::write_string_value(&line)
+        .map_err(|error| AppError::new(ErrorCode::MalformedJson, error.to_string()))?;
+    writeln!(file, "{encoded}")?;
+    Ok(())
+}
+
+fn record_auth_tried(
+    path: &Path,
+    auth_tried: &mut HashSet<String>,
+    event_id: &str,
+) -> Result<(), AppError> {
+    if auth_tried.insert(event_id.to_owned()) {
+        let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(file, "{event_id}")?;
+        file.flush()?;
+    }
+    Ok(())
 }
 
 /// Atomically replace the crawl frontier checkpoint.
