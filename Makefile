@@ -6,6 +6,7 @@ CARGO ?= cargo
 PYTHON ?= python3
 PREFIX ?= $(HOME)/.local
 LIBDIR ?= $(PREFIX)/lib
+DYLIB_EXT ?= $(if $(filter Darwin,$(shell uname -s)),dylib,so)
 INCLUDEDIR ?= $(PREFIX)/include
 TEST_FEATURES ?=
 CARGO_FEATURE_ARGS ?= $(if $(TEST_FEATURES),--features $(TEST_FEATURES),)
@@ -162,7 +163,7 @@ rust/install: ##H Install rezzy binary to cargo bin, and the C ABI lib + header 
 	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls
 	$(CARGO) build --locked --release -p rezzy-ffi
 	install -d $(DESTDIR)$(LIBDIR)/pkgconfig $(DESTDIR)$(INCLUDEDIR)
-	install -m755 target/release/librezzy_ffi.so $(DESTDIR)$(LIBDIR)/
+	install -m755 target/release/librezzy_ffi.$(DYLIB_EXT) $(DESTDIR)$(LIBDIR)/
 	install -m644 target/release/librezzy_ffi.a $(DESTDIR)$(LIBDIR)/
 	install -m644 rezzy-ffi/include/rezzy.h $(DESTDIR)$(INCLUDEDIR)/
 	printf 'prefix=$(PREFIX)\nlibdir=$(LIBDIR)\nincludedir=$(INCLUDEDIR)\n\nName: rezzy\nDescription: C ABI for rezzy event hashing\nVersion: %s\nLibs: -L$${libdir} -lrezzy_ffi\nCflags: -I$${includedir}\n' \
@@ -172,8 +173,8 @@ rust/install: ##H Install rezzy binary to cargo bin, and the C ABI lib + header 
 
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary and the C ABI files
-	$(CARGO) uninstall rezzy
-	rm -f $(DESTDIR)$(LIBDIR)/librezzy_ffi.so $(DESTDIR)$(LIBDIR)/librezzy_ffi.a \
+	-$(CARGO) uninstall rezzy
+	rm -f $(DESTDIR)$(LIBDIR)/librezzy_ffi.$(DYLIB_EXT) $(DESTDIR)$(LIBDIR)/librezzy_ffi.a \
 		$(DESTDIR)$(LIBDIR)/pkgconfig/rezzy.pc $(DESTDIR)$(INCLUDEDIR)/rezzy.h
 
 .PHONY: rust/e2e

@@ -332,6 +332,7 @@ fn fetch_missing(
             Ok(result) => result,
             Err(error) => {
                 let message = error.to_string().chars().take(200).collect::<String>();
+                eprintln!("{dest}: fetch failed: {message}");
                 rezzy::json!({
                     "count": 0,
                     "error": message,

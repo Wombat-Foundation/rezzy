@@ -1319,10 +1319,12 @@ fn write_dag_event(
     let Some(object) = pdu.as_object() else {
         return Ok(true);
     };
+    let max_depth = MAX_DEPTH.load(Ordering::Relaxed);
+    // With a finite limit, a missing/non-numeric depth is malformed and must not slip past it.
     let too_deep = object
         .get("depth")
         .and_then(JsonValue::as_u64)
-        .is_some_and(|depth| depth > MAX_DEPTH.load(Ordering::Relaxed));
+        .map_or(max_depth != u64::MAX, |depth| depth > max_depth);
     if too_deep {
         state.skipped_deep = state.skipped_deep.saturating_add(1);
         return Ok(true);
@@ -1614,7 +1616,10 @@ fn get_remote_dag_with_known_and_checkpoint(
                     // The batch was already sent, even when the request failed.
                     // Persist those IDs before returning so --resume --skip-tried
                     // does not send the same failed batch again.
-                    checkpoint_batch(cp, dag_request, &mut state, ids)?;
+                    // A checkpoint write failure must not mask the real error.
+                    if let Err(write_error) = checkpoint_batch(cp, dag_request, &mut state, ids) {
+                        eprintln!("[warn] could not checkpoint failed batch: {write_error}");
+                    }
                 }
                 return Err(error);
             }
@@ -1667,10 +1672,19 @@ fn finish_dag_batch(
     state.output_writer.flush()?;
     if let Some(error) = state.unreachable.take() {
         if let Some(cp) = checkpoint.as_mut() {
-            if let Some(path) = cp.requests_path {
-                append_attempts(path, cp.round, cp.tried, dag_request, &state.attempts)?;
-            }
-            state.attempts.clear();
+            // Only IDs actually requested count as tried; the fetch that hit the
+            // unreachable server and everything after it must be retried.
+            let failing = state.attempts.last().and_then(|a| a.event_id.clone());
+            let attempted: HashSet<&str> = state
+                .attempts
+                .iter()
+                .filter_map(|a| a.event_id.as_deref())
+                .collect();
+            let requested: Vec<String> = ids
+                .into_iter()
+                .filter(|id| attempted.contains(id.as_str()) && failing.as_ref() != Some(id))
+                .collect();
+            checkpoint_batch(cp, dag_request, state, requested)?;
         }
         return Ok(Some(error));
     }
