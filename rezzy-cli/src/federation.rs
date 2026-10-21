@@ -1610,10 +1610,10 @@ fn get_remote_dag_with_known_and_checkpoint(
             Err(error) => {
                 state.output_writer.flush()?;
                 if let Some(cp) = tried_checkpoint.as_mut() {
-                    if let Some(path) = cp.requests_path {
-                        append_attempts(path, cp.round, cp.tried, dag_request, &state.attempts)?;
-                    }
-                    state.attempts.clear();
+                    // The batch was already sent, even when the request failed.
+                    // Persist those IDs before returning so --resume --skip-tried
+                    // does not send the same failed batch again.
+                    checkpoint_batch(cp, dag_request, &mut state, ids)?;
                 }
                 return Err(error);
             }
