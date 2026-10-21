@@ -4,6 +4,9 @@ SHELL=/bin/bash
 LAKE ?= lake
 CARGO ?= cargo
 PYTHON ?= python3
+PREFIX ?= $(HOME)/.local
+LIBDIR ?= $(PREFIX)/lib
+INCLUDEDIR ?= $(PREFIX)/include
 TEST_FEATURES ?=
 CARGO_FEATURE_ARGS ?= $(if $(TEST_FEATURES),--features $(TEST_FEATURES),)
 
@@ -102,8 +105,9 @@ all: format lint check doc test
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: rust/build
-rust/build: ##H Compile Rust binary (release)
-	$(CARGO) build --locked --release --timings -p rezzy-cli
+rust/build: ##H Compile Rust binary and the C ABI library (release)
+	$(CARGO) build --locked --release --timings -p rezzy-cli -p rezzy-ffi
+	@echo "Built: target/release/librezzy_ffi.{so,a} (header: rezzy-ffi/include/rezzy.h)"
 
 .PHONY: rust/so
 rust/so: ##H Compile shared object (librezzy.so) from the library
@@ -154,12 +158,23 @@ rust/clean: ##H Remove Rust build artifacts
 	rm -rf .coverage/
 
 .PHONY: rust/install
-rust/install: ##H Install rezzy binary to cargo bin
+rust/install: ##H Install rezzy binary to cargo bin, and the C ABI lib + header + rezzy.pc under PREFIX
 	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls
+	$(CARGO) build --locked --release -p rezzy-ffi
+	install -d $(DESTDIR)$(LIBDIR)/pkgconfig $(DESTDIR)$(INCLUDEDIR)
+	install -m755 target/release/librezzy_ffi.so $(DESTDIR)$(LIBDIR)/
+	install -m644 target/release/librezzy_ffi.a $(DESTDIR)$(LIBDIR)/
+	install -m644 rezzy-ffi/include/rezzy.h $(DESTDIR)$(INCLUDEDIR)/
+	printf 'prefix=$(PREFIX)\nlibdir=$(LIBDIR)\nincludedir=$(INCLUDEDIR)\n\nName: rezzy\nDescription: C ABI for rezzy event hashing\nVersion: %s\nLibs: -L$${libdir} -lrezzy_ffi\nCflags: -I$${includedir}\n' \
+		"$$($(CARGO) metadata --no-deps --format-version 1 | $(PYTHON) -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="rezzy-ffi"))')" \
+		> $(DESTDIR)$(LIBDIR)/pkgconfig/rezzy.pc
+	@echo "Installed to $(PREFIX); for pkg-config: export PKG_CONFIG_PATH=$(LIBDIR)/pkgconfig:\$$PKG_CONFIG_PATH"
 
 .PHONY: rust/uninstall
-rust/uninstall: ##H Uninstall rezzy binary from cargo bin
+rust/uninstall: ##H Uninstall rezzy binary and the C ABI files
 	$(CARGO) uninstall rezzy
+	rm -f $(DESTDIR)$(LIBDIR)/librezzy_ffi.so $(DESTDIR)$(LIBDIR)/librezzy_ffi.a \
+		$(DESTDIR)$(LIBDIR)/pkgconfig/rezzy.pc $(DESTDIR)$(INCLUDEDIR)/rezzy.h
 
 .PHONY: rust/e2e
 rust/e2e: ##H Run e2e integration test on real JSON
