@@ -294,7 +294,7 @@ fn fetch_missing(
     answers: &Answers,
     out_dir: &Path,
     known: &HashSet<String>,
-) -> Result<JsonValue, AppError> {
+) -> JsonValue {
     let origin = m.get_one::<String>("origin").expect("default");
     let room = m.get_one::<String>("room").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("default");
@@ -342,7 +342,7 @@ fn fetch_missing(
         };
         let _ = fetched.insert(dest.clone(), outcome);
     }
-    Ok(fetched)
+    fetched
 }
 
 /// Plain one-line-per-number summary on stderr, so stdout stays pure JSON.
@@ -434,7 +434,7 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
         ask_servers(m, &uri, out_dir, &known, &too_deep_ids(m, room_version)?)?;
     let pairs = compare_pairs(&answers, out_dir)?;
     let fetched = if m.get_flag("fetch") {
-        fetch_missing(m, &answers, out_dir, &known)?
+        fetch_missing(m, &answers, out_dir, &known)
     } else {
         rezzy::json!({})
     };
