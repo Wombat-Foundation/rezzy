@@ -1541,7 +1541,8 @@ pub(super) fn get_remote_events_by_id(
                 })
                 .is_some_and(|returned| returned == *id)
         });
-        if !found {
+        // An unreachable server already put this ID in `unresolved`.
+        if !found && state.unreachable.is_none() {
             state.unresolved.push(id.clone());
         }
         for pdu in pdus {

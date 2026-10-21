@@ -34,7 +34,8 @@ int rezzy_verify_content_hash(const char *room_version,
 /*
  * Describes every event in a JSONL buffer. On REZZY_OK, *out holds the same
  * JSON report object as `rezzy hash events`, including event records with
- * event_id, claimed_event_id, content_hash_ok, links, and a 1-based "line".
+ * claimed_event_id, content_hash_ok, links, and a 1-based "line". event_id
+ * is present only for room v3 and later (v1/v2 IDs cannot be derived).
  * A line that cannot be hashed yields an {"error": ...} record and the call
  * still succeeds. REZZY_ERR (message in *out) means no events or invalid UTF-8.
  */

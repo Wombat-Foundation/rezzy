@@ -945,16 +945,23 @@ pub fn reference_hash(
     Ok(hash)
 }
 
+/// Whether `room_version` (v1 and v2) gives events server-assigned `event_id`s
+/// that no hash can derive.
+#[must_use]
+pub fn has_opaque_event_ids(room_version: &str) -> bool {
+    room_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major <= 2)
+}
+
 /// Computes the reference-hash digest after validating the room version.
 fn reference_hash_digest(
     value: &Value,
     room_version: &str,
 ) -> Result<[u8; 32], alloc::string::String> {
-    let major = room_version
-        .split('.')
-        .next()
-        .and_then(|m| m.parse::<u32>().ok());
-    if major.is_some_and(|m| m <= 2) {
+    if has_opaque_event_ids(room_version) {
         return Err(alloc::format!(
             "no reference hash for room version {room_version}: v1/v2 event IDs are opaque server-assigned strings, not hashes"
         ));

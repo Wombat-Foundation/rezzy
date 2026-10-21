@@ -303,9 +303,6 @@ fn fetch_missing(
         std::sync::atomic::Ordering::Relaxed,
     );
     let mut fetched = rezzy::json!({});
-    let mut attempted = 0_usize;
-    let mut succeeded = 0_usize;
-    let mut first_error = None;
     for (dest, reported) in answers {
         let starts: Vec<String> = reported
             .state
@@ -316,7 +313,6 @@ fn fetch_missing(
         if starts.is_empty() {
             continue;
         }
-        attempted = attempted.saturating_add(1);
         let output = out_dir.join(format!("{}.state.jsonl", file_stem(dest)));
         let dag = DagRequest {
             origin,
@@ -333,13 +329,9 @@ fn fetch_missing(
         let outcome = match get_remote_events_by_id(&dag, Some(known)) {
             // Keep the whole summary: failures and the unresolved frontier say
             // whether the fetch was complete.
-            Ok(result) => {
-                succeeded = succeeded.saturating_add(1);
-                result
-            }
+            Ok(result) => result,
             Err(error) => {
                 let message = error.to_string().chars().take(200).collect::<String>();
-                first_error.get_or_insert_with(|| format!("{dest}: {message}"));
                 rezzy::json!({
                     "count": 0,
                     "error": message,
@@ -348,15 +340,6 @@ fn fetch_missing(
             }
         };
         let _ = fetched.insert(dest.clone(), outcome);
-    }
-    if attempted > 0 && succeeded == 0 {
-        return Err(AppError::new(
-            crate::error::ErrorCode::NetworkError,
-            format!(
-                "state-diff could not fetch missing events from any destination: {}",
-                first_error.unwrap_or_else(|| String::from("all requests failed"))
-            ),
-        ));
     }
     Ok(fetched)
 }

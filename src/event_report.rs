@@ -36,23 +36,13 @@ fn linked_ids(event: &JsonValue, field: &str) -> Result<JsonValue, String> {
     Ok(JsonValue::Array(ids))
 }
 
-/// Room versions 1 and 2 give events a server-assigned `event_id` that the
-/// content hash covers and that no hash can derive.
-fn has_opaque_event_ids(room_version: &str) -> bool {
-    room_version
-        .split('.')
-        .next()
-        .and_then(|major| major.parse::<u32>().ok())
-        .is_some_and(|major| major <= 2)
-}
-
 /// The event as the hashes see it. From v3 on, the `event_id` field of an
 /// export is derived data, so it is dropped; v1/v2 keep it because the content
 /// hash covers it.
 #[must_use]
 pub fn wire_event(event: &JsonValue, room_version: &str) -> JsonValue {
     let mut wire = event.clone();
-    if !has_opaque_event_ids(room_version) {
+    if !crate::has_opaque_event_ids(room_version) {
         if let Some(object) = wire.as_object_mut() {
             let _ = object.remove("event_id");
         }
@@ -82,7 +72,7 @@ pub fn describe_event(event: &JsonValue, room_version: &str) -> JsonValue {
         }
     }
     let wire = wire_event(event, room_version);
-    if !has_opaque_event_ids(room_version) {
+    if !crate::has_opaque_event_ids(room_version) {
         match crate::reference_hash(&wire, room_version) {
             Ok(hash) => {
                 let _ = record.insert(

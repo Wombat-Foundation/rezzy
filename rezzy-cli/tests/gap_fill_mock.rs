@@ -1218,8 +1218,12 @@ fn state_diff_fetch_fails_when_every_event_request_fails() {
     let server = spawn_mock_with(Backfill::Blank, EventShape::Missing, Some(state));
     let fx = Fixture::new("sd-fetch-total-failure");
     let out = fx.state_diff(&[&server.url], ROOM, &["--fetch"]);
-    assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("could not fetch missing events"));
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let report = compact(&out.stdout);
+    assert!(report.contains("\"servers\":"), "{report}");
+    assert!(report.contains("\"pairs\":"), "{report}");
+    assert!(report.contains("\"error\":"), "{report}");
+    assert!(report.contains(TARGET), "{report}");
 }
 
 #[test]

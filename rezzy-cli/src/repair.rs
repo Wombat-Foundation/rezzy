@@ -164,11 +164,7 @@ pub fn fill_missing_event_id(
 /// # Errors
 /// Returns an error if the room version is unsupported.
 pub fn validate_repair_room_version(room_version: &str) -> Result<(), AppError> {
-    let major = room_version
-        .split('.')
-        .next()
-        .and_then(|part| part.parse::<u32>().ok());
-    if major.is_some_and(|version| version <= 2) {
+    if rezzy::has_opaque_event_ids(room_version) {
         return Err(AppError::new(
             ErrorCode::UnsupportedVersion,
             format!(
