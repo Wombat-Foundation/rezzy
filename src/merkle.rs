@@ -69,13 +69,19 @@ impl UnsignedRoot {
 
 #[cfg(test)]
 mod field_name_tests {
-    use super::{leaf_hash, leaf_hash_bytes, FieldName};
+    use super::{leaf_hash, leaf_hash_bytes, FieldName, MerkleError};
 
     #[test]
-    fn accepts_long_field_names_and_preserves_error_name_equality() {
+    fn rejects_long_field_names_and_preserves_error_name_equality() {
         let long = "x".repeat(FieldName::MAX_LEN + 20);
-        assert!(leaf_hash(&long, b"null").is_ok());
-        assert!(leaf_hash_bytes(long.as_bytes(), b"null").is_ok());
+        assert_eq!(
+            leaf_hash(&long, b"null").unwrap_err(),
+            MerkleError::InvalidFieldName
+        );
+        assert_eq!(
+            leaf_hash_bytes(long.as_bytes(), b"null").unwrap_err(),
+            MerkleError::InvalidFieldName
+        );
 
         let a = FieldName::from(long.as_str());
         let b = FieldName::from(format!("{long}y").as_str());
@@ -91,14 +97,16 @@ impl From<Hash> for UnsignedRoot {
 }
 
 /// A field name retained in Merkle errors. Names are stored in full so that
-/// equality and display preserve the complete input, including long names.
+/// equality and display preserve the complete input, including names that
+/// were rejected for exceeding [`FieldName::MAX_LEN`].
 #[derive(Clone, PartialEq, Eq)]
 pub struct FieldName {
     name: std::string::String,
 }
 
 impl FieldName {
-    /// Historical inline-size threshold; it does not limit valid field names.
+    /// Maximum field-name length in UTF-8 bytes; longer names are rejected
+    /// with `InvalidFieldName` by the hashing entry points.
     pub const MAX_LEN: usize = 64;
 
     #[must_use]
@@ -569,11 +577,14 @@ fn validate_field_name(field_name: &str) -> Result<(), MerkleError> {
     if field_name.as_bytes().contains(&0) {
         return Err(MerkleError::InvalidFieldName);
     }
+    if field_name.len() > FieldName::MAX_LEN {
+        return Err(MerkleError::InvalidFieldName);
+    }
     Ok(())
 }
 
 // Byte-slice counterpart of `validate_field_name`; the length cap applies to
-// the raw byte length, matching what `FieldName` can store.
+// the raw byte length.
 fn validate_field_name_bytes(field_name: &[u8]) -> Result<(), MerkleError> {
     if field_name.is_empty() {
         return Err(MerkleError::EmptyFieldName);
@@ -582,6 +593,9 @@ fn validate_field_name_bytes(field_name: &[u8]) -> Result<(), MerkleError> {
         return Err(MerkleError::InvalidFieldName);
     }
     if core::str::from_utf8(field_name).is_err() {
+        return Err(MerkleError::InvalidFieldName);
+    }
+    if field_name.len() > FieldName::MAX_LEN {
         return Err(MerkleError::InvalidFieldName);
     }
     Ok(())
