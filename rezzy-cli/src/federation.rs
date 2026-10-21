@@ -1676,7 +1676,7 @@ fn finish_dag_batch(
     checkpoint: &mut Option<Checkpoint<'_>>,
     ids: Vec<String>,
 ) -> Result<Option<AppError>, AppError> {
-    // Make fetched events durable before advancing the checkpoint.
+    // Flush fetched events before advancing the checkpoint.
     state.output_writer.flush()?;
     if let Some(error) = state.unreachable.take() {
         if let Some(cp) = checkpoint.as_mut() {
@@ -2169,7 +2169,7 @@ fn fetch_auth_batches(
         // Flush after every response so an interrupted crawl keeps the auth
         // chains it already fetched.
         output_writer.flush()?;
-        // Record the request only once its events are durable, so a resumed
+        // Record the request only once its events are flushed, so a resumed
         // run never skips an ID whose auth events were not saved.
         record_auth_tried(auth_tried_path, auth_tried, &event_id)?;
     }
