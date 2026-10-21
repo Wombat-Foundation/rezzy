@@ -183,6 +183,7 @@ pub fn command() -> Command {
         .subcommand(state_diff::command())
 }
 
+/// Builds the gap-fill arguments, including resume and retry controls.
 fn gap_fill_command() -> Command {
     Command::new("gap-fill")
         .about("Fetch missing room DAG and authentication events in bounded rounds")
@@ -248,6 +249,7 @@ fn gap_fill_command() -> Command {
         .args(crawl_args())
 }
 
+/// Builds the shared backfill toggle and inclusive event-depth cap arguments.
 fn crawl_args() -> [Arg; 2] {
     [
         Arg::new("no-backfill")
@@ -266,6 +268,7 @@ fn crawl_args() -> [Arg; 2] {
     ]
 }
 
+/// Builds the key-encryption arguments, including optional passphrase origin.
 fn encrypt_key_command() -> Command {
     Command::new("encrypt-key")
         .about("Encrypt a plaintext signing key into a passphrase-protected file")
@@ -305,6 +308,7 @@ fn signing_key_args() -> [Arg; 1] {
         .value_parser(clap::value_parser!(PathBuf))]
 }
 
+/// Builds the repeatable argument for locally held event files.
 fn known_events_arg() -> Arg {
     Arg::new("known")
         .long("known")
@@ -486,6 +490,8 @@ fn domain_env_suffix(domain: &str) -> String {
     domain.to_ascii_uppercase().replace(['.', '-'], "_")
 }
 
+/// Returns the passphrase variable name for the origin, ignoring scheme, port,
+/// and path and replacing dots and hyphens with underscores.
 fn scoped_passphrase_env_name(origin: &str) -> String {
     format!("REZZY_KEY_PASSPHRASE_{}", domain_env_suffix(origin))
 }
@@ -518,10 +524,14 @@ fn read_passphrase(path: &Path, origin: Option<&str>) -> Result<String, AppError
 ///
 /// The key must be a passphrase-encrypted file (see `federation encrypt-key`),
 /// given by `--signing-key`, `MATRIX_SERVER_SIGNING_KEY_<DOMAIN>` or
-/// `MATRIX_SERVER_SIGNING_KEY`. Plaintext key files are not accepted.
+/// `MATRIX_SERVER_SIGNING_KEY`. Plaintext key files are not accepted. The
+/// passphrase comes from `REZZY_KEY_PASSPHRASE_<DOMAIN>`, then
+/// `REZZY_KEY_PASSPHRASE`, or a terminal prompt. Parsed keys are cached by
+/// origin and path, so later file or passphrase changes require a new process.
 ///
 /// # Errors
-/// Returns an error when no usable key is configured or the configured key is invalid.
+/// Returns an error when no usable key is configured, the key file cannot be
+/// read or decrypted, its contents are invalid, or prompting for a passphrase fails.
 pub fn load_signing_key(origin: &str, explicit: Option<&Path>) -> Result<SigningKeySpec, AppError> {
     let suffix = domain_env_suffix(origin);
     let path = explicit.map(Path::to_path_buf).or_else(|| {
@@ -572,6 +582,10 @@ pub fn encrypt_key_file(input: &Path, output: &Path) -> Result<(), AppError> {
     encrypt_key_file_with_origin(input, output, None)
 }
 
+/// Encrypts a validated plaintext signing key, replacing `output`. Uses the
+/// origin-scoped passphrase with global fallback, or prompts twice. On Unix,
+/// sets output permissions to 0600. Returns errors for key parsing, empty or
+/// mismatched passphrases, encryption, prompting, and file I/O.
 fn encrypt_key_file_with_origin(
     input: &Path,
     output: &Path,
@@ -969,6 +983,7 @@ pub fn set_debug(on: bool) {
     DEBUG.store(on, Ordering::Relaxed);
 }
 
+/// Returns whether per-request debug logging is enabled process-wide.
 fn debug_enabled() -> bool {
     DEBUG.load(Ordering::Relaxed)
 }
@@ -997,6 +1012,7 @@ static NO_BACKFILL: AtomicBool = AtomicBool::new(false);
 /// Set by `--max-depth`: events deeper than this are skipped, not followed.
 static MAX_DEPTH: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// Returns whether the process-wide crawl settings permit backfill requests.
 fn backfill_allowed() -> bool {
     !NO_BACKFILL.load(Ordering::Relaxed)
 }
@@ -1012,6 +1028,7 @@ struct Attempt {
     millis: u64,
 }
 
+/// Extracts the first status number following `HTTP `, or returns `None`.
 fn http_status_of(text: &str) -> Option<u16> {
     text.split("HTTP ")
         .nth(1)?
@@ -1021,12 +1038,16 @@ fn http_status_of(text: &str) -> Option<u16> {
         .ok()
 }
 
+/// Extracts a quoted `errcode` from error text, or returns `None` if absent
+/// or not in the expected format.
 fn errcode_of(text: &str) -> Option<String> {
     let rest = text.split("\"errcode\"").nth(1)?;
     let rest = rest.trim_start_matches([':', ' ']).strip_prefix('"')?;
     Some(rest.split('"').next()?.to_owned())
 }
 
+/// Summarizes a request result and elapsed milliseconds. Successful requests
+/// are labeled with status 200; error text is limited to 200 characters.
 fn attempt_of(
     event_id: Option<&str>,
     endpoint: &'static str,
@@ -1075,6 +1096,7 @@ fn stat_label(attempt: &Attempt) -> String {
     format!("{}:{status}", attempt.endpoint)
 }
 
+/// Converts an absent string to JSON null.
 fn opt_str(value: Option<&str>) -> JsonValue {
     value.map_or(JsonValue::Null, |s| JsonValue::String(s.to_owned()))
 }
@@ -1125,6 +1147,9 @@ struct Checkpoint<'a> {
     skip_tried: bool,
 }
 
+/// Records the supplied IDs as tried and persists the checkpoint, optionally
+/// adding them to the crawl exclusion set. Propagates log and checkpoint I/O
+/// or serialization errors.
 fn checkpoint_batch(
     checkpoint: &mut Checkpoint<'_>,
     dag_request: &DagRequest<'_>,
@@ -1151,6 +1176,7 @@ fn checkpoint_batch(
     write_tried_file(checkpoint.tried_path, checkpoint.tried)
 }
 
+/// Formats request counts in sorted label order, separated by spaces.
 fn summarize_stats(stats: &BTreeMap<String, usize>) -> String {
     stats
         .iter()
@@ -1188,6 +1214,8 @@ struct DagWalkState {
 }
 
 impl DagWalkState {
+    /// Counts the outcome and retains its event ID for checkpointing; retains
+    /// the full attempt only when request logging is enabled.
     fn record(&mut self, attempt: Attempt) {
         let count = self.stats.entry(stat_label(&attempt)).or_insert(0);
         *count = count.saturating_add(1);
@@ -1200,6 +1228,9 @@ impl DagWalkState {
     }
 }
 
+/// Creates or truncates the event output and queues unique seeds not in `known`.
+/// A negative event limit is unlimited. Returns an error for empty seeds,
+/// conflicting output paths, or output I/O failure.
 fn initialize_dag(
     request: &DagRequest<'_>,
     known: Option<&HashSet<String>>,
@@ -1262,6 +1293,10 @@ fn initialize_dag(
     ))
 }
 
+/// Flushes events and returns counts, request statistics, and unresolved IDs,
+/// optionally writing the frontier. Returns an error on output failure or if
+/// requests failed and no events were written; partial fetches carry failures
+/// in the returned summary.
 fn finalize_dag(mut state: DagWalkState, request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
     state.output_writer.flush()?;
     let mut request_stats = rezzy::json!({});
@@ -1317,7 +1352,10 @@ fn finalize_dag(mut state: DagWalkState, request: &DagRequest<'_>) -> Result<Jso
 }
 
 /// Write one fetched PDU. Returns `false` only once the event limit is reached;
-/// skipped (invalid or duplicate) PDUs return `true` so the batch continues.
+/// skipped (invalid, duplicate, known, or too deep) PDUs return `true` so the
+/// batch continues. A finite depth cap also skips missing or nonnumeric depths.
+/// Kept events queue unknown parents when traversal is enabled. Serialization
+/// and output errors propagate.
 fn write_dag_event(
     pdu: &JsonValue,
     room_version: &str,
@@ -1441,6 +1479,10 @@ fn event_pdus_from_response(response: JsonValue) -> Vec<JsonValue> {
     vec![response]
 }
 
+/// Fetches a frontier batch through backfill, falling back to individual
+/// requests when permitted and backfill fails or returns no PDUs.
+/// Unreachable backfill requests and failures with fallback disabled propagate;
+/// individual request failures are retained in the walk state.
 fn fetch_dag_batch(
     dag_request: &DagRequest<'_>,
     ids: &[String],
@@ -1511,13 +1553,21 @@ fn finish_batch(value: JsonValue, ids: &[String], state: &mut DagWalkState) -> D
     DagBatch::Events(value)
 }
 
+/// Fetches a remote timeline DAG into the output file, following `prev_events`.
+/// Returns event counts, request statistics, and the unresolved frontier.
+/// The output is replaced; a negative limit allows an unbounded crawl.
 ///
 /// # Errors
-/// Returns an error if fetching, parsing, or writing the crawl fails.
+/// Returns an error for empty seeds, conflicting output paths, output failures,
+/// an unreachable destination, or a backfill error with fallback disabled.
+/// Individual request failures are reported in the summary unless no events
+/// were written, in which case the fetch fails.
 pub fn get_remote_dag(dag_request: &DagRequest<'_>) -> Result<JsonValue, AppError> {
     get_remote_dag_with_known(dag_request, None)
 }
 
+/// Crawls the remote DAG, stopping at IDs in `known` without fetching them.
+/// Returns the crawl summary or propagates initialization, fetch, and output errors.
 fn get_remote_dag_with_known(
     dag_request: &DagRequest<'_>,
     known: Option<&HashSet<String>>,
@@ -1528,7 +1578,10 @@ fn get_remote_dag_with_known(
 /// Fetches only the requested IDs, without crawling their `prev_events`.
 ///
 /// # Errors
-/// Returns an error if the destination is unreachable or writing fetched events fails.
+/// Returns an error for empty seeds, conflicting output paths, serialization or
+/// output failures, or request failures when no events were written. After
+/// partial success, an unreachable destination stops fetching and the summary
+/// includes failures and unresolved IDs. Known IDs are skipped.
 pub(super) fn get_remote_events_by_id(
     dag_request: &DagRequest<'_>,
     known: Option<&HashSet<String>>,
@@ -1587,6 +1640,11 @@ pub(super) fn get_remote_events_by_id(
     finalize_dag(state, dag_request)
 }
 
+/// Crawls the frontier while excluding known events and optionally persisting
+/// tried IDs after each batch. With `skip_tried`, excludes prior requests and
+/// discovered parents in that set. Propagates initialization, fetch, write,
+/// and checkpoint errors; a failed-batch checkpoint error does not replace
+/// the fetch error.
 fn get_remote_dag_with_known_and_checkpoint(
     dag_request: &DagRequest<'_>,
     known: Option<&HashSet<String>>,
@@ -1670,6 +1728,10 @@ fn get_remote_dag_with_known_and_checkpoint(
     finalize_dag(state, dag_request)
 }
 
+/// Flushes fetched events before saving tried IDs and the unresolved frontier.
+/// Returns a pending unreachable-server error inside `Ok`, leaving the failing
+/// and unattempted IDs out of the tried checkpoint. Output and checkpoint
+/// errors propagate as `Err`.
 fn finish_dag_batch(
     state: &mut DagWalkState,
     dag_request: &DagRequest<'_>,
@@ -1765,7 +1827,8 @@ fn existing_rounds(output_dir: &Path) -> Result<Vec<(u32, PathBuf)>, AppError> {
 }
 
 /// Events from every `*.jsonl` in a round folder. An interrupted run can leave
-/// the last line of a file cut short; that one line is skipped with a warning.
+/// the last line of a file cut short; a malformed final nonblank line is skipped.
+/// Excludes `requests.jsonl`. Earlier malformed lines and file I/O errors propagate.
 fn read_round_events(dir: &Path) -> Result<Vec<JsonValue>, AppError> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -1803,10 +1866,14 @@ fn read_round_events(dir: &Path) -> Result<Vec<JsonValue>, AppError> {
     Ok(events)
 }
 
+/// Reads timeline request IDs from the output directory checkpoint; a missing
+/// file is an empty set and other read errors propagate.
 fn read_tried(output_dir: &Path) -> Result<HashSet<String>, AppError> {
     read_tried_file(&output_dir.join(TRIED_FILE))
 }
 
+/// Reads unique, trimmed, nonblank request IDs. A missing file is an empty
+/// set; other I/O and invalid UTF-8 errors propagate.
 fn read_tried_file(path: &Path) -> Result<HashSet<String>, AppError> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(text
@@ -1820,10 +1887,13 @@ fn read_tried_file(path: &Path) -> Result<HashSet<String>, AppError> {
     }
 }
 
+/// Replaces the timeline request checkpoint with sorted tried IDs,
+/// propagating checkpoint I/O errors.
 fn write_tried(output_dir: &Path, tried: &HashSet<String>) -> Result<(), AppError> {
     write_tried_file(&output_dir.join(TRIED_FILE), tried)
 }
 
+/// Replaces a checkpoint with sorted tried IDs, propagating I/O errors.
 fn write_tried_file(path: &Path, tried: &HashSet<String>) -> Result<(), AppError> {
     let mut ids = tried.iter().cloned().collect::<Vec<_>>();
     ids.sort();
@@ -1849,6 +1919,10 @@ fn gap_fill_result(
     })
 }
 
+/// Fetches missing timeline events and then auth chains, extending `events`.
+/// Returns unique event counts before and after, fetched file paths, and the
+/// failed request count. Unreachable destinations and auth-fetch or reload
+/// errors propagate; other timeline crawl errors count as failed requests.
 fn fetch_gap_round(
     request: &GapFillRequest<'_>,
     events: &mut Vec<JsonValue>,
@@ -1947,6 +2021,15 @@ fn fetch_gap_round(
 /// Fetch missing timeline and authentication references for a bounded number
 /// of rounds. This intentionally writes fetched batches separately; callers
 /// can inspect or aggregate them without mutating the original input.
+/// Zero rounds means continue until closed or no new events are added; on
+/// resume, the limit counts newly run rounds. Earlier round events and tried
+/// checkpoints are reloaded, and new round numbers follow the existing ones.
+/// Requests are retried in later rounds unless `skip_tried` is set. Returns
+/// closure status, missing references, fetched paths, and failure counts.
+///
+/// # Errors
+/// Returns an error for existing round directories without resume, input or
+/// checkpoint I/O failures, malformed resumed data, or an unreachable server.
 fn gap_fill(request: &GapFillRequest<'_>) -> Result<JsonValue, AppError> {
     let GapFillRequest {
         inputs,
@@ -2083,6 +2166,10 @@ struct AuthFetchContext<'a> {
     skip_tried: bool,
 }
 
+/// Fetches auth chains for events citing missing auth references and writes
+/// events with distinct IDs. Returns the written count and collected request
+/// failures. Successful responses are flushed before marking requests tried;
+/// unreachable destinations, serialization, and I/O errors propagate.
 fn fetch_auth_batches(
     report: &crate::repair::GapReport,
     context: AuthFetchContext<'_>,
@@ -2177,6 +2264,9 @@ fn fetch_auth_batches(
     Ok((written, failures))
 }
 
+/// Fetches and reloads missing auth chains into `events`, returning the
+/// nonempty output path and failed request count. Returns no path when nothing
+/// is written; fetch and reload errors propagate.
 fn fetch_auth_for_round(
     request: &GapFillRequest<'_>,
     events: &mut Vec<JsonValue>,
@@ -2220,6 +2310,8 @@ fn fetch_auth_for_round(
     }
 }
 
+/// Appends one authentication request record with a timestamp in Unix seconds.
+/// Serialization and file I/O errors propagate.
 fn append_auth_attempt(
     path: &Path,
     round: u32,
@@ -2251,6 +2343,8 @@ fn append_auth_attempt(
     Ok(())
 }
 
+/// Builds a request record with `when` in Unix seconds and duration in
+/// milliseconds. An event request is a retry if its ID is in `tried`.
 fn attempt_record(
     when: u64,
     round: u32,
@@ -2277,6 +2371,8 @@ fn attempt_record(
     })
 }
 
+/// Adds a newly tried auth request ID to memory and appends it to the checkpoint.
+/// File I/O errors propagate; an ID already in memory is not written again.
 fn record_auth_tried(
     path: &Path,
     auth_tried: &mut HashSet<String>,

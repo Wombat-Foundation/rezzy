@@ -24,22 +24,28 @@ const (
 	hashEventsOperation
 )
 
-// EventID returns the event ID of a JSON event under roomVersion.
+// EventID returns the reference-hash event ID of a JSON event under roomVersion.
+// Parsing and hashing failures, including opaque-ID versions, return an error.
 func EventID(roomVersion string, event []byte) (string, error) {
 	return call(roomVersion, event, eventIDOperation)
 }
 
 // VerifyContentHash checks the event's hashes.sha256 under roomVersion.
+// It returns an error for malformed input or a failed content-hash check.
 func VerifyContentHash(roomVersion string, event []byte) error {
 	_, err := call(roomVersion, event, verifyContentHashOperation)
 	return err
 }
 
-// HashEventsJSONL returns the same JSON report as `rezzy hash events`.
+// HashEventsJSONL returns an event report for each nonblank JSONL line.
+// Per-event failures remain in the report; invalid UTF-8 or empty input returns
+// an error. Unsupported versions are handled per event rather than rejected up front.
 func HashEventsJSONL(roomVersion string, jsonl []byte) (string, error) {
 	return call(roomVersion, jsonl, hashEventsOperation)
 }
 
+// call invokes a hashing operation and releases the returned buffer. Nonzero
+// library statuses become errors; unrecognized operations select event ID hashing.
 func call(
 	roomVersion string,
 	event []byte,
@@ -76,6 +82,8 @@ func call(
 	return text, nil
 }
 
+// main reads an input file, runs the selected operation, and prints its result.
+// Usage errors exit with status 2; file and hashing errors exit with status 1.
 func main() {
 	if len(os.Args) != 4 {
 		fmt.Fprintf(os.Stderr, "usage: %s <event-id|verify-content-hash|hash-events> <room-version> <event.jsonl>\n", os.Args[0])

@@ -743,6 +743,10 @@ fn stale_error(path: &Path) -> AppError {
     )
 }
 
+/// Checks that published bytes match the expected aggregate and provenance.
+/// When provenance is disabled, any sidecar entry is stale, including a symlink.
+/// Returns a current-status report or an `AggregateStale` error for mismatches
+/// or files that cannot be checked.
 fn check_published_pair(
     options: &Options,
     output: &[u8],

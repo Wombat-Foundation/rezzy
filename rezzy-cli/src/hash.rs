@@ -186,7 +186,9 @@ pub fn command() -> Command {
 ///
 /// Returns an error for an unknown subcommand, a malformed element or state
 /// entry, an unreadable input, an unsupported lane count, or a `--dst`/`--output`
-/// value that cannot be interpreted.
+/// value that cannot be interpreted. The events subcommand also rejects an
+/// unsupported room version or input with no nonblank lines; per-event errors
+/// remain in the returned report.
 pub fn run_from_matches(matches: &ArgMatches) -> Result<rezzy::JsonValue, AppError> {
     match matches.subcommand() {
         Some(("lthash", m)) => run_lthash(m),

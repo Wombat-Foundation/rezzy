@@ -38,11 +38,14 @@ fn guard(out: *mut *mut u8, out_len: *mut usize, body: impl FnOnce() -> i32) -> 
     })
 }
 
-/// Reads and parses the arguments shared by every entry point.
+/// Parses a room version and JSON event, resetting output storage first.
+/// Returns `BAD_ARG` without a buffer for null arguments or a non-UTF-8
+/// version, or `ERR` with an allocated message for invalid JSON.
 ///
 /// # Safety
 /// `room_version` must be NUL-terminated and `event_json` must point to
-/// `event_len` readable bytes, whenever they are non-null.
+/// `event_len` readable bytes, whenever they are non-null. Non-null `out`
+/// and `out_len` must point to writable storage.
 unsafe fn parse_args(
     room_version: *const c_char,
     event_json: *const u8,
@@ -77,10 +80,18 @@ unsafe fn parse_args(
     }
 }
 
-/// Writes the event ID of an event to `out`.
+/// Writes `$` followed by the event reference hash to `out`.
+///
+/// Ignores an exported `event_id` for versions without opaque IDs. Returns
+/// 0 on success, 1 with an error message for parsing or hashing failures
+/// (including opaque-ID and unsupported versions), or 2 without a buffer
+/// for null arguments or a non-UTF-8 room version. Output bytes are not
+/// NUL-terminated; release any returned buffer with [`rezzy_free`].
 ///
 /// # Safety
-/// See `include/rezzy.h`: pointers must be valid for the stated lengths.
+/// See `include/rezzy.h`: the room version must be NUL-terminated, input
+/// pointers must be readable for the stated byte lengths, and non-null
+/// `out`/`out_len` must point to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn rezzy_event_id(
     room_version: *const c_char,
@@ -126,8 +137,15 @@ unsafe fn rezzy_event_id_inner(
 
 /// Checks an event's `hashes.sha256` against its content.
 ///
+/// Returns 0 with null output and zero length on success, 1 with an allocated
+/// message for parsing or verification errors, or 2 without a buffer for null
+/// arguments or a non-UTF-8 room version. An exported `event_id` is removed
+/// for versions without opaque IDs. Release error buffers with [`rezzy_free`].
+///
 /// # Safety
-/// See `include/rezzy.h`: pointers must be valid for the stated lengths.
+/// See `include/rezzy.h`: the room version must be NUL-terminated, input
+/// pointers must be readable for the stated byte lengths, and non-null
+/// `out`/`out_len` must point to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn rezzy_verify_content_hash(
     room_version: *const c_char,
@@ -171,11 +189,19 @@ unsafe fn rezzy_verify_content_hash_inner(
 /// Describes every event in a JSONL buffer.
 ///
 /// Writes the same report object as `rezzy hash events` to `out`. Each event
-/// record carries its 1-based `line`; a line that cannot be hashed yields an
-/// `error` record and the call still succeeds.
+/// record carries its 1-based `line`; blank lines are ignored. Per-event
+/// failures are recorded and the call still succeeds with status 0. Unlike the
+/// CLI, this does not reject unsupported room versions before processing.
+///
+/// Returns 1 with a message for invalid UTF-8 input, no nonblank lines,
+/// serialization failure, or a caught panic; returns 2 without a buffer for
+/// null arguments or a non-UTF-8 room version. Output is not NUL-terminated;
+/// release any returned buffer with [`rezzy_free`].
 ///
 /// # Safety
-/// See `include/rezzy.h`: pointers must be valid for the stated lengths.
+/// See `include/rezzy.h`: the room version must be NUL-terminated, input
+/// pointers must be readable for the stated byte lengths, and non-null
+/// `out`/`out_len` must point to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn rezzy_hash_events(
     room_version: *const c_char,

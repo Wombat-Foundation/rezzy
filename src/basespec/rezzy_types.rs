@@ -918,16 +918,14 @@ fn is_supported_room_version(room_version: &str) -> bool {
 /// retained), encoded with the room version's base64 alphabet (STANDARD for
 /// v3, URL-safe for v4+; no `$` prefix).
 ///
-/// Canonicalization is tolerant of out-of-range integers (like Synapse's
-/// `relaxed` mode): the JSON writer serializes whatever numbers are
-/// present rather than rejecting them. Keys are already lexicographically
-/// sorted because `crate::json::Object` is a `BTreeMap`.
+/// Canonicalization follows the room version's number rules, including strict
+/// number validation for v6+. Keys are sorted lexicographically.
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
-/// event IDs are opaque server-assigned strings, not hashes), or when the
-/// canonical JSON writer fails (e.g. strict-number validation rejects a
-/// fractional value in a v6+ room).
+/// event IDs are opaque server-assigned strings, not hashes), when the room
+/// version is unsupported, or when canonical JSON serialization fails (e.g.
+/// strict-number validation rejects a fractional value in a v6+ room).
 pub fn reference_hash(
     value: &Value,
     room_version: &str,
@@ -945,8 +943,9 @@ pub fn reference_hash(
     Ok(hash)
 }
 
-/// Whether `room_version` (v1 and v2) gives events server-assigned `event_id`s
-/// that no hash can derive.
+/// Classifies versions with a numeric major component at most 2 as using
+/// opaque, server-assigned event IDs. This does not validate the version;
+/// an unparseable major component returns `false`.
 #[must_use]
 pub fn has_opaque_event_ids(room_version: &str) -> bool {
     room_version
@@ -957,6 +956,8 @@ pub fn has_opaque_event_ids(room_version: &str) -> bool {
 }
 
 /// Computes the reference-hash digest after validating the room version.
+/// Returns an error for opaque-ID or unsupported versions and canonical JSON
+/// serialization failures.
 fn reference_hash_digest(
     value: &Value,
     room_version: &str,
@@ -3508,6 +3509,7 @@ impl LeanEvent<String, Value, String> {
     /// unsupported type, `depth` is invalid, an `m.room.redaction` has a
     /// malformed/mismatched `redacts`, or an `event_id` is absent while no
     /// `room_version` is given (or the reference hash cannot be computed).
+    /// Also rejects `auth_events` in MSC4242 events; use `prev_state_events`.
     #[allow(clippy::too_many_lines)]
     pub fn from_value(
         value: &Value,

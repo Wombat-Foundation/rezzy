@@ -18,6 +18,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Builds arguments for comparing reported state and optionally fetching missing events.
 pub(super) fn command() -> Command {
     Command::new("state-diff")
         .about("Compare the room state and auth chain servers report at one event")
@@ -98,10 +99,12 @@ fn ids_in(response: &JsonValue, key: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// Converts a count to a JSON integer, saturating at `u64::MAX`.
 fn count(n: usize) -> JsonValue {
     rezzy::json!(u64::try_from(n).unwrap_or(u64::MAX))
 }
 
+/// Replaces `path` with sorted IDs, one per line, propagating file I/O errors.
 fn write_lines(path: &Path, ids: &BTreeSet<String>) -> Result<(), AppError> {
     let mut text = String::new();
     for id in ids {
@@ -149,10 +152,12 @@ fn too_deep_ids(m: &ArgMatches, room_version: &str) -> Result<HashSet<String>, A
     Ok(deep)
 }
 
+/// Returns unique sorted IDs excluding those identified as too deep.
 fn without(ids: impl Iterator<Item = String>, deep: &HashSet<String>) -> BTreeSet<String> {
     ids.filter(|id| !deep.contains(id)).collect()
 }
 
+/// Returns IDs absent from the locally held set.
 fn not_held(ids: &BTreeSet<String>, known: &HashSet<String>) -> BTreeSet<String> {
     ids.iter()
         .filter(|id| !known.contains(*id))
@@ -178,7 +183,8 @@ fn summarize_list(
 }
 
 /// Ask each destination for its state IDs. Returns what each reported and a
-/// per-server summary (or its error).
+/// per-server summary (or its error). Request and malformed-response errors
+/// become per-server entries; writing the ID lists can return an error.
 fn ask_servers(
     m: &ArgMatches,
     uri: &str,
@@ -288,7 +294,9 @@ fn compare_pairs(answers: &Answers, out_dir: &Path) -> Result<JsonValue, AppErro
 }
 
 /// `--fetch`: get each server's missing events (state and auth chain) with
-/// `/event/{id}`.
+/// `/event/{id}`, without crawling parents. Servers with no missing IDs are
+/// omitted. Fetch errors become per-server results with unresolved IDs;
+/// partial successes retain the fetch summary and its failure counts.
 fn fetch_missing(
     m: &ArgMatches,
     answers: &Answers,
@@ -416,6 +424,15 @@ fn ensure_known_not_overwritten(m: &ArgMatches, out_dir: &Path) -> Result<(), Ap
     Ok(())
 }
 
+/// Compares state and auth-chain IDs reported at one event and writes per-server
+/// and pairwise ID lists. Optionally fetches missing events without following
+/// their parents. Returns server, comparison, and fetch summaries.
+///
+/// # Errors
+/// Returns an error for an invalid room ID, known-input/output path conflicts,
+/// known-file read or parse failures, or comparison-output I/O failures.
+/// Remote request and malformed-response errors are retained per server; fetch
+/// errors are retained in the fetch summary, so these do not fail the command.
 pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let room = m.get_one::<String>("room").expect("required");
     validate_room_id(room)?;

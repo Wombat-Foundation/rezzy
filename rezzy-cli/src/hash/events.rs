@@ -12,6 +12,7 @@ use clap::{Arg, ArgMatches, Command};
 use rezzy::JsonValue;
 use std::path::PathBuf;
 
+/// Builds the event-hashing subcommand arguments.
 pub(super) fn command() -> Command {
     Command::new("events")
         .about("Compute each event's reference hash, content-hash check and links")
@@ -31,6 +32,12 @@ pub(super) fn command() -> Command {
         )
 }
 
+/// Reads event JSONL and returns a report under the selected room version.
+/// `-` reads stdin; blank lines are ignored and per-event failures become records.
+///
+/// # Errors
+/// Returns an error for an unsupported room version, unreadable or invalid UTF-8
+/// input, or input with no nonblank lines.
 pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let path = m.get_one::<PathBuf>("input").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("required");

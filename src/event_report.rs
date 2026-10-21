@@ -50,7 +50,12 @@ pub fn wire_event(event: &JsonValue, room_version: &str) -> JsonValue {
     wire
 }
 
-/// Describes one parsed event under `room_version`.
+/// Describes one parsed event under `room_version`, including its reference
+/// ID, claimed ID, content-hash result, metadata, and normalized event links.
+/// Opaque-ID versions omit the derived ID. Nonobjects, malformed links, and
+/// reference-hash failures produce an `error` record; content-hash failures
+/// instead set `content_hash_ok` to false and include `content_hash_error`
+/// and the redacted event. Missing link fields become empty arrays.
 #[must_use]
 pub fn describe_event(event: &JsonValue, room_version: &str) -> JsonValue {
     let mut record = crate::json!({});

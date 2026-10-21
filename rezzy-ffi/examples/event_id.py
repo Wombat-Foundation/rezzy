@@ -12,6 +12,11 @@ REZZY_OK = 0
 
 
 def load(path=None):
+    """Load the FFI library and configure its ctypes signatures.
+
+    With no path, look in target/debug for the platform library. Raise
+    SystemExit if loading fails; missing exported symbols raise AttributeError.
+    """
     if path is None:
         target = pathlib.Path(__file__).resolve().parents[2] / "target" / "debug"
         names = {
@@ -44,6 +49,12 @@ def load(path=None):
 
 
 def call(lib, name, room_version, event: bytes):
+    """Call a configured hashing symbol and return its status and decoded output.
+
+    Pass JSON bytes for a single-event operation or JSONL for rezzy_hash_events.
+    Operation errors are returned as statuses and messages. UTF-8 decoding
+    errors raise UnicodeDecodeError; successfully decoded buffers are freed.
+    """
     out = ctypes.POINTER(ctypes.c_uint8)()
     out_len = ctypes.c_size_t()
     status = getattr(lib, name)(
