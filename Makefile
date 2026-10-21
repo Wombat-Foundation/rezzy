@@ -173,7 +173,7 @@ rust/install: ##H Install rezzy binary to cargo bin, and the C ABI lib + header 
 
 .PHONY: rust/uninstall
 rust/uninstall: ##H Uninstall rezzy binary and the C ABI files
-	-$(CARGO) uninstall rezzy
+	-$(CARGO) uninstall rezzy-cli
 	rm -f $(DESTDIR)$(LIBDIR)/librezzy_ffi.$(DYLIB_EXT) $(DESTDIR)$(LIBDIR)/librezzy_ffi.a \
 		$(DESTDIR)$(LIBDIR)/pkgconfig/rezzy.pc $(DESTDIR)$(INCLUDEDIR)/rezzy.h
 

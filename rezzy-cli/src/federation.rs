@@ -1202,9 +1202,9 @@ struct DagWalkState {
     /// Requests made since the last checkpoint, kept only when logging them.
     attempts: Vec<Attempt>,
     log_attempts: bool,
-    /// Event IDs requested since the last checkpoint, in request order,
-    /// tracked whether or not attempts are logged.
+    /// Event IDs requested since the last checkpoint, in request order.
     requested: Vec<String>,
+    track_requested: bool,
     /// Events dropped by `--max-depth`.
     skipped_deep: usize,
     /// Whether fetched events' `prev_events` should be queued for crawling.
@@ -1219,8 +1219,10 @@ impl DagWalkState {
     fn record(&mut self, attempt: Attempt) {
         let count = self.stats.entry(stat_label(&attempt)).or_insert(0);
         *count = count.saturating_add(1);
-        if let Some(id) = &attempt.event_id {
-            self.requested.push(id.clone());
+        if self.track_requested {
+            if let Some(id) = &attempt.event_id {
+                self.requested.push(id.clone());
+            }
         }
         if self.log_attempts {
             self.attempts.push(attempt);
@@ -1285,6 +1287,7 @@ fn initialize_dag(
             attempts: Vec::new(),
             log_attempts: false,
             requested: Vec::new(),
+            track_requested: false,
             skipped_deep: 0,
             follow_prev_events: true,
             skip: HashSet::new(),
@@ -1653,6 +1656,7 @@ fn get_remote_dag_with_known_and_checkpoint(
     let room_version = dag_request.room_version;
     let (mut state, max) = initialize_dag(dag_request, known)?;
     let mut tried_checkpoint = tried_checkpoint;
+    state.track_requested = tried_checkpoint.is_some();
     state.log_attempts = tried_checkpoint
         .as_ref()
         .is_some_and(|cp| cp.requests_path.is_some());

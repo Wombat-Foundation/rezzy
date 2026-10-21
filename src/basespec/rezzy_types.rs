@@ -945,7 +945,7 @@ pub fn reference_hash(
 
 /// Classifies versions with a numeric major component at most 2 as using
 /// opaque, server-assigned event IDs. This does not validate the version;
-/// an unparseable major component returns `false`.
+/// an unparsable major component returns `false`.
 #[must_use]
 pub fn has_opaque_event_ids(room_version: &str) -> bool {
     room_version
