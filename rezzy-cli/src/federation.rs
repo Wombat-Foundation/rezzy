@@ -1141,6 +1141,7 @@ fn checkpoint_batch(
         )?;
     }
     state.attempts.clear();
+    state.requested.clear();
     for id in ids {
         checkpoint.tried.insert(id.clone());
         if checkpoint.skip_tried {
@@ -1175,6 +1176,9 @@ struct DagWalkState {
     /// Requests made since the last checkpoint, kept only when logging them.
     attempts: Vec<Attempt>,
     log_attempts: bool,
+    /// Event IDs requested since the last checkpoint, in request order,
+    /// tracked whether or not attempts are logged.
+    requested: Vec<String>,
     /// Events dropped by `--max-depth`.
     skipped_deep: usize,
     /// Whether fetched events' `prev_events` should be queued for crawling.
@@ -1187,6 +1191,9 @@ impl DagWalkState {
     fn record(&mut self, attempt: Attempt) {
         let count = self.stats.entry(stat_label(&attempt)).or_insert(0);
         *count = count.saturating_add(1);
+        if let Some(id) = &attempt.event_id {
+            self.requested.push(id.clone());
+        }
         if self.log_attempts {
             self.attempts.push(attempt);
         }
@@ -1246,6 +1253,7 @@ fn initialize_dag(
             stats: BTreeMap::new(),
             attempts: Vec::new(),
             log_attempts: false,
+            requested: Vec::new(),
             skipped_deep: 0,
             follow_prev_events: true,
             skip: HashSet::new(),
@@ -1674,12 +1682,8 @@ fn finish_dag_batch(
         if let Some(cp) = checkpoint.as_mut() {
             // Only IDs actually requested count as tried; the fetch that hit the
             // unreachable server and everything after it must be retried.
-            let failing = state.attempts.last().and_then(|a| a.event_id.clone());
-            let attempted: HashSet<&str> = state
-                .attempts
-                .iter()
-                .filter_map(|a| a.event_id.as_deref())
-                .collect();
+            let failing = state.requested.last().cloned();
+            let attempted: HashSet<&str> = state.requested.iter().map(String::as_str).collect();
             let requested: Vec<String> = ids
                 .into_iter()
                 .filter(|id| attempted.contains(id.as_str()) && failing.as_ref() != Some(id))
@@ -2136,10 +2140,7 @@ fn fetch_auth_batches(
             )?;
         }
         let value = match result {
-            Ok(value) => {
-                record_auth_tried(auth_tried_path, auth_tried, &event_id)?;
-                value
-            }
+            Ok(value) => value,
             Err(error) => {
                 if is_unreachable(&error) {
                     return Err(error);
@@ -2168,6 +2169,9 @@ fn fetch_auth_batches(
         // Flush after every response so an interrupted crawl keeps the auth
         // chains it already fetched.
         output_writer.flush()?;
+        // Record the request only once its events are durable, so a resumed
+        // run never skips an ID whose auth events were not saved.
+        record_auth_tried(auth_tried_path, auth_tried, &event_id)?;
     }
     output_writer.flush()?;
     Ok((written, failures))
