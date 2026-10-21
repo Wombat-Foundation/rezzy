@@ -44,6 +44,8 @@ enum EventShape {
     Pdus,
     /// `{"pdu": {…}}`, an older/custom shape.
     Pdu,
+    /// The event endpoint returns HTTP 404 for every requested ID.
+    Missing,
 }
 
 struct Mock {
@@ -155,6 +157,10 @@ fn handle(
                     format!(r#"{{"origin":"mock","origin_server_ts":1,"pdus":[{PDU}]}}"#)
                 }
                 EventShape::Pdu => format!(r#"{{"pdu":{PDU}}}"#),
+                EventShape::Missing => {
+                    respond(&mut stream, 404, r#"{"errcode":"M_NOT_FOUND"}"#);
+                    return;
+                }
             };
             respond(&mut stream, 200, &body);
         } else {
@@ -676,6 +682,13 @@ fn resume_retries_failed_ids_by_default() {
 fn debug_writes_one_log_line_per_request_with_status_and_errcode() {
     let mock = spawn_mock(Backfill::Blank, EventShape::Pdus);
     let fx = Fixture::new("debug-log");
+    let base = fs::read_to_string(fx.dir.join("base.jsonl")).unwrap();
+    let base = base
+        .lines()
+        .filter(|line| !line.contains(AUTH_A) && !line.contains(AUTH_B))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(fx.dir.join("base.jsonl"), base + "\n").unwrap();
     let out = fx.gap_fill_with(&mock.url, true, "1", &["--debug"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let log = fs::read_to_string(fx.dir.join("out/round-000/requests.jsonl")).unwrap();
@@ -698,6 +711,18 @@ fn debug_writes_one_log_line_per_request_with_status_and_errcode() {
     let target = find(&format!("\"event_id\":\"{TARGET}\""));
     assert!(target.contains("\"status\":200") && target.contains("\"outcome\":\"ok\""));
     assert!(find("\"endpoint\":\"backfill\"").contains("\"event_id\":null"));
+    let auth = find("\"endpoint\":\"event_auth\"");
+    assert!(
+        auth.contains(&format!("\"event_id\":\"{TARGET}\"")),
+        "{auth}"
+    );
+    assert_eq!(
+        fs::read_to_string(fx.dir.join("out/auth-tried.txt")).unwrap(),
+        format!("{TARGET}\n")
+    );
+    assert!(!fs::read_to_string(fx.dir.join("out/tried.txt"))
+        .unwrap_or_default()
+        .contains("event_auth:"));
     let lower = log.to_ascii_lowercase();
     for secret in ["x-matrix", "authorization", "key.enc", "passphrase"] {
         assert!(
@@ -1166,6 +1191,35 @@ fn state_diff_fetch_gets_the_missing_events_by_id() {
         .map(|e| fs::read_to_string(e.path()).unwrap())
         .collect();
     assert!(fetched.contains(TARGET), "{fetched}");
+}
+
+#[test]
+fn state_diff_fetch_reports_partial_failures_and_remaining_ids() {
+    let state = StateIds {
+        pdu_ids: vec![TARGET, STILL_MISSING],
+        auth_chain_ids: vec![],
+    };
+    let server = spawn_mock_with(Backfill::Blank, EventShape::Pdus, Some(state));
+    let fx = Fixture::new("sd-fetch-partial");
+    let out = fx.state_diff(&[&server.url], ROOM, &["--fetch"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let json = compact(&out.stdout);
+    assert!(json.contains("\"count\":1"), "{json}");
+    assert!(json.contains("\"failed_requests\":1"), "{json}");
+    assert!(json.contains(STILL_MISSING), "{json}");
+}
+
+#[test]
+fn state_diff_fetch_fails_when_every_event_request_fails() {
+    let state = StateIds {
+        pdu_ids: vec![TARGET],
+        auth_chain_ids: vec![],
+    };
+    let server = spawn_mock_with(Backfill::Blank, EventShape::Missing, Some(state));
+    let fx = Fixture::new("sd-fetch-total-failure");
+    let out = fx.state_diff(&[&server.url], ROOM, &["--fetch"]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("could not fetch missing events"));
 }
 
 #[test]

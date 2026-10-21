@@ -294,16 +294,18 @@ fn fetch_missing(
     answers: &Answers,
     out_dir: &Path,
     known: &HashSet<String>,
-) -> JsonValue {
+) -> Result<JsonValue, AppError> {
     let origin = m.get_one::<String>("origin").expect("default");
     let room = m.get_one::<String>("room").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("default");
-    // The IDs are exact; do not crawl `prev_events` from what comes back.
     super::MAX_DEPTH.store(
         m.get_one::<u64>("max-depth").copied().unwrap_or(u64::MAX),
         std::sync::atomic::Ordering::Relaxed,
     );
     let mut fetched = rezzy::json!({});
+    let mut attempted = 0_usize;
+    let mut succeeded = 0_usize;
+    let mut first_error = None;
     for (dest, reported) in answers {
         let starts: Vec<String> = reported
             .state
@@ -314,6 +316,7 @@ fn fetch_missing(
         if starts.is_empty() {
             continue;
         }
+        attempted = attempted.saturating_add(1);
         let output = out_dir.join(format!("{}.state.jsonl", file_stem(dest)));
         let dag = DagRequest {
             origin,
@@ -330,16 +333,32 @@ fn fetch_missing(
         let outcome = match get_remote_events_by_id(&dag, Some(known)) {
             // Keep the whole summary: failures and the unresolved frontier say
             // whether the fetch was complete.
-            Ok(result) => result,
-            Err(error) => rezzy::json!({
-                "count": 0,
-                "error": error.to_string().chars().take(200).collect::<String>(),
-                "remaining_frontier": starts,
-            }),
+            Ok(result) => {
+                succeeded = succeeded.saturating_add(1);
+                result
+            }
+            Err(error) => {
+                let message = error.to_string().chars().take(200).collect::<String>();
+                first_error.get_or_insert_with(|| format!("{dest}: {message}"));
+                rezzy::json!({
+                    "count": 0,
+                    "error": message,
+                    "remaining_frontier": starts,
+                })
+            }
         };
         let _ = fetched.insert(dest.clone(), outcome);
     }
-    fetched
+    if attempted > 0 && succeeded == 0 {
+        return Err(AppError::new(
+            crate::error::ErrorCode::NetworkError,
+            format!(
+                "state-diff could not fetch missing events from any destination: {}",
+                first_error.unwrap_or_else(|| String::from("all requests failed"))
+            ),
+        ));
+    }
+    Ok(fetched)
 }
 
 /// Plain one-line-per-number summary on stderr, so stdout stays pure JSON.
@@ -431,7 +450,7 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
         ask_servers(m, &uri, out_dir, &known, &too_deep_ids(m, room_version)?)?;
     let pairs = compare_pairs(&answers, out_dir)?;
     let fetched = if m.get_flag("fetch") {
-        fetch_missing(m, &answers, out_dir, &known)
+        fetch_missing(m, &answers, out_dir, &known)?
     } else {
         rezzy::json!({})
     };

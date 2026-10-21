@@ -374,6 +374,7 @@ mod tests {
         let mut len = 0;
         let status = guard(&raw mut out, &raw mut len, || panic!("test panic"));
         assert_eq!(status, ERR);
+        // SAFETY: the guard returned this buffer with its exact length.
         let message = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(out, len)) };
         assert!(message.contains("panicked"));
         // SAFETY: this is the buffer returned by the guard, freed once.

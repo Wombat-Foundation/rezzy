@@ -22,7 +22,12 @@ def load(path=None):
             (target / name for name in names if (target / name).exists()),
             target / "rezzy_ffi.dll",
         )
-    lib = ctypes.CDLL(str(path))
+    try:
+        lib = ctypes.CDLL(str(path))
+    except OSError as error:
+        raise SystemExit(
+            f"could not load {path}; build the library with `cargo build -p rezzy-ffi`: {error}"
+        ) from error
     for name in ("rezzy_event_id", "rezzy_verify_content_hash", "rezzy_hash_events"):
         fn = getattr(lib, name)
         fn.argtypes = [
