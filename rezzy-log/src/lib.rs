@@ -1,4 +1,8 @@
+#![no_std]
 //! Shared level macros and optional compact stderr subscriber for Rezzy crates.
+
+#[cfg(feature = "logging")]
+extern crate std;
 
 #[cfg(feature = "logging")]
 #[doc(hidden)]
@@ -94,6 +98,7 @@ macro_rules! error {
 mod subscriber {
     use std::fmt::Write as _;
     use std::io::IsTerminal as _;
+    use std::io::Write as _;
     use std::string::String;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tracing::field::{Field, Visit};
@@ -129,7 +134,9 @@ mod subscriber {
             let mut fields = FieldOutput::default();
             event.record(&mut fields);
             let level = format_level(*metadata.level(), std::io::stderr().is_terminal());
-            std::eprintln!(
+            // Ignore write failures (e.g. closed stderr): logging must not panic.
+            let _ = writeln!(
+                std::io::stderr().lock(),
                 "{} {} {}: {}{}",
                 level,
                 metadata.target(),
@@ -195,7 +202,15 @@ mod subscriber {
             .ok()
             .as_deref()
             .and_then(parse_level)
-            .unwrap_or(LevelFilter::INFO);
+            .unwrap_or_else(|| {
+                if std::env::var_os("RUST_LOG").is_some() {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "rezzy-log: unsupported RUST_LOG value; expected one of off, error, warn, info, debug, trace; using info"
+                    );
+                }
+                LevelFilter::INFO
+            });
         let _ = tracing::subscriber::set_global_default(StderrSubscriber { max_level });
     }
 

@@ -53,7 +53,8 @@ extern crate std;
 
 extern crate alloc;
 
-/// Install Rezzy's compact stderr tracing subscriber, filtered by `RUST_LOG`.
+/// Install Rezzy's compact stderr tracing subscriber, filtered by a bare level in `RUST_LOG`
+/// (`off`, `error`, `warn`, `info`, `debug`, `trace`; default `info`).
 ///
 /// This is opt-in because libraries should generally let their host own the
 /// process-wide subscriber. Applications can call this once during startup.

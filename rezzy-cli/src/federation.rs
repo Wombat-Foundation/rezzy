@@ -1683,11 +1683,20 @@ fn get_remote_dag_with_known_and_checkpoint(
             Err(error) => {
                 state.output_writer.flush()?;
                 if let Some(cp) = tried_checkpoint.as_mut() {
-                    // The batch was already sent, even when the request failed.
-                    // Persist those IDs before returning so --resume --skip-tried
-                    // does not send the same failed batch again.
+                    // For requests that reached the destination, persist their
+                    // IDs before returning so --resume --skip-tried does not
+                    // send the same failed batch again.
+                    // An unreachable destination never received the batch, so
+                    // checkpoint no IDs and leave them retryable on resume.
                     // A checkpoint write failure must not mask the real error.
-                    if let Err(write_error) = checkpoint_batch(cp, dag_request, &mut state, ids) {
+                    let checkpoint_ids = if is_unreachable(&error) {
+                        Vec::new()
+                    } else {
+                        ids
+                    };
+                    if let Err(write_error) =
+                        checkpoint_batch(cp, dag_request, &mut state, checkpoint_ids)
+                    {
                         eprintln!("[warn] could not checkpoint failed batch: {write_error}");
                     }
                 }

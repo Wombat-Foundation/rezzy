@@ -411,6 +411,23 @@ fn generated_paths<'a>(
     paths
 }
 
+/// Rejects destinations that map to the same output file stem, which would
+/// overwrite each other's state, auth-chain, pairwise, and fetch files.
+fn ensure_distinct_stems(m: &ArgMatches) -> Result<(), AppError> {
+    let mut seen = std::collections::HashMap::new();
+    for destination in m.get_many::<String>("destination").into_iter().flatten() {
+        if let Some(first) = seen.insert(file_stem(destination), destination) {
+            return Err(AppError::new(
+                crate::error::ErrorCode::IoError,
+                format!(
+                    "destinations `{first}` and `{destination}` map to the same output file name"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Rejects a `--known` file that this run would overwrite, such as the
 /// `<destination>.state.jsonl` of an earlier `--fetch`.
 fn ensure_known_not_overwritten(m: &ArgMatches, out_dir: &Path) -> Result<(), AppError> {
@@ -439,6 +456,7 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
     let event = m.get_one::<String>("event").expect("required");
     let room_version = m.get_one::<String>("room-version").expect("default");
     let out_dir = m.get_one::<PathBuf>("output-dir").expect("default");
+    ensure_distinct_stems(m)?;
     ensure_known_not_overwritten(m, out_dir)?;
     fs::create_dir_all(out_dir)?;
     let known = load_known_ids(m, out_dir, None, room_version)?;
@@ -468,9 +486,27 @@ pub(super) fn run(m: &ArgMatches) -> Result<JsonValue, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generated_paths, ids_in};
+    use super::{command, ensure_distinct_stems, generated_paths, ids_in};
     use rezzy::JsonValue;
     use std::path::Path;
+
+    #[test]
+    fn rejects_destinations_that_share_an_output_stem() {
+        let matches = command()
+            .try_get_matches_from([
+                "state-diff",
+                "--room",
+                "!room:example.org",
+                "--event",
+                "$event",
+                "--destination",
+                "https://a/b",
+                "--destination",
+                "https://a?b",
+            ])
+            .unwrap();
+        assert!(ensure_distinct_stems(&matches).is_err());
+    }
 
     #[test]
     fn generated_paths_include_the_fetch_output_a_known_file_could_alias() {

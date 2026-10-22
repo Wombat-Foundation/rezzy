@@ -1372,10 +1372,6 @@ impl ReconciliationClient {
         global_estimate: Option<u64>,
         aggregate_cap: usize,
     ) -> ClientAction {
-        rezzy_log::debug!(
-            failed_bucket_count = batch.failed_buckets.len(),
-            "bucket decode error; using fallback - bounded retry or split"
-        );
         for success in batch.successful_buckets {
             accumulated_roots.extend(success.roots);
         }
@@ -1385,6 +1381,10 @@ impl ReconciliationClient {
                 ladder_failed: alloc::vec::Vec::new(),
             };
         }
+        rezzy_log::debug!(
+            failed_bucket_count = batch.failed_buckets.len(),
+            "bucket decode error; using fallback - bounded retry or split"
+        );
 
         let Ok(resolved_count) = u64::try_from(accumulated_roots.len()) else {
             rezzy_log::warn!(

@@ -53,7 +53,7 @@ lint: ##H Run all linters
 fix:	##H Clippy auto-fix (per-package; workspace-wide --fix silently drops fixes)
 	@for pkg in $$($(CARGO) metadata --no-deps --format-version 1 | $(PYTHON) -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); do \
 		echo "fix: $$pkg"; \
-		$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests -p $$pkg $(CARGO_FEATURE_ARGS); \
+		$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests -p $$pkg; \
 	done
 
 
@@ -108,7 +108,7 @@ all: format lint check doc test
 .PHONY: rust/build
 rust/build: ##H Compile Rust binary and the C ABI library (release)
 	$(CARGO) build --locked --release --timings -p rezzy-cli -p rezzy-ffi
-	@echo "Built: target/release/librezzy_ffi.{so,a} (header: rezzy-ffi/include/rezzy.h)"
+	@echo "Built: target/release/librezzy_ffi.{$(DYLIB_EXT),a} (header: rezzy-ffi/include/rezzy.h)"
 
 .PHONY: rust/so
 rust/so: ##H Compile shared object (librezzy.so) from the library
@@ -116,7 +116,7 @@ rust/so: ##H Compile shared object (librezzy.so) from the library
 	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
-rust/test: ##H Run Rust tests (set "p" for specific test, and "a" for test binary args)
+rust/test: ##H Run Rust tests (set "p" for a specific integration-test target, and "a" for test binary args)
 ifdef p
 	$(CARGO) test --timings --workspace --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
