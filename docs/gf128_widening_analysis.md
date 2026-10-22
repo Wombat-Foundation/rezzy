@@ -274,12 +274,11 @@ are already infeasible; this is a non-gain.
 
 - **Prefix-grinding placement attack on the verified `advance_verified` path**.
   Placement is still deterministic, but that path's retry policy avoids
-  attacker-controlled defender-cost growth:
-  overflow-decode undecodable normal buckets up to residual capacity 256 when
-  phase-1 verification has not rejected them and the aggregate budget admits
-  the request, fan out up to seven bits for larger nodes, and expose terminal
-  failures for caller-applied node-scoped ID fallback. See
-  `docs/2026-10-12-h64-prefix-grinding.md`.
+  attacker-controlled defender-cost growth: overflow-decode undecodable normal
+  buckets up to residual capacity 256 when phase-1 verification has not rejected
+  them and the aggregate budget admits the request, fan out up to seven bits for
+  larger nodes, and expose terminal failures for caller-applied node-scoped ID
+  fallback. See `docs/2026-10-12-h64-prefix-grinding.md`.
 - **Round exhaustion** and the persistent no-progress breaker
   (`no_progress_rounds` in `rezzy-recon/src/client.rs`) — unchanged.
 - **`MAX_FACTOR_WORK` worst-case gap** (`rezzy-recon/src/pinsketch.rs:25-45`) —
@@ -342,13 +341,13 @@ behaviors must be re-specified:
 
 ## Alternatives compared
 
-| Option                                                                                 | Security effect                                                                                                                | Cost                                                                                                                        |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| Widen field to GF(2^128) (this document)                                               | pair grinding 2^32 → 2^64; accumulator forgery ~2^37 → ~2^69                                                                   | ×2 encode, ×4-5 decode, ×2 wire/memory, ~4-7× weaker DoS ceilings, interop break                                            |
-| Local no-amplification retry policy (implemented in `client.rs`)                       | leaves placement predictable; bounds failed-node cost by its population and depth                                              | no salt, epoch, field change, or wire change                                                                                |
-| LtHash accumulator profile                                                             | forgery ~2^97, not pair-gated                                                                                                  | ~2 KiB resident state per room + ~2 KiB wire per reconciliation; already partially implemented at `src/incremental/lthash/` |
-| Widen the accumulator sum only (mod 2^128 / 2^256)                                     | ~2^43 / ~2^48 today; dominated by the same 2^32 pair floor                                                                     | format change with no field change; previously judged "not worth a format change on its own"                                |
-| Document the limit and keep GF(2^64)                                                   | accepts ~2^37 accumulator forgery, which only hides the attacker's own events and blocks repair of a split the attacker caused | zero                                                                                                                        |
+| Option                                                           | Security effect                                                                                                                | Cost                                                                                                                        |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Widen field to GF(2^128) (this document)                         | pair grinding 2^32 → 2^64; accumulator forgery ~2^37 → ~2^69                                                                   | ×2 encode, ×4-5 decode, ×2 wire/memory, ~4-7× weaker DoS ceilings, interop break                                            |
+| Local no-amplification retry policy (implemented in `client.rs`) | leaves placement predictable; bounds failed-node cost by its population and depth                                              | no salt, epoch, field change, or wire change                                                                                |
+| LtHash accumulator profile                                       | forgery ~2^97, not pair-gated                                                                                                  | ~2 KiB resident state per room + ~2 KiB wire per reconciliation; already partially implemented at `src/incremental/lthash/` |
+| Widen the accumulator sum only (mod 2^128 / 2^256)               | ~2^43 / ~2^48 today; dominated by the same 2^32 pair floor                                                                     | format change with no field change; previously judged "not worth a format change on its own"                                |
+| Document the limit and keep GF(2^64)                             | accepts ~2^37 accumulator forgery, which only hides the attacker's own events and blocks repair of a split the attacker caused | zero                                                                                                                        |
 
 Note that these are complementary, not exclusive: the field widening buys the
 pair-cost floor, the keyed placement hash buys the liveness attack, and the
@@ -356,7 +355,8 @@ accumulator choice buys residual forgery resistance.
 
 Related implementation update: the sibling `gomatrixcrypto` repository's
 `lthash` package added an AES-256-CTR LtHash accumulator alongside its BLAKE3
-profile in commit [`bce1178`](https://github.com/Wombat-Foundation/gomatrixcrypto/commit/bce1178d1ac10c241d423feb6b45c662383470ab).
+profile in commit
+[`bce1178`](https://github.com/Wombat-Foundation/gomatrixcrypto/commit/bce1178d1ac10c241d423feb6b45c662383470ab).
 That accumulator is available in `gomatrixcrypto`; it is not wired into
 `rezzy-recon`, whose reconciliation residual binding remains h128.
 

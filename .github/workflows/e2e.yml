@@ -22,7 +22,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.SUBMODULE_ACCESS_TOKEN || github.token }}
-          submodules: ${{ secrets.SUBMODULE_ACCESS_TOKEN && 'recursive' || 'false' }}
+          submodules:
+            ${{ secrets.SUBMODULE_ACCESS_TOKEN && 'recursive' || 'false' }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

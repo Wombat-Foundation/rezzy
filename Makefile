@@ -23,7 +23,7 @@ _default: format lint ##H Default: format + lint (bare `make`)
 
 .PHONY: format
 format: ##H Format codebase (Rust + Lean + scripts)
-	-prettier -w $$(git ls-files '.*md' '*.y*ml' '.*json' .prettierrc)
+	-prettier --prose-wrap always --print-width 80 --write $$(git ls-files '*.md' '*.y*ml' '*.json' .prettierrc)
 	-markdownlint $$(git ls-files '*.md')
 	-pre-commit run --all-files
 	$(CARGO) sort --workspace --grouped

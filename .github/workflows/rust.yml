@@ -98,7 +98,9 @@ jobs:
           cargo --version
 
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y pkg-config libdbus-1-dev
+        run:
+          sudo apt-get update && sudo apt-get install --no-install-recommends -y
+          pkg-config libdbus-1-dev
 
       - name: Lint
         run: CARGO_FEATURE_ARGS="--locked --all-features" make lint
@@ -147,7 +149,9 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Test Suite
-        run: set -o pipefail; CARGO_FEATURE_ARGS="--locked --all-features" make rust/test 2>&1 | tee test-results.txt
+        run:
+          set -o pipefail; CARGO_FEATURE_ARGS="--locked --all-features" make
+          rust/test 2>&1 | tee test-results.txt
 
       - name: Code Coverage
         run: make rust/coverage
@@ -181,7 +185,9 @@ jobs:
 
   publish-badge:
     needs: [checks, toolchain-checks, all-features]
-    if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    if:
+      always() && github.event_name == 'push' && (github.ref ==
+      'refs/heads/master' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write

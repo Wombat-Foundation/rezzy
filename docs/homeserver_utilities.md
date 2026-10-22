@@ -210,9 +210,9 @@ rezzy federation get-remote-dag --origin example.org \
   --from '$event:example.org' --known local-room.jsonl --output remote.jsonl
 ```
 
-`--known` can be repeated. Each JSONL file supplies events already held
-locally; the crawl stops at those event IDs instead of fetching their history
-again. This is useful when fetching a missing frontier from a partial local DAG.
+`--known` can be repeated. Each JSONL file supplies events already held locally;
+the crawl stops at those event IDs instead of fetching their history again. This
+is useful when fetching a missing frontier from a partial local DAG.
 
 Signing keys are read from a passphrase-encrypted file (Argon2id +
 XChaCha20-Poly1305). Plaintext key files are rejected. Point at the file with
@@ -259,6 +259,6 @@ rezzy federation request --origin your.server \
 The CLI prompts for the passphrase on the terminal. For unattended runs set
 `REZZY_KEY_PASSPHRASE_<DOMAIN>` (for example, `REZZY_KEY_PASSPHRASE_NUTRA_TK`)
 or the legacy fallback `REZZY_KEY_PASSPHRASE`. Domain-scoped variables take
-precedence. Both are weaker than prompting because they are visible to
-processes that can inspect the environment. Each (origin, key file) is
-decrypted once per process; restart the CLI after rotating a key.
+precedence. Both are weaker than prompting because they are visible to processes
+that can inspect the environment. Each (origin, key file) is decrypted once per
+process; restart the CLI after rotating a key.

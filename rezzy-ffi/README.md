@@ -1,7 +1,7 @@
 # rezzy FFI
 
-`rezzy-ffi` exposes event ID calculation and content-hash verification through
-a small C ABI. The C declarations are in [`include/rezzy.h`](include/rezzy.h).
+`rezzy-ffi` exposes event ID calculation and content-hash verification through a
+small C ABI. The C declarations are in [`include/rezzy.h`](include/rezzy.h).
 `rezzy_hash_events` takes a whole JSONL buffer and returns the same report
 object as `rezzy hash events`, in one call. It uses the shared library-level
 report builder, so the CLI and FFI apply the same hashing and redaction rules.

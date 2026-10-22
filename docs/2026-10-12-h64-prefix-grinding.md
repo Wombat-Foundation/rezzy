@@ -99,19 +99,19 @@ therefore remains a one-bit split per round, and the default 20-round budget
 limits its depth. If the initial request is already at depth `d`, reaching
 `d + 20` constrained `h64` bits takes about `33 * 2^(d + 20)` event-hash
 attempts, assuming roughly 33 hashes to construct each candidate event. For
-initial depths 0 through 6, that is about `33 * 2^20` to `33 * 2^26` hashes.
-The exact work depends on the starting depth and how candidate events are
+initial depths 0 through 6, that is about `33 * 2^20` to `33 * 2^26` hashes. The
+exact work depends on the starting depth and how candidate events are
 constructed; this is a grinding estimate, not a protocol guarantee.
 
-The stop rule is population-based, not a short no-progress timer. After a
-failed overflow decode, if the larger of the local and remote node populations
-is at most `COLLISION_GIVE_UP_POPULATION` (64, or twice the normal bucket
-capacity), the exchange marks that prefix `ladder_failed` for caller-applied
-fallback. A larger failed node continues splitting. Thus an empty sibling
-does not trigger a shallow fallback: an attacker must keep the poisoned
-population concentrated until it is small enough to meet the cutoff. The
-20-round and depth limits remain terminal safety bounds; if either is reached
-first, the caller may still need to fall back on a larger prefix.
+The stop rule is population-based, not a short no-progress timer. After a failed
+overflow decode, if the larger of the local and remote node populations is at
+most `COLLISION_GIVE_UP_POPULATION` (64, or twice the normal bucket capacity),
+the exchange marks that prefix `ladder_failed` for caller-applied fallback. A
+larger failed node continues splitting. Thus an empty sibling does not trigger a
+shallow fallback: an attacker must keep the poisoned population concentrated
+until it is small enough to meet the cutoff. The 20-round and depth limits
+remain terminal safety bounds; if either is reached first, the caller may still
+need to fall back on a larger prefix.
 
 1. **Overflow decode small residuals.** For an undecodable normal bucket that
    was not rejected by phase-1 verification, if the sum of both sides' node
@@ -130,8 +130,8 @@ first, the caller may still need to fall back on a larger prefix.
    terminal failures through `ladder_failed`; it does not perform ID fallback.
    The caller must apply ID fallback to each failed node. Population-triggered
    give-up is limited to nodes with at most 64 events on either side; depth or
-   round exhaustion can still expose a larger prefix, so callers must also
-   bound fallback work.
+   round exhaustion can still expose a larger prefix, so callers must also bound
+   fallback work.
 
 Each additional constrained digest bit doubles the expected hashes per attacker
 element. Prefix grinding remains possible, but ordinary population-triggered
@@ -143,5 +143,5 @@ preventing an attacker from choosing predictable prefixes.
 
 This does not make placement unpredictable. Per-session salts, keyed
 re-placement, and epoch keys remain protocol-level options if unpredictability
-is ever required. They are unnecessary for the economic objective here and
-would add coordination or change node-membership semantics.
+is ever required. They are unnecessary for the economic objective here and would
+add coordination or change node-membership semantics.
