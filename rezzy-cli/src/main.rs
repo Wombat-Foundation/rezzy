@@ -13,10 +13,16 @@
 // limitations under the License.
 
 //! Rezzy command-line entry point.
+#[cfg(feature = "logging")]
+mod logging;
+
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
+    #[cfg(feature = "logging")]
+    logging::init();
+
     rezzy_cli::main_entry();
 }

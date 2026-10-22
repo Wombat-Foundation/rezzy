@@ -30,6 +30,7 @@ tls = [
     "dep:getrandom",
     "getrandom/std",
 ]
+logging = ["rezzy/logging", "dep:tracing"]
 
 [dependencies]
 argon2 = { workspace = true, optional = true }
@@ -43,6 +44,7 @@ mimalloc = { workspace = true, optional = true }
 rezzy = { workspace = true, default-features = false, features = ["cli"] }
 rpassword = { workspace = true, optional = true }
 sha2.workspace = true
+tracing = { workspace = true, optional = true }
 ureq.workspace = true
 
 [lints]
