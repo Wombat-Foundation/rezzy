@@ -143,6 +143,9 @@ fn run_round_trip(
     remote_h64: &[u64],
     remote: &ResidentKernel,
 ) -> (usize, Vec<u64>, &'static str) {
+    #[cfg(feature = "logging")]
+    rezzy::init_logging();
+
     let client = ReconciliationClient::default().allow_unlimited_delta();
     let digest = remote_digest(remote);
     let initial = client.select_action(local, digest, 0);
@@ -338,6 +341,9 @@ fn digest_of(element: ElementHash) -> [u8; 32] {
 
 /// Drives the verified exchange. Returns the terminal action and the exchange.
 fn run_verified(local: &Side, remote: &Side) -> (ClientAction, BucketExchange) {
+    #[cfg(feature = "logging")]
+    rezzy::init_logging();
+
     let client = ReconciliationClient::default().allow_unlimited_delta();
     let initial = client.select_action(&local.kernel, remote_digest(&remote.kernel), 0);
     let ClientAction::BucketSketches {
@@ -387,6 +393,9 @@ fn drive_round(
     requests: &[BucketRequest],
     estimate: Option<u64>,
 ) -> ClientAction {
+    #[cfg(feature = "logging")]
+    rezzy::init_logging();
+
     {
         let remote_nodes = build_bucket_nodes(&remote.population, requests).unwrap();
         let local_nodes = build_bucket_nodes(&local.population, requests).unwrap();

@@ -60,6 +60,18 @@ macro_rules! rezzy_log {
     };
 }
 
+#[cfg(feature = "logging")]
+mod logging;
+
+/// Install Rezzy's compact stderr tracing subscriber, filtered by `RUST_LOG`.
+///
+/// This is opt-in because libraries should generally let their host own the
+/// process-wide subscriber. Applications can call this once during startup.
+#[cfg(feature = "logging")]
+pub fn init_logging() {
+    logging::init();
+}
+
 pub use rezzy_json as json;
 pub use rezzy_json::json;
 

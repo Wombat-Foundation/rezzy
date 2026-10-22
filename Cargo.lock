@@ -621,7 +621,6 @@ dependencies = [
  "rezzy",
  "rpassword",
  "sha2",
- "tracing",
  "ureq",
 ]
 

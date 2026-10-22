@@ -1,6 +1,7 @@
-//! Small stderr subscriber for the CLI's opt-in tracing support.
+//! Small stderr subscriber for applications that opt into Rezzy logging.
 
 use std::fmt::Write as _;
+use std::string::String;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
@@ -34,7 +35,7 @@ impl Subscriber for StderrSubscriber {
         let metadata = event.metadata();
         let mut fields = FieldOutput(String::new());
         event.record(&mut fields);
-        eprintln!(
+        std::eprintln!(
             "{} {}: {}{}",
             metadata.level(),
             metadata.target(),
@@ -59,7 +60,8 @@ impl Visit for FieldOutput {
 /// Install a compact stderr subscriber using a global `RUST_LOG` level.
 ///
 /// Supported values are `off`, `error`, `warn`, `info`, `debug`, and `trace`.
-pub(crate) fn init() {
+/// Calls after a subscriber has already been installed are ignored.
+pub fn init() {
     let max_level = std::env::var("RUST_LOG")
         .ok()
         .as_deref()
