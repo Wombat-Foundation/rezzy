@@ -33,14 +33,18 @@ impl Subscriber for StderrSubscriber {
 
     fn event(&self, event: &Event<'_>) {
         let metadata = event.metadata();
-        let mut fields = FieldOutput(String::new());
+        let mut fields = FieldOutput::default();
         event.record(&mut fields);
         std::eprintln!(
-            "{} {}: {}{}",
+            "{} {} {}: {}{}",
             metadata.level(),
             metadata.target(),
-            metadata.name(),
-            fields.0
+            metadata
+                .name()
+                .strip_prefix("event ")
+                .unwrap_or(metadata.name()),
+            fields.message,
+            fields.fields
         );
     }
 
@@ -49,11 +53,25 @@ impl Subscriber for StderrSubscriber {
     fn exit(&self, _span: &Id) {}
 }
 
-struct FieldOutput(String);
+#[derive(Default)]
+struct FieldOutput {
+    message: String,
+    fields: String,
+}
 
 impl Visit for FieldOutput {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        let _ = write!(self.0, " {}={value:?}", field.name());
+        if field.name() == "message" {
+            let rendered = std::format!("{value:?}");
+            self.message = String::from(
+                rendered
+                    .strip_prefix('"')
+                    .and_then(|message| message.strip_suffix('"'))
+                    .unwrap_or(&rendered),
+            );
+        } else {
+            let _ = write!(self.fields, " {}={value:?}", field.name());
+        }
     }
 }
 

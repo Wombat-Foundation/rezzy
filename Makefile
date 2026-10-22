@@ -8,7 +8,7 @@ PREFIX ?= $(HOME)/.local
 LIBDIR ?= $(PREFIX)/lib
 DYLIB_EXT ?= $(if $(filter Darwin,$(shell uname -s)),dylib,so)
 INCLUDEDIR ?= $(PREFIX)/include
-TEST_FEATURES ?=
+TEST_FEATURES ?= logging
 CARGO_FEATURE_ARGS ?= $(if $(TEST_FEATURES),--features $(TEST_FEATURES),)
 
 LINT_LOCS_PY = $$(git ls-files '*.py')
@@ -116,7 +116,7 @@ rust/so: ##H Compile shared object (librezzy.so) from the library
 	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
-rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+rust/test: ##H Run Rust tests (set "p" for specific test, and "a" for test binary args)
 ifdef p
 	$(CARGO) test --timings --workspace --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
@@ -160,7 +160,7 @@ rust/clean: ##H Remove Rust build artifacts
 
 .PHONY: rust/install
 rust/install: ##H Install rezzy binary to cargo bin, and the C ABI lib + header + rezzy.pc under PREFIX
-	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls
+	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls,logging
 	$(CARGO) build --locked --release -p rezzy-ffi
 	install -d $(DESTDIR)$(LIBDIR)/pkgconfig $(DESTDIR)$(INCLUDEDIR)
 	install -m755 target/release/librezzy_ffi.$(DYLIB_EXT) $(DESTDIR)$(LIBDIR)/
