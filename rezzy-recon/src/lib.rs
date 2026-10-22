@@ -14,6 +14,13 @@ extern crate std;
 
 extern crate alloc;
 
+macro_rules! recon_log {
+    ($level:ident, $($args:tt)*) => {
+        #[cfg(feature = "logging")]
+        tracing::$level!($($args)*);
+    };
+}
+
 pub mod algebraic;
 pub mod bitmap;
 pub mod client;

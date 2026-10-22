@@ -53,6 +53,13 @@ extern crate std;
 
 extern crate alloc;
 
+macro_rules! rezzy_log {
+    ($level:ident, $($args:tt)*) => {
+        #[cfg(feature = "logging")]
+        tracing::$level!($($args)*);
+    };
+}
+
 pub use rezzy_json as json;
 pub use rezzy_json::json;
 

@@ -2201,8 +2201,7 @@ where
                 accepted.push(event.event_id.clone());
             }
             Err(e) => {
-                #[cfg(feature = "logging")]
-                tracing::debug!(event_id = ?event.event_id, error = ?e, "event failed auth checks");
+                rezzy_log!(debug, event_id = ?event.event_id, error = ?e, "event failed auth checks");
                 rejected_ids.insert(event.event_id.clone());
                 rejected.push((event.event_id.clone(), e));
             }
@@ -2240,11 +2239,9 @@ pub fn warn_unexpected_auth_events<
         if let Some(auth_ev) = auth_context.get_event(auth_id) {
             // Broken v12 invariant
             if v12_plus && auth_ev.event_type == M_ROOM_CREATE {
-                #[cfg(feature = "logging")]
-                tracing::error!(event_id = ?event.event_id, "event references m.room.create in auth_events for v12+");
+                rezzy_log!(error, event_id = ?event.event_id, "event references m.room.create in auth_events for v12+");
             } else if !VALID_AUTH_TYPES.contains(&auth_ev.event_type.as_str()) {
-                #[cfg(feature = "logging")]
-                tracing::warn!(event_id = ?event.event_id, auth_type = %auth_ev.event_type, "event has unexpected auth event type");
+                rezzy_log!(warn, event_id = ?event.event_id, auth_type = %auth_ev.event_type, "event has unexpected auth event type");
             }
         }
     }
