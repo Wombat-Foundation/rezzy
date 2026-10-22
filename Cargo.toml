@@ -182,6 +182,7 @@ sha2.workspace = true
 # Optional
 clap = { workspace = true, optional = true }
 ed25519-zebra = { workspace = true, optional = true }
+tracing = "0.1.44"
 
 [dev-dependencies]
 base64.workspace = true
