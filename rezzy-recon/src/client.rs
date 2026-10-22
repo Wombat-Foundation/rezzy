@@ -1132,7 +1132,7 @@ impl ReconciliationClient {
     ) -> ClientAction {
         if let Some(action) = Self::action_for_remote_state(local, &remote) {
             if action == ClientAction::ExtremityDiff {
-                rezzy_log::warn!(
+                rezzy_log::info!(
                     frame_matches = remote.frame_matches,
                     unknown_extremity = remote.has_unknown_extremity,
                     "adaptive reconciliation has chosen the fallback path"
@@ -1259,7 +1259,7 @@ impl ReconciliationClient {
             return ClientAction::ExtremityDiff;
         }
 
-        rezzy_log::debug!(
+        rezzy_log::info!(
             estimated_delta,
             bucket_count = buckets,
             bucket_capacity = per_bucket,
