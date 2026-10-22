@@ -601,7 +601,7 @@ dependencies = [
  "ed25519-zebra",
  "hashbrown 0.17.1",
  "rezzy-json",
- "rezzy-logging",
+ "rezzy-log",
  "rezzy-recon",
  "sha2",
 ]
@@ -639,7 +639,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rezzy-logging"
+name = "rezzy-log"
 version = "0.6.0-rc.1"
 dependencies = [
  "tracing",
@@ -650,7 +650,7 @@ name = "rezzy-recon"
 version = "0.6.0-rc.1"
 dependencies = [
  "base64",
- "rezzy-logging",
+ "rezzy-log",
  "sha2",
 ]
 
