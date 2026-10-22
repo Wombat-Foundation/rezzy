@@ -545,16 +545,46 @@ impl BucketExchange {
     {
         let (mut batch, verified, rejected) =
             crate::verify::verify_batch(batch, requests, local, remote, local_candidates)?;
+        self.schedule_overflow_retries(&batch, &rejected, requests, local, remote);
 
+        // Responder inconsistency first: it invalidates whole regions.
+        self.check_split_consistency(requests, remote, &mut batch);
+        self.give_up_small_failed_overflows(&mut batch, requests, local, remote);
+
+        // A phase-1 failure is not a capacity problem, so the node is split,
+        // never given a bigger capacity. A repeat under a different sketch is
+        // a *known* collision, which only narrowing can help: keep splitting
+        // it, and give up on the prefix only once it is small or no split is
+        // possible (depth cap or round budget).
+        self.handle_phase1_rejections(rejected, requests, local, remote, &mut batch);
+        self.remember_failed_nodes(&batch, requests, remote);
+
+        let verified: alloc::vec::Vec<Classified> = verified
+            .into_iter()
+            .filter(|c| {
+                !self
+                    .ladder_failed
+                    .iter()
+                    .any(|&region| covers(region, c.node()))
+            })
+            .collect();
+        self.classified.extend(verified);
+        Ok(self.advance(batch, requests, global_estimate))
+    }
+
+    fn schedule_overflow_retries(
+        &mut self,
+        batch: &BucketDecodeBatch,
+        rejected: &[(u8, u64, alloc::vec::Vec<u64>)],
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+    ) {
         // A node whose entire population fits one overflow sketch should not
         // descend the ordinary 32-capacity ladder. Counts are already part of
         // the per-node summaries, so this needs no wire change.
-        let phase_failed: alloc::vec::Vec<_> = rejected
-            .iter()
-            .map(|(depth, prefix, _)| (*depth, *prefix))
-            .collect();
         for &(depth, prefix) in &batch.failed_buckets {
-            if phase_failed.contains(&(depth, prefix)) {
+            if rejected.iter().any(|&(d, p, _)| (d, p) == (depth, prefix)) {
                 continue;
             }
             if let Some(slot) = requests
@@ -576,10 +606,15 @@ impl BucketExchange {
                 }
             }
         }
+    }
 
-        // Responder inconsistency first: it invalidates whole regions.
-        self.check_split_consistency(requests, remote, &mut batch);
-
+    fn give_up_small_failed_overflows(
+        &mut self,
+        batch: &mut BucketDecodeBatch,
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+    ) {
         // The overflow attempt is the last decode retry for a small node.
         // If it still fails and either side's population is already within
         // the collision give-up threshold, keep fallback local to this node
@@ -600,16 +635,16 @@ impl BucketExchange {
             })
             .collect();
         for node in small_failed_overflows {
-            self.ladder_fail(node, &mut batch);
+            self.ladder_fail(node, batch);
         }
+    }
 
-        // A phase-1 failure is not a capacity problem, so the node is split,
-        // never given a bigger capacity. A repeat under a different sketch is
-        // a *known* collision, which only narrowing can help: keep splitting
-        // it, and give up on the prefix only once it is small or no split is
-        // possible (depth cap or round budget).
-        self.handle_phase1_rejections(rejected, requests, local, remote, &mut batch);
-
+    fn remember_failed_nodes(
+        &mut self,
+        batch: &BucketDecodeBatch,
+        requests: &[BucketRequest],
+        remote: &[NodeSummary],
+    ) {
         // Remember surviving failed nodes' responder summaries: they may be
         // split next, and their children are checked against them.
         for &(depth, prefix) in &batch.failed_buckets {
@@ -628,18 +663,6 @@ impl BucketExchange {
                 }
             }
         }
-
-        let verified: alloc::vec::Vec<Classified> = verified
-            .into_iter()
-            .filter(|c| {
-                !self
-                    .ladder_failed
-                    .iter()
-                    .any(|&region| covers(region, c.node()))
-            })
-            .collect();
-        self.classified.extend(verified);
-        Ok(self.advance(batch, requests, global_estimate))
     }
 
     fn handle_phase1_rejections(
