@@ -580,6 +580,29 @@ impl BucketExchange {
         // Responder inconsistency first: it invalidates whole regions.
         self.check_split_consistency(requests, remote, &mut batch);
 
+        // The overflow attempt is the last decode retry for a small node.
+        // If it still fails and either side's population is already within
+        // the collision give-up threshold, keep fallback local to this node
+        // instead of splitting it into an even smaller prefix.
+        let small_failed_overflows: alloc::vec::Vec<_> = batch
+            .failed_buckets
+            .iter()
+            .copied()
+            .filter(|&(depth, prefix)| {
+                let Some(slot) = requests
+                    .iter()
+                    .position(|request| (request.depth, request.prefix) == (depth, prefix))
+                else {
+                    return false;
+                };
+                requests[slot].overflow
+                    && local[slot].count.max(remote[slot].count) <= COLLISION_GIVE_UP_POPULATION
+            })
+            .collect();
+        for node in small_failed_overflows {
+            self.ladder_fail(node, &mut batch);
+        }
+
         // A phase-1 failure is not a capacity problem, so the node is split,
         // never given a bigger capacity. A repeat under a different sketch is
         // a *known* collision, which only narrowing can help: keep splitting
@@ -2221,7 +2244,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_overflow_retry_fans_out_instead_of_repeating() {
+    fn failed_small_overflow_retry_ladder_fails_local_prefix() {
         let mut exchange = fresh_exchange();
         let requests = [BucketRequest::new(0, 0, 8)];
         let small = [summary(40, 0)];
@@ -2251,11 +2274,43 @@ mod tests {
                 |_| vec![],
             )
             .unwrap();
-        let ClientAction::BucketSketches { requests, .. } = action else {
-            panic!("expected fan-out after overflow failure, got {action:?}");
-        };
-        assert!(requests.len() > 1);
-        assert!(requests.iter().all(|request| !request.overflow));
+        assert_eq!(
+            action,
+            ClientAction::ResolveRoots {
+                roots: vec![],
+                ladder_failed: vec![(0, 0)],
+            }
+        );
+    }
+
+    #[test]
+    fn empty_sibling_does_not_give_up_large_failed_overflow_prefix() {
+        let mut exchange = fresh_exchange();
+        let requests = [
+            BucketRequest::with_overflow(1, 0, super::super::triage::MAX_OVERFLOW_BUCKET_CAPACITY),
+            BucketRequest::new(1, 1, 8),
+        ];
+        let local = [summary(100, 0), summary(0, 0)];
+        let remote = [summary(100, 0), summary(0, 0)];
+        let action = exchange
+            .advance_verified(
+                BucketDecodeBatch {
+                    successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
+                        depth: 1,
+                        prefix: 1,
+                        roots: vec![],
+                    }],
+                    failed_buckets: vec![(1, 0)],
+                },
+                &requests,
+                &local,
+                &remote,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        assert!(matches!(action, ClientAction::BucketSketches { .. }));
+        assert!(exchange.ladder_failed().is_empty());
     }
 
     #[test]
