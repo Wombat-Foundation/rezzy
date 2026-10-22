@@ -15,12 +15,12 @@ build = "build.rs"
 [features]
 default = ["std", "logging"]
 std = []
-logging = ["std", "dep:tracing"]
+logging = ["std", "rezzy_log/logging"]
 
 [dependencies]
 base64.workspace = true
+rezzy_log.workspace = true
 sha2.workspace = true
-tracing = { workspace = true, optional = true }
 
 [lints]
 workspace = true

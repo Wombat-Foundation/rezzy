@@ -467,8 +467,7 @@ impl BucketExchange {
             };
             self.parents.remove(slot);
             if !count_valid || descendant_summary != parent_summary {
-                recon_log!(
-                    warn,
+                rezzy_log::warn!(
                     depth = parent.0,
                     prefix = parent.1,
                     count_valid,
@@ -645,8 +644,7 @@ impl BucketExchange {
             let population = local[slot].count.max(remote[slot].count);
             let cannot_narrow = depth >= crate::MAX_DEPTH
                 || self.rounds_emitted.saturating_add(1) >= self.max_rounds;
-            recon_log!(
-                debug,
+            rezzy_log::debug!(
                 depth,
                 prefix,
                 roots = roots.len(),
@@ -657,8 +655,7 @@ impl BucketExchange {
                 "phase-one bucket verification failed"
             );
             if cannot_narrow || (repeats && population <= COLLISION_GIVE_UP_POPULATION) {
-                recon_log!(
-                    warn,
+                rezzy_log::warn!(
                     depth,
                     prefix,
                     population,
@@ -719,8 +716,7 @@ impl BucketExchange {
 
     fn drain_pending_round(&mut self) -> Result<VecDeque<BucketRequest>, ClientAction> {
         if self.rounds_emitted >= self.max_rounds {
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 rounds_emitted = self.rounds_emitted,
                 max_rounds = self.max_rounds,
                 "reconciliation round budget exhausted; using fallback - ExtremityDiff"
@@ -746,8 +742,7 @@ impl BucketExchange {
         }
 
         if requests.is_empty() {
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 pending_requests = self.pending.len(),
                 max_buckets = self.max_buckets_per_round,
                 max_aggregate_capacity = self.max_aggregate_capacity,
@@ -757,8 +752,7 @@ impl BucketExchange {
         }
 
         self.rounds_emitted = self.rounds_emitted.saturating_add(1);
-        recon_log!(
-            debug,
+        rezzy_log::debug!(
             round = self.rounds_emitted,
             request_count = requests.len(),
             total_capacity = total,
@@ -1138,8 +1132,7 @@ impl ReconciliationClient {
     ) -> ClientAction {
         if let Some(action) = Self::action_for_remote_state(local, &remote) {
             if action == ClientAction::ExtremityDiff {
-                recon_log!(
-                    warn,
+                rezzy_log::warn!(
                     frame_matches = remote.frame_matches,
                     unknown_extremity = remote.has_unknown_extremity,
                     "adaptive reconciliation has chosen the fallback path"
@@ -1184,8 +1177,7 @@ impl ReconciliationClient {
         ) else {
             // If estimation exhausts its work budget, bounded root extraction
             // lets bucket decoding localize the difference without trusting an estimate.
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 "strata estimate budget exceeded; using fallback - bounded root extraction"
             );
             return Err(Self::root_bucket_action());
@@ -1200,8 +1192,7 @@ impl ReconciliationClient {
         concurrency_headroom: usize,
     ) -> ClientAction {
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 estimated_delta,
                 "strata estimate saturates; using fallback - bounded root extraction"
             );
@@ -1210,8 +1201,7 @@ impl ReconciliationClient {
 
         if let Some(threshold) = self.gate_threshold {
             if estimated_delta > threshold {
-                recon_log!(
-                    warn,
+                rezzy_log::warn!(
                     estimated_delta,
                     threshold,
                     "estimated delta exceeds configured gate; using fallback - ExtremityDiff"
@@ -1230,8 +1220,7 @@ impl ReconciliationClient {
         // `ExtremityDiff` instead of just clamping.
         let capped = provisioned.map(|value| value.min(self.max_aggregate_capacity as u64));
         let Some(target_capacity) = capped.and_then(|value| usize::try_from(value).ok()) else {
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 estimated_delta,
                 "sketch capacity exceeds configured limits; using fallback - ExtremityDiff"
             );
@@ -1260,8 +1249,7 @@ impl ReconciliationClient {
         // ceiling lower than one round's worst-case provisioning should have
         // it enforced here, not silently ignored.
         if buckets > MAX_BUCKETS_PER_ROUND || total_capacity > self.max_aggregate_capacity {
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 buckets,
                 max_buckets = MAX_BUCKETS_PER_ROUND,
                 total_capacity,
@@ -1271,8 +1259,7 @@ impl ReconciliationClient {
             return ClientAction::ExtremityDiff;
         }
 
-        recon_log!(
-            debug,
+        rezzy_log::debug!(
             estimated_delta,
             bucket_count = buckets,
             bucket_capacity = per_bucket,
@@ -1339,8 +1326,7 @@ impl ReconciliationClient {
         global_estimate: Option<u64>,
         aggregate_cap: usize,
     ) -> ClientAction {
-        recon_log!(
-            debug,
+        rezzy_log::debug!(
             failed_bucket_count = batch.failed_buckets.len(),
             "bucket decode error; using fallback - bounded retry or split"
         );
@@ -1355,8 +1341,7 @@ impl ReconciliationClient {
         }
 
         let Ok(resolved_count) = u64::try_from(accumulated_roots.len()) else {
-            recon_log!(
-                warn,
+            rezzy_log::warn!(
                 "resolved root cardinality exceeds u64; using fallback - ExtremityDiff"
             );
             return ClientAction::ExtremityDiff;
@@ -1375,8 +1360,7 @@ impl ReconciliationClient {
             let Ok(next_requests) =
                 retry_failed_bucket(previous_requests, depth, prefix, share, false, 1)
             else {
-                recon_log!(
-                    warn,
+                rezzy_log::warn!(
                     depth,
                     prefix,
                     "MSC4521 failed bucket could not be refined; using fallback - ExtremityDiff"
@@ -1387,8 +1371,7 @@ impl ReconciliationClient {
                 total = match total.checked_add(request.capacity) {
                     Some(total) if total <= aggregate_limit => total,
                     _ => {
-                        recon_log!(
-                            warn,
+                        rezzy_log::warn!(
                             aggregate_limit,
                             "retry plan exceeds aggregate capacity; using fallback - ExtremityDiff"
                         );
@@ -1396,8 +1379,7 @@ impl ReconciliationClient {
                     }
                 };
                 if requests.len() >= MAX_BUCKETS_PER_ROUND {
-                    recon_log!(
-                        warn,
+                    rezzy_log::warn!(
                         max_buckets = MAX_BUCKETS_PER_ROUND,
                         "retry plan exceeds per-round bucket limit; using fallback - ExtremityDiff"
                     );

@@ -53,24 +53,16 @@ extern crate std;
 
 extern crate alloc;
 
-macro_rules! rezzy_log {
-    ($level:ident, $($args:tt)*) => {
-        #[cfg(feature = "logging")]
-        tracing::$level!($($args)*);
-    };
-}
-
-#[cfg(feature = "logging")]
-mod logging;
-
 /// Install Rezzy's compact stderr tracing subscriber, filtered by `RUST_LOG`.
 ///
 /// This is opt-in because libraries should generally let their host own the
 /// process-wide subscriber. Applications can call this once during startup.
 #[cfg(feature = "logging")]
 pub fn init_logging() {
-    logging::init();
+    rezzy_log::init();
 }
+
+pub use rezzy_log::{debug, error, info, trace, warn};
 
 pub use rezzy_json as json;
 pub use rezzy_json::json;

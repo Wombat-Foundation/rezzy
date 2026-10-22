@@ -313,7 +313,7 @@ where
 
     while let Some(eid) = current {
         if !seen_in_mainline.insert(eid.clone()) {
-            rezzy_log!(warn, "cycle detected while building power-level mainline");
+            rezzy_log::warn!("cycle detected while building power-level mainline");
             break; // Cycle detected in the power-levels mainline!
         }
         mainline.push(eid.clone());
