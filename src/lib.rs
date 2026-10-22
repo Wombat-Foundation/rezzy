@@ -11,6 +11,7 @@
 //! | Feature     | Default | Description |
 //! |-------------|:-------:|-------------|
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
+//! | `logging`   | ✗       | Enables `tracing` events in auth and MSC4521 reconciliation (requires `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |

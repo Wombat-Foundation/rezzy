@@ -467,6 +467,17 @@ impl BucketExchange {
             };
             self.parents.remove(slot);
             if !count_valid || descendant_summary != parent_summary {
+                #[cfg(feature = "logging")]
+                tracing::warn!(
+                    depth = parent.0,
+                    prefix = parent.1,
+                    count_valid,
+                    expected_count = parent_summary.count,
+                    actual_count = descendant_summary.count,
+                    expected_digest = parent_summary.digest,
+                    actual_digest = descendant_summary.digest,
+                    "MSC4521 split summaries are inconsistent; discarding the parent bucket"
+                );
                 self.ladder_fail(parent, batch);
             }
         }
@@ -575,35 +586,7 @@ impl BucketExchange {
         // a *known* collision, which only narrowing can help: keep splitting
         // it, and give up on the prefix only once it is small or no split is
         // possible (depth cap or round budget).
-        for (depth, prefix, roots) in rejected {
-            let node = (depth, prefix);
-            if self
-                .ladder_failed
-                .iter()
-                .any(|&region| covers(region, node))
-            {
-                continue;
-            }
-            let Some(slot) = requests.iter().position(|r| (r.depth, r.prefix) == node) else {
-                continue;
-            };
-            let capacity = requests[slot].capacity;
-            let repeats = self.repeats_earlier_failure(node, capacity, &roots);
-            let population = local[slot].count.max(remote[slot].count);
-            let cannot_narrow = depth >= crate::MAX_DEPTH
-                || self.rounds_emitted.saturating_add(1) >= self.max_rounds;
-            if cannot_narrow || (repeats && population <= COLLISION_GIVE_UP_POPULATION) {
-                self.ladder_fail(node, &mut batch);
-            } else {
-                self.failures.push(Phase1Failure {
-                    depth,
-                    prefix,
-                    capacity,
-                    roots,
-                });
-                self.force_split.push(node);
-            }
-        }
+        self.handle_phase1_rejections(rejected, requests, local, remote, &mut batch);
 
         // Remember surviving failed nodes' responder summaries: they may be
         // split next, and their children are checked against them.
@@ -635,6 +618,64 @@ impl BucketExchange {
             .collect();
         self.classified.extend(verified);
         Ok(self.advance(batch, requests, global_estimate))
+    }
+
+    fn handle_phase1_rejections(
+        &mut self,
+        rejected: alloc::vec::Vec<(u8, u64, alloc::vec::Vec<u64>)>,
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+        batch: &mut BucketDecodeBatch,
+    ) {
+        for (depth, prefix, roots) in rejected {
+            let node = (depth, prefix);
+            if self
+                .ladder_failed
+                .iter()
+                .any(|&region| covers(region, node))
+            {
+                continue;
+            }
+            let Some(slot) = requests.iter().position(|r| (r.depth, r.prefix) == node) else {
+                continue;
+            };
+            let capacity = requests[slot].capacity;
+            let repeats = self.repeats_earlier_failure(node, capacity, &roots);
+            let population = local[slot].count.max(remote[slot].count);
+            let cannot_narrow = depth >= crate::MAX_DEPTH
+                || self.rounds_emitted.saturating_add(1) >= self.max_rounds;
+            #[cfg(feature = "logging")]
+            tracing::debug!(
+                depth,
+                prefix,
+                roots = roots.len(),
+                capacity,
+                population,
+                repeats,
+                cannot_narrow,
+                "MSC4521 phase-one bucket verification failed"
+            );
+            if cannot_narrow || (repeats && population <= COLLISION_GIVE_UP_POPULATION) {
+                #[cfg(feature = "logging")]
+                tracing::warn!(
+                    depth,
+                    prefix,
+                    population,
+                    repeats,
+                    "MSC4521 giving up on an unverifiable bucket"
+                );
+                self.ladder_fail(node, batch);
+            } else {
+                self.failures.push(Phase1Failure {
+                    depth,
+                    prefix,
+                    capacity,
+                    roots,
+                });
+                self.force_split.push(node);
+            }
+        }
     }
 
     /// Returns the accumulated roots carried through the exchange so far.
@@ -678,6 +719,12 @@ impl BucketExchange {
 
     fn drain_pending_round(&mut self) -> Result<VecDeque<BucketRequest>, ClientAction> {
         if self.rounds_emitted >= self.max_rounds {
+            #[cfg(feature = "logging")]
+            tracing::warn!(
+                rounds_emitted = self.rounds_emitted,
+                max_rounds = self.max_rounds,
+                "MSC4521 reconciliation exhausted its round budget"
+            );
             return Err(ClientAction::ExtremityDiff);
         }
 
@@ -699,10 +746,25 @@ impl BucketExchange {
         }
 
         if requests.is_empty() {
+            #[cfg(feature = "logging")]
+            tracing::warn!(
+                pending_requests = self.pending.len(),
+                max_buckets = self.max_buckets_per_round,
+                max_aggregate_capacity = self.max_aggregate_capacity,
+                "MSC4521 pending buckets cannot fit in a round"
+            );
             return Err(ClientAction::ExtremityDiff);
         }
 
         self.rounds_emitted = self.rounds_emitted.saturating_add(1);
+        #[cfg(feature = "logging")]
+        tracing::info!(
+            round = self.rounds_emitted,
+            request_count = requests.len(),
+            total_capacity = total,
+            pending_requests = self.pending.len(),
+            "emitting MSC4521 bucket request round"
+        );
         Ok(requests)
     }
 
@@ -1074,45 +1136,82 @@ impl ReconciliationClient {
         remote: RemoteDigest,
         concurrency_headroom: usize,
     ) -> ClientAction {
+        if let Some(action) = Self::action_for_remote_state(local, &remote) {
+            return action;
+        }
+
+        let estimated_delta = match Self::estimate_delta(local, &remote) {
+            Ok(delta) => delta,
+            Err(action) => return action,
+        };
+
+        self.select_sketch_action(estimated_delta, concurrency_headroom)
+    }
+
+    fn action_for_remote_state(
+        local: &ResidentKernel,
+        remote: &RemoteDigest,
+    ) -> Option<ClientAction> {
         if !remote.frame_matches || remote.has_unknown_extremity {
-            return ClientAction::ExtremityDiff;
+            #[cfg(feature = "logging")]
+            tracing::warn!(
+                frame_matches = remote.frame_matches,
+                unknown_extremity = remote.has_unknown_extremity,
+                "MSC4521 reconciliation requires extremity diff"
+            );
+            return Some(ClientAction::ExtremityDiff);
         }
         if local.accumulator().digest() == remote.digest
             && local.accumulator().known_event_count() == remote.known_event_count
         {
-            return ClientAction::Synchronized;
+            return Some(ClientAction::Synchronized);
         }
 
+        None
+    }
+
+    fn estimate_delta(local: &ResidentKernel, remote: &RemoteDigest) -> Result<u64, ClientAction> {
         let count_delta = local
             .accumulator()
             .known_event_count()
             .abs_diff(remote.known_event_count);
-        let estimated_delta = match crate::triage::estimate_strata(
+        let Ok(estimate) = crate::triage::estimate_strata(
             local.strata(),
             &remote.strata,
             crate::triage::MAX_STRATA_FACTOR_WORK,
-        ) {
-            Ok(estimate) => estimate.delta.max(count_delta),
-            // If the estimator exhausts its work budget, it cannot size a
-            // first-round sketch safely. Start with bounded root extraction
-            // and let bucket decoding localize any over-capacity region.
-            Err(_) => {
-                return ClientAction::BucketSketches {
-                    requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY,)],
-                    accumulated_roots: alloc::vec::Vec::new(),
-                };
-            }
+        ) else {
+            // If estimation exhausts its work budget, bounded root extraction
+            // lets bucket decoding localize the difference without trusting an estimate.
+            #[cfg(feature = "logging")]
+            tracing::warn!("MSC4521 strata estimate exhausted its work budget; starting bounded root extraction");
+            return Err(Self::root_bucket_action());
         };
 
+        Ok(estimate.delta.max(count_delta))
+    }
+
+    fn select_sketch_action(
+        self,
+        estimated_delta: u64,
+        concurrency_headroom: usize,
+    ) -> ClientAction {
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
-            return ClientAction::BucketSketches {
-                requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
-                accumulated_roots: alloc::vec::Vec::new(),
-            };
+            #[cfg(feature = "logging")]
+            tracing::warn!(
+                estimated_delta,
+                "MSC4521 strata estimate saturated; starting bounded root extraction"
+            );
+            return Self::root_bucket_action();
         }
 
         if let Some(threshold) = self.gate_threshold {
             if estimated_delta > threshold {
+                #[cfg(feature = "logging")]
+                tracing::warn!(
+                    estimated_delta,
+                    threshold,
+                    "MSC4521 estimated delta exceeds configured reconciliation gate"
+                );
                 return ClientAction::ExtremityDiff;
             }
         }
@@ -1127,6 +1226,11 @@ impl ReconciliationClient {
         // `ExtremityDiff` instead of just clamping.
         let capped = provisioned.map(|value| value.min(self.max_aggregate_capacity as u64));
         let Some(target_capacity) = capped.and_then(|value| usize::try_from(value).ok()) else {
+            #[cfg(feature = "logging")]
+            tracing::warn!(
+                estimated_delta,
+                "MSC4521 sketch capacity exceeds local bounds; using extremity diff"
+            );
             return ClientAction::ExtremityDiff;
         };
 
@@ -1152,8 +1256,22 @@ impl ReconciliationClient {
         // ceiling lower than one round's worst-case provisioning should have
         // it enforced here, not silently ignored.
         if buckets > MAX_BUCKETS_PER_ROUND || total_capacity > self.max_aggregate_capacity {
+            #[cfg(feature = "logging")]
+            tracing::warn!(
+                buckets,
+                total_capacity,
+                "MSC4521 initial bucket plan exceeds local bounds; using extremity diff"
+            );
             return ClientAction::ExtremityDiff;
         }
+
+        #[cfg(feature = "logging")]
+        tracing::info!(
+            estimated_delta,
+            bucket_count = buckets,
+            bucket_capacity = per_bucket,
+            "selected MSC4521 bucket sketch plan"
+        );
 
         let mut requests = alloc::vec::Vec::with_capacity(buckets);
         let Ok(max_prefix) = u64::try_from(buckets) else {
@@ -1166,6 +1284,13 @@ impl ReconciliationClient {
         ClientAction::BucketSketches {
             requests,
             accumulated_roots: alloc::vec![],
+        }
+    }
+
+    fn root_bucket_action() -> ClientAction {
+        ClientAction::BucketSketches {
+            requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
+            accumulated_roots: alloc::vec::Vec::new(),
         }
     }
 
@@ -1208,6 +1333,8 @@ impl ReconciliationClient {
         global_estimate: Option<u64>,
         aggregate_cap: usize,
     ) -> ClientAction {
+        #[cfg(feature = "logging")]
+        let failed_bucket_count = batch.failed_buckets.len();
         for success in batch.successful_buckets {
             accumulated_roots.extend(success.roots);
         }
@@ -1218,7 +1345,15 @@ impl ReconciliationClient {
             };
         }
 
+        #[cfg(feature = "logging")]
+        tracing::debug!(
+            failed_bucket_count,
+            "MSC4521 bucket decode failed; scheduling bounded retry or split"
+        );
+
         let Ok(resolved_count) = u64::try_from(accumulated_roots.len()) else {
+            #[cfg(feature = "logging")]
+            tracing::warn!("MSC4521 resolved root count exceeds u64; using extremity diff");
             return ClientAction::ExtremityDiff;
         };
         let unaccounted = global_estimate.unwrap_or(0).saturating_sub(resolved_count);
@@ -1235,14 +1370,32 @@ impl ReconciliationClient {
             let Ok(next_requests) =
                 retry_failed_bucket(previous_requests, depth, prefix, share, false, 1)
             else {
+                #[cfg(feature = "logging")]
+                tracing::warn!(
+                    depth,
+                    prefix,
+                    "MSC4521 failed bucket could not be refined; using extremity diff"
+                );
                 return ClientAction::ExtremityDiff;
             };
             for request in next_requests {
                 total = match total.checked_add(request.capacity) {
                     Some(total) if total <= aggregate_limit => total,
-                    _ => return ClientAction::ExtremityDiff,
+                    _ => {
+                        #[cfg(feature = "logging")]
+                        tracing::warn!(
+                            aggregate_limit,
+                            "MSC4521 retry plan exceeds aggregate capacity; using extremity diff"
+                        );
+                        return ClientAction::ExtremityDiff;
+                    }
                 };
                 if requests.len() >= MAX_BUCKETS_PER_ROUND {
+                    #[cfg(feature = "logging")]
+                    tracing::warn!(
+                        max_buckets = MAX_BUCKETS_PER_ROUND,
+                        "MSC4521 retry plan exceeds per-round bucket limit; using extremity diff"
+                    );
                     return ClientAction::ExtremityDiff;
                 }
                 requests.push(request);

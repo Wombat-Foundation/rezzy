@@ -1195,7 +1195,6 @@ dependencies = [
  "rezzy-json",
  "rezzy-recon",
  "sha2 0.11.1",
- "tracing",
 ]
 
 [[package]]

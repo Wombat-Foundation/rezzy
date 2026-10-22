@@ -2,8 +2,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Minisketch reconciliation helpers (MSC4521).
 //!
-//! This crate is independent of the core state resolution engine and depends
-//! only on `base64` and `sha2`.
+//! This crate is independent of the core state resolution engine. Its default
+//! dependencies are `base64` and `sha2`.
+//!
+//! Enable the `logging` feature to emit MSC4521 reconciliation events through
+//! the host application's `tracing` subscriber. The crate does not install a
+//! subscriber or write logs itself.
 
 #[cfg(feature = "std")]
 extern crate std;

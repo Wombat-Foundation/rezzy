@@ -2201,6 +2201,8 @@ where
                 accepted.push(event.event_id.clone());
             }
             Err(e) => {
+                #[cfg(feature = "logging")]
+                tracing::debug!(event_id = ?event.event_id, error = ?e, "event failed auth checks");
                 rejected_ids.insert(event.event_id.clone());
                 rejected.push((event.event_id.clone(), e));
             }
@@ -2210,7 +2212,7 @@ where
     (accepted, rejected)
 }
 
-/// Warns to stderr if an event's `auth_events` reference types outside the
+/// Emits a warning if an event's `auth_events` reference types outside the
 /// spec-expected subset. For v12+, `m.room.create` in `auth_events` is a hard reject (spec rule 3.2).
 #[cfg(all(feature = "std", not(test), not(tarpaulin)))]
 pub fn warn_unexpected_auth_events<
@@ -2238,16 +2240,11 @@ pub fn warn_unexpected_auth_events<
         if let Some(auth_ev) = auth_context.get_event(auth_id) {
             // Broken v12 invariant
             if v12_plus && auth_ev.event_type == M_ROOM_CREATE {
-                std::eprintln!(
-                    "REZZY_ERROR: event {:?} references m.room.create in auth_events (forbidden in v12+)",
-                    event.event_id,
-                );
+                #[cfg(feature = "logging")]
+                tracing::error!(event_id = ?event.event_id, "event references m.room.create in auth_events for v12+");
             } else if !VALID_AUTH_TYPES.contains(&auth_ev.event_type.as_str()) {
-                std::eprintln!(
-                    "REZZY_WARN: event {:?} has unexpected auth type: {}",
-                    event.event_id,
-                    auth_ev.event_type,
-                );
+                #[cfg(feature = "logging")]
+                tracing::warn!(event_id = ?event.event_id, auth_type = %auth_ev.event_type, "event has unexpected auth event type");
             }
         }
     }
