@@ -16,10 +16,16 @@ extern crate alloc;
 
 macro_rules! recon_log {
     ($level:ident, $($args:tt)*) => {
+        #[cfg(all(test, feature = "logging"))]
+        $crate::test_logging::init();
+
         #[cfg(feature = "logging")]
         tracing::$level!($($args)*);
     };
 }
+
+#[cfg(all(test, feature = "logging"))]
+mod test_logging;
 
 pub mod algebraic;
 pub mod bitmap;

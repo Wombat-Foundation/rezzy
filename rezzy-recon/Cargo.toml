@@ -13,7 +13,7 @@ categories = ["algorithms", "mathematics"]
 build = "build.rs"
 
 [features]
-default = ["std"]
+default = ["std", "logging"]
 std = []
 logging = ["std", "dep:tracing"]
 
