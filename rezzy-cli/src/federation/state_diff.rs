@@ -414,8 +414,27 @@ fn generated_paths<'a>(
 /// Rejects destinations that map to the same output file stem, which would
 /// overwrite each other's state, auth-chain, pairwise, and fetch files.
 fn ensure_distinct_stems(m: &ArgMatches) -> Result<(), AppError> {
+    let destinations: Vec<&String> = m
+        .get_many::<String>("destination")
+        .into_iter()
+        .flatten()
+        .collect();
     let mut seen = std::collections::HashMap::new();
-    for destination in m.get_many::<String>("destination").into_iter().flatten() {
+    for (i, a) in destinations.iter().enumerate() {
+        for b in &destinations[i.saturating_add(1)..] {
+            let pair = format!("{}__vs__{}", file_stem(a), file_stem(b));
+            if let Some((first, second)) = seen.insert(pair, (a, b)) {
+                return Err(AppError::new(
+                    crate::error::ErrorCode::IoError,
+                    format!(
+                        "pairs (`{first}`, `{second}`) and (`{a}`, `{b}`) map to the same comparison file name"
+                    ),
+                ));
+            }
+        }
+    }
+    let mut seen = std::collections::HashMap::new();
+    for destination in destinations {
         if let Some(first) = seen.insert(file_stem(destination), destination) {
             return Err(AppError::new(
                 crate::error::ErrorCode::IoError,
@@ -506,6 +525,31 @@ mod tests {
             ])
             .unwrap();
         assert!(ensure_distinct_stems(&matches).is_err());
+    }
+
+    #[test]
+    fn rejects_destinations_whose_pairwise_output_names_collide() {
+        let matches = command()
+            .try_get_matches_from([
+                "state-diff",
+                "--room",
+                "!room:example.org",
+                "--event",
+                "$event",
+                "--destination",
+                "a__vs__b",
+                "--destination",
+                "c",
+                "--destination",
+                "a",
+                "--destination",
+                "b__vs__c",
+            ])
+            .unwrap();
+        assert!(
+            ensure_distinct_stems(&matches).is_err(),
+            "pairs (`a__vs__b`, `c`) and (`a`, `b__vs__c`) share a pairwise file name"
+        );
     }
 
     #[test]

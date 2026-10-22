@@ -96,11 +96,14 @@ This policy describes the verified `BucketExchange::advance_verified` path.
 A one-sided poisoned prefix does not advance `no_progress_rounds`: each split
 has one failing child and one successfully decoded empty sibling. The retry
 therefore remains a one-bit split per round, and the default 20-round budget
-limits its depth. If the initial request is already at depth `d`, reaching
-`d + 20` constrained `h64` bits takes about `33 * 2^(d + 20)` event-hash
-attempts, assuming roughly 33 hashes to construct each candidate event. For
-initial depths 0 through 6, that is about `33 * 2^20` to `33 * 2^26` hashes. The
-exact work depends on the starting depth and how candidate events are
+limits its depth. A node small enough for one overflow sketch first spends a
+round on that retry, and a larger failure may fan out by up to seven bits, so
+the budget is not exactly 20 one-bit advances. Taking 20 one-bit advances from
+an initial request at depth `d` as an upper estimate, constraining `d + 20`
+`h64` bits costs about `2^(d + 20)` event hashes per candidate event, and about
+33 candidate events are needed, so roughly `33 * 2^(d + 20)` hashes in total.
+For initial depths 0 through 6, that is about `33 * 2^20` to `33 * 2^26` hashes.
+The exact work depends on the starting depth and how candidate events are
 constructed; this is a grinding estimate, not a protocol guarantee.
 
 The stop rule is population-based, not a short no-progress timer. After a failed

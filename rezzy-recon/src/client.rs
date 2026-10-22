@@ -549,7 +549,7 @@ impl BucketExchange {
 
         // Responder inconsistency first: it invalidates whole regions.
         self.check_split_consistency(requests, remote, &mut batch);
-        self.give_up_small_failed_overflows(&mut batch, requests, local, remote);
+        self.give_up_small_failed_overflows(&mut batch, &rejected, requests, local, remote);
 
         // A phase-1 failure is not a capacity problem, so the node is split,
         // never given a bigger capacity. A repeat under a different sketch is
@@ -611,10 +611,13 @@ impl BucketExchange {
     fn give_up_small_failed_overflows(
         &mut self,
         batch: &mut BucketDecodeBatch,
+        rejected: &[(u8, u64, alloc::vec::Vec<u64>)],
         requests: &[BucketRequest],
         local: &[NodeSummary],
         remote: &[NodeSummary],
     ) {
+        // Phase-1 rejections are not capacity failures; they get their own
+        // split-first handling in `handle_phase1_rejections`.
         // The overflow attempt is the last decode retry for a small node.
         // If it still fails and either side's population is already within
         // the collision give-up threshold, keep fallback local to this node
@@ -624,6 +627,9 @@ impl BucketExchange {
             .iter()
             .copied()
             .filter(|&(depth, prefix)| {
+                if rejected.iter().any(|&(d, p, _)| (d, p) == (depth, prefix)) {
+                    return false;
+                }
                 let Some(slot) = requests
                     .iter()
                     .position(|request| (request.depth, request.prefix) == (depth, prefix))
@@ -2304,6 +2310,35 @@ mod tests {
                 ladder_failed: vec![(0, 0)],
             }
         );
+    }
+
+    #[test]
+    fn phase_one_failure_on_small_overflow_splits_instead_of_giving_up() {
+        let mut exchange = fresh_exchange();
+        let requests = [BucketRequest::with_overflow(
+            0,
+            0,
+            super::super::triage::MAX_OVERFLOW_BUCKET_CAPACITY,
+        )];
+        let empty = [summary(0, 0)];
+        let action = exchange
+            .advance_verified(
+                success(0, 0, &[5]),
+                &requests,
+                &empty,
+                &empty,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        let ClientAction::BucketSketches { requests, .. } = action else {
+            panic!("expected a split after a phase-1 failure, got {action:?}");
+        };
+        assert!(
+            requests.iter().all(|request| !request.overflow),
+            "phase-1 failure must split, not retry the overflow: {requests:?}"
+        );
+        assert!(exchange.ladder_failed().is_empty());
     }
 
     #[test]
