@@ -476,7 +476,7 @@ impl BucketExchange {
                     actual_count = descendant_summary.count,
                     expected_digest = parent_summary.digest,
                     actual_digest = descendant_summary.digest,
-                    "MSC4521 split summaries are inconsistent; discarding the parent bucket"
+                    "split summaries are inconsistent; discarding parent bucket"
                 );
                 self.ladder_fail(parent, batch);
             }
@@ -654,7 +654,7 @@ impl BucketExchange {
                 population,
                 repeats,
                 cannot_narrow,
-                "MSC4521 phase-one bucket verification failed"
+                "phase-one bucket verification failed"
             );
             if cannot_narrow || (repeats && population <= COLLISION_GIVE_UP_POPULATION) {
                 recon_log!(
@@ -663,7 +663,7 @@ impl BucketExchange {
                     prefix,
                     population,
                     repeats,
-                    "MSC4521 giving up on an unverifiable bucket"
+                    "giving up on an unverifiable bucket"
                 );
                 self.ladder_fail(node, batch);
             } else {
@@ -723,7 +723,7 @@ impl BucketExchange {
                 warn,
                 rounds_emitted = self.rounds_emitted,
                 max_rounds = self.max_rounds,
-                "MSC4521 reconciliation exhausted its round budget"
+                "reconciliation round budget exhausted; using fallback - ExtremityDiff"
             );
             return Err(ClientAction::ExtremityDiff);
         }
@@ -751,19 +751,19 @@ impl BucketExchange {
                 pending_requests = self.pending.len(),
                 max_buckets = self.max_buckets_per_round,
                 max_aggregate_capacity = self.max_aggregate_capacity,
-                "MSC4521 pending buckets cannot fit in a round"
+                "pending buckets cannot fit in a round; using fallback - ExtremityDiff"
             );
             return Err(ClientAction::ExtremityDiff);
         }
 
         self.rounds_emitted = self.rounds_emitted.saturating_add(1);
         recon_log!(
-            info,
+            debug,
             round = self.rounds_emitted,
             request_count = requests.len(),
             total_capacity = total,
             pending_requests = self.pending.len(),
-            "emitting MSC4521 bucket request round"
+            "emitting bucket request round"
         );
         Ok(requests)
     }
@@ -1142,7 +1142,7 @@ impl ReconciliationClient {
                     warn,
                     frame_matches = remote.frame_matches,
                     unknown_extremity = remote.has_unknown_extremity,
-                    "MSC4521 reconciliation requires extremity diff"
+                    "adaptive reconciliation has chosen the fallback path"
                 );
             }
             return action;
@@ -1184,7 +1184,10 @@ impl ReconciliationClient {
         ) else {
             // If estimation exhausts its work budget, bounded root extraction
             // lets bucket decoding localize the difference without trusting an estimate.
-            recon_log!(warn, "MSC4521 strata estimate exhausted its work budget; starting bounded root extraction");
+            recon_log!(
+                warn,
+                "strata estimate budget exceeded; using fallback - bounded root extraction"
+            );
             return Err(Self::root_bucket_action());
         };
 
@@ -1200,7 +1203,7 @@ impl ReconciliationClient {
             recon_log!(
                 warn,
                 estimated_delta,
-                "MSC4521 strata estimate saturated; starting bounded root extraction"
+                "strata estimate saturates; using fallback - bounded root extraction"
             );
             return Self::root_bucket_action();
         }
@@ -1211,7 +1214,7 @@ impl ReconciliationClient {
                     warn,
                     estimated_delta,
                     threshold,
-                    "MSC4521 estimated delta exceeds configured reconciliation gate"
+                    "estimated delta exceeds configured gate; using fallback - ExtremityDiff"
                 );
                 return ClientAction::ExtremityDiff;
             }
@@ -1230,7 +1233,7 @@ impl ReconciliationClient {
             recon_log!(
                 warn,
                 estimated_delta,
-                "MSC4521 sketch capacity exceeds local bounds; using extremity diff"
+                "sketch capacity exceeds configured limits; using fallback - ExtremityDiff"
             );
             return ClientAction::ExtremityDiff;
         };
@@ -1260,18 +1263,20 @@ impl ReconciliationClient {
             recon_log!(
                 warn,
                 buckets,
+                max_buckets = MAX_BUCKETS_PER_ROUND,
                 total_capacity,
-                "MSC4521 initial bucket plan exceeds local bounds; using extremity diff"
+                max_aggregate_capacity = self.max_aggregate_capacity,
+                "bucket plan exceeds configured limits; using fallback - ExtremityDiff"
             );
             return ClientAction::ExtremityDiff;
         }
 
         recon_log!(
-            info,
+            debug,
             estimated_delta,
             bucket_count = buckets,
             bucket_capacity = per_bucket,
-            "selected MSC4521 bucket sketch plan"
+            "choosing bucket/sketch plan"
         );
 
         let mut requests = alloc::vec::Vec::with_capacity(buckets);
@@ -1337,7 +1342,7 @@ impl ReconciliationClient {
         recon_log!(
             debug,
             failed_bucket_count = batch.failed_buckets.len(),
-            "MSC4521 bucket decode failed; scheduling bounded retry or split"
+            "bucket decode error; using fallback - bounded retry or split"
         );
         for success in batch.successful_buckets {
             accumulated_roots.extend(success.roots);
@@ -1352,7 +1357,7 @@ impl ReconciliationClient {
         let Ok(resolved_count) = u64::try_from(accumulated_roots.len()) else {
             recon_log!(
                 warn,
-                "MSC4521 resolved root count exceeds u64; using extremity diff"
+                "resolved root cardinality exceeds u64; using fallback - ExtremityDiff"
             );
             return ClientAction::ExtremityDiff;
         };
@@ -1374,7 +1379,7 @@ impl ReconciliationClient {
                     warn,
                     depth,
                     prefix,
-                    "MSC4521 failed bucket could not be refined; using extremity diff"
+                    "MSC4521 failed bucket could not be refined; using fallback - ExtremityDiff"
                 );
                 return ClientAction::ExtremityDiff;
             };
@@ -1385,7 +1390,7 @@ impl ReconciliationClient {
                         recon_log!(
                             warn,
                             aggregate_limit,
-                            "MSC4521 retry plan exceeds aggregate capacity; using extremity diff"
+                            "retry plan exceeds aggregate capacity; using fallback - ExtremityDiff"
                         );
                         return ClientAction::ExtremityDiff;
                     }
@@ -1394,7 +1399,7 @@ impl ReconciliationClient {
                     recon_log!(
                         warn,
                         max_buckets = MAX_BUCKETS_PER_ROUND,
-                        "MSC4521 retry plan exceeds per-round bucket limit; using extremity diff"
+                        "retry plan exceeds per-round bucket limit; using fallback - ExtremityDiff"
                     );
                     return ClientAction::ExtremityDiff;
                 }

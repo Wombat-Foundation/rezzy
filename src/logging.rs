@@ -1,6 +1,7 @@
 //! Small stderr subscriber for applications that opt into Rezzy logging.
 
 use std::fmt::Write as _;
+use std::io::IsTerminal as _;
 use std::string::String;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::field::{Field, Visit};
@@ -35,9 +36,10 @@ impl Subscriber for StderrSubscriber {
         let metadata = event.metadata();
         let mut fields = FieldOutput::default();
         event.record(&mut fields);
+        let level = format_level(*metadata.level(), std::io::stderr().is_terminal());
         std::eprintln!(
             "{} {} {}: {}{}",
-            metadata.level(),
+            level,
             metadata.target(),
             metadata
                 .name()
@@ -51,6 +53,22 @@ impl Subscriber for StderrSubscriber {
     fn enter(&self, _span: &Id) {}
 
     fn exit(&self, _span: &Id) {}
+}
+
+fn format_level(level: Level, is_terminal: bool) -> String {
+    let label = level.as_str();
+    if !is_terminal || std::env::var_os("NO_COLOR").is_some() {
+        return String::from(label);
+    }
+
+    let color = match level {
+        Level::ERROR => "31", // red
+        Level::WARN => "33",  // yellow
+        Level::INFO => "34",  // blue
+        Level::DEBUG => "32", // green
+        Level::TRACE => "37", // white
+    };
+    std::format!("\x1b[{color}m{label}\x1b[0m")
 }
 
 #[derive(Default)]

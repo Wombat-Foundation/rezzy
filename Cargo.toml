@@ -159,7 +159,7 @@ path = "src/bin/regen_oracles.rs"
 required-features = ["regen"]
 
 [features]
-default = ["std"]
+default = ["std", "logging"]
 std = []
 logging = ["std", "dep:tracing", "rezzy-recon/logging"]
 cli = ["std", "dep:clap"]
