@@ -684,8 +684,8 @@ mod tests {
 
     /// Regression pins for the BLAKE3 instantiation (`msc4500:lthash16:blake3:v1`).
     ///
-    /// These are rezzy-derived values, not the published MSC4500 vectors: this module
-    /// implements a different expansion and collapse pair, as the module docs explain.
+    /// These include the BLAKE3 vectors published in MSC4500 (expansion and
+    /// `BLAKE3-256` collapse under this tag); other pinned values are rezzy-derived.
     /// Changing the expansion, the collapse function, the domain tag, or the
     /// length-delimited element encoding changes every value below, so treat this as the
     /// place to re-derive them.

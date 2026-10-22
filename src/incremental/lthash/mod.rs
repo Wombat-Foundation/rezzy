@@ -47,8 +47,8 @@
 //! `cargo bench --manifest-path benches/Cargo.toml -- lthash_comprehensive`,
 //! whose expansion section measures the XOF and the collapse separately, or
 //! with `cargo bench --manifest-path benches/Cargo.toml --bench rezzy -- lthash_backends`, which times this stack head to head against the
-//! retired SHAKE256 + `BLAKE2b` one after checking it against the published
-//! MSC4500 vectors.
+//! retired SHAKE256 + `BLAKE2b` one after checking it against the earlier
+//! MSC4500 SHAKE256 profile vectors.
 //!
 //! Note that the pinned `blake3` dependency keeps `default-features = false`,
 //! so expansion uses the portable backend. Enabling blake3's `std` feature
