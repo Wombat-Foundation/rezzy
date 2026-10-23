@@ -260,6 +260,126 @@ fn comparison_key(
     )
 }
 
+fn is_redacted_envelope(val: &rezzy::JsonValue) -> bool {
+    val.get("unsigned")
+        .and_then(rezzy::JsonValue::as_object)
+        .is_some_and(|u| u.contains_key("redacted_because") || u.contains_key("redacted_by"))
+}
+
+fn union_signatures(existing: &mut rezzy::JsonValue, incoming: &rezzy::JsonValue) {
+    let Some(in_sigs) = incoming
+        .get("signatures")
+        .and_then(rezzy::JsonValue::as_object)
+    else {
+        return;
+    };
+    let Some(ex_obj) = existing.as_object_mut() else {
+        return;
+    };
+    let ex_sigs_val = ex_obj
+        .entry(String::from("signatures"))
+        .or_insert_with(|| rezzy::JsonValue::Object(rezzy::JsonObject::new()));
+    let Some(ex_sigs) = ex_sigs_val.as_object_mut() else {
+        return;
+    };
+    for (domain, domain_map) in in_sigs {
+        if let Some(in_keys) = domain_map.as_object() {
+            let ex_domain_val = ex_sigs
+                .entry(domain.clone())
+                .or_insert_with(|| rezzy::JsonValue::Object(rezzy::JsonObject::new()));
+            if let Some(ex_keys) = ex_domain_val.as_object_mut() {
+                for (key_id, sig) in in_keys {
+                    ex_keys
+                        .entry(key_id.clone())
+                        .or_insert_with(|| sig.clone());
+                }
+            }
+        }
+    }
+}
+
+fn preserve_rejection_markers(existing: &mut rezzy::JsonValue, incoming: &rezzy::JsonValue) {
+    let (Some(ex_obj), Some(in_obj)) = (existing.as_object_mut(), incoming.as_object()) else {
+        return;
+    };
+    for key in ["__rejected", "rejected", "__soft_fail", "soft_fail"] {
+        if in_obj
+            .get(key)
+            .and_then(rezzy::JsonValue::as_bool)
+            .unwrap_or(false)
+            && !ex_obj.contains_key(key)
+        {
+            ex_obj.insert(String::from(key), rezzy::JsonValue::Bool(true));
+        }
+    }
+}
+
+fn reconcile_duplicate_event(
+    existing: &mut rezzy::JsonValue,
+    incoming: &rezzy::JsonValue,
+    room_version: Option<&str>,
+    event_id: &str,
+    label: &str,
+    quiet: bool,
+) -> Result<(), AppError> {
+    let ex_content = existing.get("content");
+    let in_content = incoming.get("content");
+    if ex_content != in_content {
+        let ver = room_version.unwrap_or("10");
+        let redacted_incoming = rezzy::redact_json(incoming, ver);
+        let redacted_existing = rezzy::redact_json(existing, ver);
+        let existing_is_redacted_of_incoming = redacted_incoming.get("content") == ex_content
+            && (is_redacted_envelope(existing)
+                || incoming
+                    .get("content")
+                    .and_then(rezzy::JsonValue::as_object)
+                    .map_or(0, rezzy::JsonObject::len)
+                    > existing
+                        .get("content")
+                        .and_then(rezzy::JsonValue::as_object)
+                        .map_or(0, rezzy::JsonObject::len));
+        let incoming_is_redacted_of_existing = redacted_existing.get("content") == in_content
+            && (is_redacted_envelope(incoming)
+                || existing
+                    .get("content")
+                    .and_then(rezzy::JsonValue::as_object)
+                    .map_or(0, rezzy::JsonObject::len)
+                    > incoming
+                        .get("content")
+                        .and_then(rezzy::JsonValue::as_object)
+                        .map_or(0, rezzy::JsonObject::len));
+
+        if existing_is_redacted_of_incoming {
+            if let (Some(ex_obj), Some(in_c)) = (existing.as_object_mut(), in_content) {
+                ex_obj.insert(String::from("content"), in_c.clone());
+                if !is_redacted_envelope(incoming) {
+                    if let Some(unsigned) = ex_obj
+                        .get_mut("unsigned")
+                        .and_then(rezzy::JsonValue::as_object_mut)
+                    {
+                        unsigned.remove("redacted_because");
+                        unsigned.remove("redacted_by");
+                    }
+                }
+            }
+        } else if !incoming_is_redacted_of_existing {
+            if !quiet {
+                eprintln!("[warn] conflicting unredacted content for {event_id} in input file {label}");
+            }
+            bail_code!(
+                ErrorCode::AggregateConflict,
+                "event_id {} has conflicting content in input file {}",
+                event_id,
+                label
+            );
+        }
+    }
+
+    union_signatures(existing, incoming);
+    preserve_rejection_markers(existing, incoming);
+    Ok(())
+}
+
 fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(
     file_sets: &[(String, I)],
     room_version: Option<&str>,
@@ -306,6 +426,14 @@ fn merge_event_sets_internal<I: AsRef<[rezzy::JsonValue]>>(
                         label
                     );
                 }
+                reconcile_duplicate_event(
+                    &mut merged[first_index],
+                    val,
+                    room_version,
+                    &event_id,
+                    label,
+                    quiet,
+                )?;
                 dupes = dupes.saturating_add(1);
             } else {
                 seen_ids.insert(event_id, merged.len());

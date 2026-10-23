@@ -457,6 +457,31 @@ pub fn run_cli(args: &Args) -> Result<rezzy::JsonValue, error::AppError> {
         }
     }
 
+    // Auto-consult companion `.rezzy-meta.jsonl` sidecar (or explicit `--metadata`)
+    // so stripped `__rejected` / `__soft_fail` markers are enforced during replay (T12-F2).
+    let sidecar_to_apply = args.metadata.clone().or_else(|| {
+        if args.input.len() == 1 && args.input[0].to_str() != Some("-") {
+            let candidate = provenance::sidecar_path(&args.input[0]);
+            candidate.is_file().then_some(candidate)
+        } else {
+            None
+        }
+    });
+    if let Some(sidecar_path) = sidecar_to_apply {
+        if let Ok(loaded) = provenance::load_sidecar(&sidecar_path) {
+            for (event_id, sidecar_ev) in &loaded.events {
+                if let Some(ev) = events_map.get_mut(event_id) {
+                    if sidecar_ev.rejected {
+                        ev.rejected = true;
+                    }
+                    if sidecar_ev.soft_failed {
+                        ev.soft_fail = true;
+                    }
+                }
+            }
+        }
+    }
+
     let heads = if heads.is_empty() {
         let all_ids: std::collections::HashSet<String> = events_map.keys().cloned().collect();
         let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();

@@ -15,13 +15,14 @@
 //! DAG health metrics, fork branch detection, and live frontier width guards
 //! (`F-04-01`, `F-07-04`).
 
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::hash::BuildHasher;
 
 use crate::basespec::rezzy_types::{DagNode, EventId, EventLike};
-use crate::HashMap;
+use crate::{FastMap, FastSet, HashMap};
 
 /// Default maximum live frontier width permitted before triggering a hydra-DAG
 /// resource guard (`F-04-01`).
@@ -81,6 +82,77 @@ pub struct ForkBranch<Id = String> {
     pub timeline_events: usize,
 }
 
+fn peak_live_frontier_width<Id, E, S>(events: &HashMap<Id, E, S>) -> usize
+where
+    Id: EventId,
+    E: DagNode<Id = Id>,
+    S: BuildHasher,
+{
+    if events.is_empty() {
+        return 0;
+    }
+
+    let mut remaining_children: FastMap<&Id, usize> = FastMap::default();
+    for id in events.keys() {
+        remaining_children.insert(id, 0);
+    }
+
+    for ev in events.values() {
+        let mut seen_parents: FastSet<&Id> = FastSet::default();
+        for parent_id in ev.prev_events() {
+            if seen_parents.insert(parent_id) {
+                if let Some(count) = remaining_children.get_mut(parent_id) {
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<&E> = events.values().collect();
+    order.sort_by(|a, b| {
+        a.depth()
+            .cmp(&b.depth())
+            .then_with(|| a.event_id().cmp(b.event_id()))
+    });
+
+    let mut live_parents = 0_usize;
+    let mut active_terminal_heads = 0_usize;
+    let mut peak_width = 0_usize;
+
+    for ev in order {
+        let mut seen_parents: FastSet<&Id> = FastSet::default();
+        for parent_id in ev.prev_events() {
+            if seen_parents.insert(parent_id) {
+                if let Some(rem) = remaining_children.get_mut(parent_id) {
+                    if *rem > 0 {
+                        *rem = rem.saturating_sub(1);
+                        if *rem == 0 {
+                            live_parents = live_parents.saturating_sub(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        let own_children = remaining_children
+            .get(ev.event_id())
+            .copied()
+            .unwrap_or(0);
+        if own_children > 0 {
+            live_parents = live_parents.saturating_add(1);
+        } else {
+            active_terminal_heads = active_terminal_heads.saturating_add(1);
+        }
+
+        let current_width = live_parents.saturating_add(active_terminal_heads);
+        if current_width > peak_width {
+            peak_width = current_width;
+        }
+    }
+
+    peak_width
+}
+
 /// Computes peak live citation frontier width across topological order and
 /// rejects DAGs that exceed `max_width` (`F-04-01`).
 ///
@@ -89,46 +161,205 @@ pub struct ForkBranch<Id = String> {
 /// Returns [`FrontierWidthError`] if the measured peak live frontier width
 /// exceeds `max_width`.
 pub fn check_frontier_width<Id, E, S>(
-    _events: &HashMap<Id, E, S>,
-    _max_width: usize,
+    events: &HashMap<Id, E, S>,
+    max_width: usize,
 ) -> Result<usize, FrontierWidthError>
 where
     Id: EventId,
     E: DagNode<Id = Id>,
     S: BuildHasher,
 {
-    Ok(0)
+    let measured = peak_live_frontier_width(events);
+    if measured > max_width {
+        return Err(FrontierWidthError {
+            measured_width: measured,
+            max_allowed_width: max_width,
+        });
+    }
+    Ok(measured)
 }
 
 /// Computes structural DAG health metrics including forward/backward extremities,
 /// orphan counts, depth statistics, and peak fork/frontier width (`F-07-04`, `F-04-01`).
 #[must_use]
-pub fn compute_dag_health<Id, E, S>(_events: &HashMap<Id, E, S>) -> DagHealth<Id>
+#[allow(clippy::cast_precision_loss)]
+pub fn compute_dag_health<Id, E, S>(events: &HashMap<Id, E, S>) -> DagHealth<Id>
 where
     Id: EventId,
     E: EventLike<Id = Id>,
     S: BuildHasher,
 {
+    let total_events = events.len();
+    if total_events == 0 {
+        return DagHealth {
+            total_events: 0,
+            forward_extremities: Vec::new(),
+            backward_extremities: Vec::new(),
+            max_fork_width: 0,
+            avg_depth: 0.0,
+            max_depth: 0,
+            orphaned_events: 0,
+        };
+    }
+
+    let mut referenced_prev: FastSet<&Id> = FastSet::default();
+    let mut backward_set: BTreeSet<Id> = BTreeSet::new();
+    let mut depth_sum = 0_u128;
+    let mut max_depth = 0_u64;
+    let mut orphaned_events = 0_usize;
+
+    for ev in events.values() {
+        let d = ev.depth();
+        depth_sum = depth_sum.saturating_add(u128::from(d));
+        if d > max_depth {
+            max_depth = d;
+        }
+
+        let prev = ev.prev_events();
+        if !prev.is_empty() {
+            let mut any_present = false;
+            for pid in prev {
+                if events.contains_key(pid) {
+                    any_present = true;
+                    referenced_prev.insert(pid);
+                } else {
+                    backward_set.insert(pid.clone());
+                }
+            }
+            if !any_present {
+                orphaned_events = orphaned_events.saturating_add(1);
+            }
+        }
+    }
+
+    let mut forward_extremities: Vec<Id> = events
+        .keys()
+        .filter(|id| !referenced_prev.contains(id))
+        .cloned()
+        .collect();
+    forward_extremities.sort();
+
+    let backward_extremities: Vec<Id> = backward_set.into_iter().collect();
+    let max_fork_width = peak_live_frontier_width(events).max(forward_extremities.len());
+    let avg_depth = (depth_sum as f64) / (total_events as f64);
+
     DagHealth {
-        total_events: 0,
-        forward_extremities: Vec::new(),
-        backward_extremities: Vec::new(),
-        max_fork_width: 0,
-        avg_depth: 0.0,
-        max_depth: 0,
-        orphaned_events: 0,
+        total_events,
+        forward_extremities,
+        backward_extremities,
+        max_fork_width,
+        avg_depth,
+        max_depth,
+        orphaned_events,
     }
 }
 
 /// Detects unmerged fork branches when the DAG has multiple forward extremities (`F-07-04`).
+///
+/// If the DAG has 0 or 1 forward extremities, returns an empty vector (no fork).
+/// When 2 or more forward extremities exist, returns one [`ForkBranch`] per
+/// forward extremity (sorted by `head` ID), recording the events exclusive to
+/// that branch and the deepest ancestor shared with another branch (`fork_point`).
 #[must_use]
-pub fn detect_forks<Id, E, S>(_events: &HashMap<Id, E, S>) -> Vec<ForkBranch<Id>>
+pub fn detect_forks<Id, E, S>(events: &HashMap<Id, E, S>) -> Vec<ForkBranch<Id>>
 where
     Id: EventId,
     E: EventLike<Id = Id>,
     S: BuildHasher,
 {
-    Vec::new()
+    let mut referenced_prev: FastSet<&Id> = FastSet::default();
+    for ev in events.values() {
+        for pid in ev.prev_events() {
+            if events.contains_key(pid) {
+                referenced_prev.insert(pid);
+            }
+        }
+    }
+
+    let mut heads: Vec<Id> = events
+        .keys()
+        .filter(|id| !referenced_prev.contains(id))
+        .cloned()
+        .collect();
+    heads.sort();
+
+    if heads.len() <= 1 {
+        return Vec::new();
+    }
+
+    // For each head, collect its ancestor closure in `events` and count how many
+    // heads reach each event.
+    let mut reach_counts: FastMap<&Id, usize> = FastMap::default();
+    let mut per_head_ancestors: Vec<Vec<&Id>> = Vec::with_capacity(heads.len());
+
+    for head in &heads {
+        let mut visited: FastSet<&Id> = FastSet::default();
+        let mut queue: VecDeque<&Id> = VecDeque::new();
+        if let Some((k, _)) = events.get_key_value(head) {
+            visited.insert(k);
+            queue.push_back(k);
+        }
+        while let Some(cur) = queue.pop_front() {
+            if let Some(ev) = events.get(cur) {
+                for pid in ev.prev_events() {
+                    if let Some((pk, _)) = events.get_key_value(pid) {
+                        if visited.insert(pk) {
+                            queue.push_back(pk);
+                        }
+                    }
+                }
+            }
+        }
+        let anc: Vec<&Id> = visited.into_iter().collect();
+        for &id in &anc {
+            let entry = reach_counts.entry(id).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+        per_head_ancestors.push(anc);
+    }
+
+    let mut branches = Vec::with_capacity(heads.len());
+    for (head, anc) in heads.into_iter().zip(per_head_ancestors) {
+        let mut length = 0_usize;
+        let mut state_events = 0_usize;
+        let mut timeline_events = 0_usize;
+        let mut fork_point: Option<(&Id, u64)> = None;
+
+        for id in anc {
+            let count = reach_counts.get(id).copied().unwrap_or(0);
+            if let Some(ev) = events.get(id) {
+                if count <= 1 {
+                    length = length.saturating_add(1);
+                    if ev.state_key().is_some() {
+                        state_events = state_events.saturating_add(1);
+                    } else {
+                        timeline_events = timeline_events.saturating_add(1);
+                    }
+                } else {
+                    let d = ev.depth();
+                    let replace = match fork_point {
+                        None => true,
+                        Some((best_id, best_depth)) => {
+                            d > best_depth || (d == best_depth && id < best_id)
+                        }
+                    };
+                    if replace {
+                        fork_point = Some((id, d));
+                    }
+                }
+            }
+        }
+
+        branches.push(ForkBranch {
+            head,
+            fork_point: fork_point.map(|(id, _)| id.clone()),
+            length,
+            state_events,
+            timeline_events,
+        });
+    }
+
+    branches
 }
 
 #[cfg(test)]
