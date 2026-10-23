@@ -84,7 +84,7 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 ---
 
-- [~] **Track: 17 — P1 Remediation: Implement Tier-2 Pre-Auth Validation (`validate.rs`, `fork.rs`), Fair Prefix Queueing & Bucket-Split E2E**
+- [x] **Track: 17 — P1 Remediation: Implement Tier-2 Pre-Auth Validation (`validate.rs`, `fork.rs`), Fair Prefix Queueing & Bucket-Split E2E**
   *Link: [./tracks/17_p1_tier2_validation_and_e2e_recon/index.md](./tracks/17_p1_tier2_validation_and_e2e_recon/index.md)*
 
 ---
