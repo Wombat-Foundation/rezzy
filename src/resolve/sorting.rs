@@ -17,7 +17,9 @@ use alloc::collections::{BinaryHeap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::basespec::event_types::{MAX_POWER_LEVEL_RUST, M_ROOM_POWER_LEVELS};
+use crate::basespec::event_types::{
+    DEFAULT_PL_USER, MAX_POWER_LEVEL_RUST, M_ROOM_CREATE, M_ROOM_POWER_LEVELS,
+};
 use crate::basespec::rezzy_types::{
     EventContent, EventId, EventLike, EventProvider, KahnSortResult, SortPriority, StateResVersion,
 };
@@ -39,23 +41,36 @@ where
     E: EventLike<Id = Id, Content = C>,
 {
     let mut pl_event = None;
+    let mut auth_create_ev = None;
 
     // Spec compliance: only check immediate auth_events (or prev_state_events for V2.2).
     for aid in event.dag_edges(version) {
         if let Some(aev) = auth_context.get_event(aid) {
-            if aev.event_type().as_ref() == M_ROOM_POWER_LEVELS && aev.state_key() == Some("") {
+            if pl_event.is_none()
+                && aev.event_type().as_ref() == M_ROOM_POWER_LEVELS
+                && aev.state_key() == Some("")
+            {
                 pl_event = Some(aev);
+            } else if auth_create_ev.is_none()
+                && aev.event_type().as_ref() == M_ROOM_CREATE
+                && aev.state_key() == Some("")
+            {
+                auth_create_ev = Some(aev);
+            }
+            if pl_event.is_some() && (create_ev.is_some() || auth_create_ev.is_some()) {
                 break;
             }
         }
     }
+
+    let effective_create_ev = create_ev.or(auth_create_ev);
 
     // V12+ (MSC4289): creators have spec-mandated infinite power level.
     if matches!(
         version,
         StateResVersion::V2_1 | StateResVersion::V2_1_1 | StateResVersion::V2_2
     ) {
-        let is_creator = create_ev.is_some_and(|ev| {
+        let is_creator = effective_create_ev.is_some_and(|ev| {
             ev.sender() == event.sender() || ev.content().has_additional_creator(event.sender())
         });
         if is_creator {
@@ -74,10 +89,10 @@ where
         return 0; // Default if PL event exists but no users_default
     }
 
-    // No PL event in the auth chain — fall back to the pre-computed
-    // power_level field. This handles the bootstrap PL event (which only
-    // auths against $create) and simple unit-test events.
-    event.power_level()
+    // No PL event in the auth chain: per Matrix State Resolution v2 Step 3,
+    // default to the room default user power level (0) rather than trusting the
+    // unverified envelope field `event.power_level()` (F-01.1).
+    DEFAULT_PL_USER
 }
 
 /// Bundled inputs for Kahn's topological sort over event power resolution.
@@ -242,8 +257,6 @@ where
                 mut sorted,
                 mut stuck,
             } => {
-                #[cfg(feature = "std")]
-                std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
                 stuck.sort_by(|a, b| {
                     let ev_a = events.get(a).unwrap();
                     let ev_b = events.get(b).unwrap();
@@ -255,6 +268,38 @@ where
                 sorted.append(&mut stuck);
                 sorted
             }
+        }
+    }
+}
+
+/// Result of building the `m.room.power_levels` mainline with cycle diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainlineResult<Id = alloc::string::String> {
+    /// The mainline chain terminated naturally at the root power-levels event.
+    Ok(Vec<Id>),
+    /// A cycle was detected while walking the `m.room.power_levels` auth chain.
+    /// `mainline` contains the unique mainline events in chain order, and
+    /// `cycle_event_id` identifies the already-visited event that closed the cycle.
+    CycleDetected {
+        /// The mainline events visited without repetition.
+        mainline: Vec<Id>,
+        /// The event ID that closed the cycle.
+        cycle_event_id: Id,
+    },
+}
+
+impl<Id> MainlineResult<Id> {
+    /// Returns `true` if the mainline was built without encountering a cycle.
+    #[must_use]
+    pub const fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok(_))
+    }
+
+    /// Consumes the result and returns the mainline vector.
+    #[must_use]
+    pub fn into_mainline(self) -> Vec<Id> {
+        match self {
+            Self::Ok(mainline) | Self::CycleDetected { mainline, .. } => mainline,
         }
     }
 }
@@ -284,6 +329,30 @@ where
     )
 }
 
+/// Builds the `m.room.power_levels` mainline and returns cycle diagnostics
+/// if a cyclic `auth_events` chain is encountered (`F-01.2`).
+#[must_use]
+pub fn build_mainline_with_diagnostics<Id, C, E, K>(
+    resolved: &SharedState<Id, K>,
+    auth_context: &impl EventProvider<Id, C, E>,
+    empty_key: &K,
+    version: StateResVersion,
+) -> MainlineResult<Id>
+where
+    Id: EventId,
+    C: Clone + EventContent,
+    E: EventLike<Id = Id, Content = C>,
+    K: Ord + Clone,
+{
+    build_mainline_with_diagnostics_and_cache(
+        resolved,
+        auth_context,
+        &mut FastMap::default(),
+        empty_key,
+        version,
+    )
+}
+
 /// Like [`build_mainline`], but populates a `pl_parent_cache` mapping each
 /// event ID to its nearest `m.room.power_levels` ancestor in the auth chain.
 ///
@@ -303,8 +372,32 @@ where
     E: EventLike<Id = Id, Content = C>,
     K: Ord + Clone,
 {
+    build_mainline_with_diagnostics_and_cache(
+        resolved,
+        auth_context,
+        pl_parent_cache,
+        empty_key,
+        version,
+    )
+    .into_mainline()
+}
+
+pub(crate) fn build_mainline_with_diagnostics_and_cache<Id, C, E, K>(
+    resolved: &SharedState<Id, K>,
+    auth_context: &impl EventProvider<Id, C, E>,
+    pl_parent_cache: &mut FastMap<Id, Option<Id>>,
+    empty_key: &K,
+    version: StateResVersion,
+) -> MainlineResult<Id>
+where
+    Id: EventId,
+    C: Clone + EventContent,
+    E: EventLike<Id = Id, Content = C>,
+    K: Ord + Clone,
+{
     let mut mainline = Vec::new();
     let mut seen_in_mainline = crate::FastSet::default();
+    let mut cycle_event_id: Option<Id> = None;
     let pl_key = (
         crate::basespec::event_types::EventType::from(M_ROOM_POWER_LEVELS),
         empty_key.clone(),
@@ -313,8 +406,9 @@ where
 
     while let Some(eid) = current {
         if !seen_in_mainline.insert(eid.clone()) {
-            #[cfg(feature = "std")]
-            std::eprintln!("REZZY_WARN: MAINLINE CYCLE DETECTED!");
+            if cycle_event_id.is_none() {
+                cycle_event_id = Some(eid);
+            }
             break; // Cycle detected in the power-levels mainline!
         }
         mainline.push(eid.clone());
@@ -326,8 +420,10 @@ where
             continue;
         }
 
-        // BFS to find the nearest PL ancestor
+        // BFS to find the nearest PL ancestor that does not close a cycle back
+        // into an already-visited mainline event.
         let mut found = None;
+        let mut local_cycle = false;
         if let Some(ev) = auth_context.get_event(&eid) {
             let mut queue: VecDeque<&Id> = ev.dag_edges(version).iter().collect();
             let mut visited = crate::FastSet::default();
@@ -337,6 +433,13 @@ where
                 }
                 if let Some(auth_ev) = auth_context.get_event(q_id) {
                     if auth_ev.event_type().as_ref() == M_ROOM_POWER_LEVELS {
+                        if seen_in_mainline.contains(q_id) {
+                            local_cycle = true;
+                            if cycle_event_id.is_none() {
+                                cycle_event_id = Some(q_id.clone());
+                            }
+                            continue;
+                        }
                         found = Some(q_id.clone());
                         break;
                     }
@@ -347,11 +450,20 @@ where
             }
         }
 
-        pl_parent_cache.insert(eid, found.clone());
+        if !local_cycle {
+            pl_parent_cache.insert(eid, found.clone());
+        }
         current = found;
     }
 
-    mainline
+    if let Some(cycle_id) = cycle_event_id {
+        MainlineResult::CycleDetected {
+            mainline,
+            cycle_event_id: cycle_id,
+        }
+    } else {
+        MainlineResult::Ok(mainline)
+    }
 }
 
 /// Precompute the closest mainline position for every target event, following
@@ -853,42 +965,53 @@ mod tests {
 
     #[test]
     fn test_lean_kahn_sort_clears_reused_cache() {
+        let pl_base = LeanEvent::<String> {
+            event_id: "$pl_base".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@creator:x".into(),
+            content: crate::json!({ "users": { "@alice:x": 10, "@bob:x": 0 } }),
+            ..Default::default()
+        };
         let first = LeanEvent::<String> {
             event_id: "$first".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
             sender: "@alice:x".into(),
             origin_server_ts: 1,
-            power_level: 10,
+            auth_events: alloc::vec!["$pl_base".into()],
             ..Default::default()
         };
         let second = LeanEvent::<String> {
             event_id: "$second".into(),
             event_type: "m.room.power_levels".into(),
             state_key: Some(String::new()),
-            sender: "@alice:x".into(),
+            sender: "@bob:x".into(),
             origin_server_ts: 1,
-            power_level: 0,
+            auth_events: alloc::vec!["$pl_base".into()],
             ..Default::default()
         };
 
         let mut events = HashMap::new();
-        events.insert(first.event_id.clone(), first.clone());
-        events.insert(second.event_id.clone(), second.clone());
+        events.insert(first.event_id.clone(), first);
+        events.insert(second.event_id.clone(), second);
+
+        let mut sort_ctx = events.clone();
+        sort_ctx.insert(pl_base.event_id.clone(), pl_base);
 
         let mut cache = HashMap::new();
 
         let first_sort =
-            KahnSortInputs::new(&events, &events, None, StateResVersion::V2, &mut cache).sort();
+            KahnSortInputs::new(&events, &sort_ctx, None, StateResVersion::V2, &mut cache).sort();
         assert_eq!(first_sort[0], "$first");
 
-        let mut mutated_events = events.clone();
-        mutated_events.get_mut("$first").unwrap().power_level = 0;
-        mutated_events.get_mut("$second").unwrap().power_level = 10;
+        let mut mutated_ctx = sort_ctx;
+        mutated_ctx.get_mut("$pl_base").unwrap().content =
+            crate::json!({ "users": { "@alice:x": 0, "@bob:x": 10 } });
 
         let second_sort = KahnSortInputs::new(
-            &mutated_events,
-            &mutated_events,
+            &events,
+            &mutated_ctx,
             None,
             StateResVersion::V2,
             &mut cache,
@@ -939,6 +1062,188 @@ mod tests {
                 alloc::string::String::from("$pl"),
                 alloc::string::String::from("$msg")
             ]
+        );
+    }
+
+    /// Regression test (`F-01.1`): `get_power_level_from_auth_chain` must not trust
+    /// an unverified envelope `event.power_level()` claim when no `m.room.power_levels`
+    /// event is cited in `dag_edges`. Non-creator senders must default to `0` (`DEFAULT_PL_USER`),
+    /// while the room creator in V1–V11 defaults to `100` when no PL event exists.
+    #[test]
+    fn test_get_power_level_from_auth_chain_ignores_unverified_envelope_pl() {
+        let create_ev = LeanEvent::<String> {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@creator:x".into(),
+            content: crate::json!({ "creator": "@creator:x" }),
+            ..Default::default()
+        };
+        let forged_attacker_ev = LeanEvent::<String> {
+            event_id: "$forged_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@victim:x".into()),
+            sender: "@attacker:x".into(),
+            origin_server_ts: 10,
+            // Unverified envelope field claims PL 100 while omitting the PL auth edge.
+            power_level: 100,
+            auth_events: alloc::vec!["$create".into()],
+            ..Default::default()
+        };
+        let creator_bootstrap_pl = LeanEvent::<String> {
+            event_id: "$pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@creator:x".into(),
+            origin_server_ts: 1,
+            power_level: 0,
+            auth_events: alloc::vec!["$create".into()],
+            content: crate::json!({ "users": { "@creator:x": 100, "@mod:x": 50 } }),
+            ..Default::default()
+        };
+        let valid_mod_ev = LeanEvent::<String> {
+            event_id: "$valid_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@victim:x".into()),
+            sender: "@mod:x".into(),
+            origin_server_ts: 5,
+            power_level: 0,
+            auth_events: alloc::vec!["$create".into(), "$pl0".into()],
+            ..Default::default()
+        };
+
+        let mut ctx = HashMap::new();
+        ctx.insert(create_ev.event_id.clone(), create_ev.clone());
+        ctx.insert(creator_bootstrap_pl.event_id.clone(), creator_bootstrap_pl.clone());
+        ctx.insert(forged_attacker_ev.event_id.clone(), forged_attacker_ev.clone());
+        ctx.insert(valid_mod_ev.event_id.clone(), valid_mod_ev.clone());
+
+        assert_eq!(
+            get_power_level_from_auth_chain(
+                &forged_attacker_ev,
+                &ctx,
+                Some(&create_ev),
+                StateResVersion::V2,
+            ),
+            0,
+            "unprivileged sender omitting PL auth edge must default to 0, not event.power_level()"
+        );
+        assert_eq!(
+            get_power_level_from_auth_chain(
+                &forged_attacker_ev,
+                &ctx,
+                None,
+                StateResVersion::V2,
+            ),
+            0,
+            "missing create_ev and missing PL auth edge must still default to 0"
+        );
+        assert_eq!(
+            get_power_level_from_auth_chain(
+                &creator_bootstrap_pl,
+                &ctx,
+                None,
+                StateResVersion::V2_1,
+            ),
+            MAX_POWER_LEVEL_RUST,
+            "V12+ creator bootstrap event citing $create in dag_edges must receive MAX_POWER_LEVEL_RUST"
+        );
+
+        let mut conflict = HashMap::new();
+        conflict.insert(forged_attacker_ev.event_id.clone(), forged_attacker_ev);
+        conflict.insert(valid_mod_ev.event_id.clone(), valid_mod_ev);
+        let sorted = KahnSortInputs::new(
+            &conflict,
+            &ctx,
+            Some(&create_ev),
+            StateResVersion::V2,
+            &mut HashMap::new(),
+        )
+        .sort();
+        // $valid_ban (effective PL 50) must pop before $forged_ban (effective PL 0,
+        // not forged 100) so the moderator's action establishes auth state first.
+        assert_eq!(
+            sorted,
+            alloc::vec![String::from("$valid_ban"), String::from("$forged_ban")]
+        );
+    }
+
+    /// Regression test (`F-01.2`, `F-01.4`): mainline construction must not truncate
+    /// a valid ancestor PL when an intermediate PL event also carries a cyclic back-edge
+    /// to an already-visited mainline PL event, and library sorting must not pollute stderr.
+    #[test]
+    fn test_build_mainline_cycle_back_edge_does_not_truncate_valid_ancestor() {
+        // PL2 -> PL1, and PL1 has a malformed back-edge to PL2 before its real ancestor PL0.
+        let pl0 = LeanEvent::<String> {
+            event_id: "PL0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl1 = LeanEvent::<String> {
+            event_id: "PL1".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL2".into(), "PL0".into()],
+            ..Default::default()
+        };
+        let pl2 = LeanEvent::<String> {
+            event_id: "PL2".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL1".into()],
+            ..Default::default()
+        };
+
+        let mut ctx = HashMap::new();
+        ctx.insert("PL0".into(), pl0);
+        ctx.insert("PL1".into(), pl1);
+        ctx.insert("PL2".into(), pl2);
+
+        let mut resolved = SharedState::new();
+        resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
+
+        let mut cache = FastMap::default();
+        let mainline = build_mainline_with_cache(
+            &resolved,
+            &ctx,
+            &mut cache,
+            &String::new(),
+            StateResVersion::V2,
+        );
+        assert_eq!(
+            mainline,
+            alloc::vec![
+                String::from("PL2"),
+                String::from("PL1"),
+                String::from("PL0")
+            ],
+            "cyclic back-edge PL1 -> PL2 must not truncate reachable ancestor PL0"
+        );
+        let diag = build_mainline_with_diagnostics(
+            &resolved,
+            &ctx,
+            &String::new(),
+            StateResVersion::V2,
+        );
+        assert!(!diag.is_ok());
+        assert_eq!(
+            diag,
+            MainlineResult::CycleDetected {
+                mainline: alloc::vec![
+                    String::from("PL2"),
+                    String::from("PL1"),
+                    String::from("PL0")
+                ],
+                cycle_event_id: String::from("PL2"),
+            }
+        );
+
+        let prod_src = include_str!("sorting.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            !prod_src.contains("eprintln!"),
+            "library sorting functions must not write to global stderr via eprintln! (F-01.4)"
         );
     }
 }

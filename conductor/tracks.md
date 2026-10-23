@@ -69,7 +69,7 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 ---
 
-- [ ] **Track: 14 — P0 Remediation: Relocate Retired Causal Domination Operator (`cdo.rs`) Out of Production `src/` & Harden Sorting**
+- [x] **Track: 14 — P0 Remediation: Relocate Retired Causal Domination Operator (`cdo.rs`) Out of Production `src/` & Harden Sorting**
   *Link: [./tracks/14_p0_retire_cdo_from_src/index.md](./tracks/14_p0_retire_cdo_from_src/index.md)*
 
 ---

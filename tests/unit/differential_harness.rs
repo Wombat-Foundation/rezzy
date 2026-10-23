@@ -429,7 +429,7 @@ fn cdo_drop_rate_measured() {
                     let mut rng = iteration_rng(BASE_SEED, iter);
                     let problem = gen_problem(&mut rng, 1000 + iter * 13);
                     let safe =
-                        rezzy::cdo::apply_cdo_filter(&problem.conflicted, &problem.auth_context);
+                        crate::cdo::apply_cdo_filter(&problem.conflicted, &problem.auth_context);
                     let dropped = u64::try_from(problem.conflicted.len() - safe.len()).unwrap_or(0);
                     local_dropped += dropped;
                     if dropped > 0 {
@@ -673,7 +673,7 @@ fn dominated_winner_generator() {
     for i in 0u64..ITER_COUNT {
         let mut rng = iteration_rng(0xABCD_EF01_2345_6789, i);
         let p = gen_dominated_winner_problem(&mut rng, 5000 + i * 7);
-        let safe = rezzy::cdo::apply_cdo_filter(&p.conflicted, &p.auth_context);
+        let safe = crate::cdo::apply_cdo_filter(&p.conflicted, &p.auth_context);
         let dropped: Vec<String> = p
             .conflicted
             .keys()
