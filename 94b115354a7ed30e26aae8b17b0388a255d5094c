@@ -1,0 +1,5 @@
+Green Phase implementation for Track 18 (18_p1_hashdos_and_arena_interning):
+- F-07-07 (src/auth/roaring.rs): Sort keys deterministically before seeding Kahn's topological queue in AuthGraph::build and retain/relax cyclic remainder nodes so DenseIndex and auth_difference are deterministic and never drop cyclic events.
+- F-09-01 (src/lib.rs): Replace unseeded hashbrown::DefaultHashBuilder (foldhash) on FastMap/FastSet with FastHashBuilder (CSPRNG-seeded RandomState on std, per-instance BLAKE3+counter-seeded SipHash-1-3 on no_std) and expose SeededMap/SeededSet.
+- F-09-02 (src/dense_index.rs): Short-circuit DenseIndex::try_build_bounded immediately in O(1) when items.len() >= bound instead of allocating a post_bound HashSet and draining the remainder of the iterator.
+- F-09-03 / F-09-04 (src/basespec/interned_key.rs, src/state/at.rs): Migrate Interner from Rc<str> to Arc<str> so Interner and InternId are Send + Sync, add Interner::seal() and Interner::into_static() (StaticInternId) with O(1) u32 rank-based Ord/Eq/Hash, and document parallel Arc<str> contention guidance on FastSharedState.
