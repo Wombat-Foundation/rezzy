@@ -2,7 +2,7 @@
   "track_id": "17_p1_tier2_validation_and_e2e_recon",
   "title": "P1 Remediation: Implement Tier-2 Pre-Auth Validation (validate.rs, fork.rs) & Multi-Round Bucket-Split E2E Tests",
   "type": "feature",
-  "status": "new",
+  "status": "in_progress",
   "priority": "P1",
   "origin_tracks": [
     "07_roaring_lazy_provider_20260703",
