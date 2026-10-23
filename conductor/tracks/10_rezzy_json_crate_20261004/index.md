@@ -21,3 +21,8 @@
 ## Executive Summary
 
 Track 10 captures the architectural extraction of JSON parsing and Matrix Canonical JSON serialization out of the monolithic `src/` crate into the standalone `#![no_std]` (`alloc`) [`rezzy-json`](../../../rezzy-json/src/lib.rs) workspace crate. Across September and October 2026, the parser underwent two major evolutionary pivots: first ripping out `serde` / `serde_json` in favor of `simd-json` (`83a19c0`, `cc84e6b`), and then completely removing `simd-json` (`0970e94`) after benchmarks proved the hand-rolled scalar parser and zero-copy canonicalizer were significantly faster (238 MB/s vs. 139 MB/s on Matrix events) and free of `u64` integer rejection bugs. Track 10 also codifies the exact boundaries between permissive parsing (`Number` preserving arbitrary-width integer source spellings) and strict Matrix Canonical JSON (`[-2^53+1, 2^53-1]`) in [`docs/json_numeric_limits.md`](../../../docs/json_numeric_limits.md).
+
+## Reviews & Critiques
+
+- [Multi-Perspective Track Review (`./review.md`)](./review.md) — 8-persona architectural, cryptographic, federation interop, and public-safety critique (identifies `T10-F1`..`T10-F6`, including the `> u64::MAX` `validate_canonical_number` fallthrough and permissive/strict canonical writer hazards).
+

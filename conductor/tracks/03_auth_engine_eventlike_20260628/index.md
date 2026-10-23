@@ -13,6 +13,9 @@
 - [Track Metadata (`./metadata.json`)](./metadata.json)
 - [Public-Safety Audit (`../../audits/rezzy_docs_public_safety_audit.md`)](../../audits/rezzy_docs_public_safety_audit.md)
 
+## Reviews & Critiques
+- [Multi-Perspective Architectural Review (`./review.md`)](./review.md) — 8-persona critique covering `critic-pm`, `critic-eng-lead`, `critic-compliance`, `critic-perf`, `critic-formal-crypto`, `critic-federation-interop`, `critic-redteam-qa`, and `critic-dx-integrator`
+
 ### Linked Repository Documentation
 - [`../../../docs/architecture.md`](../../../docs/architecture.md) — Synchronous "I/O Sandwich" design, Auth Difference formula ($\text{auth}(C) - \text{auth}(U)$), and 3-layer Continuwuity/Synapse auth-chain indexing
 - [`../../../docs/design_notes.md`](../../../docs/design_notes.md) — API evolution covering `EventContent`, `EventLike`, `EventId` integer keys, `compute_state_at_batch`, `compute_state_at_streaming`, and `auth_types_for_event`

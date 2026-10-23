@@ -14,6 +14,7 @@
 ## Audits & Governance
 
 -   [Public-Safety & Architectural Audit](./audits/rezzy_docs_public_safety_audit.md)
+-   [Master 8-Perspective Critique Matrix (Tracks 01–12)](./audits/multi_persona_review_matrix.md)
 
 ## Tracks
 

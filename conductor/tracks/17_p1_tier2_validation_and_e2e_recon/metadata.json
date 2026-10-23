@@ -1,0 +1,17 @@
+{
+  "track_id": "17_p1_tier2_validation_and_e2e_recon",
+  "title": "P1 Remediation: Implement Tier-2 Pre-Auth Validation (validate.rs, fork.rs) & Multi-Round Bucket-Split E2E Tests",
+  "type": "feature",
+  "status": "new",
+  "priority": "P1",
+  "origin_tracks": ["07_roaring_lazy_provider_20260703", "09_perf_interning_benchmarks_20260920", "11_rezzy_recon_pinsketch_trie_20261018"],
+  "created_at": "2026-10-23T06:37:00Z",
+  "updated_at": "2026-10-23T06:37:00Z",
+  "linked_docs": [
+    "../../../docs/homeserver_utilities.md",
+    "../../../docs/tech_debt.md",
+    "../../../docs/2026-10-12-h64-prefix-grinding.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "High (Missing Guards & Open Test Debt): Tier-2 PDU syntactic validation (validate.rs) and fork detection (fork.rs) remain unimplemented, and multi-round capacity-then-depth bucket split lacks an E2E test."
+}

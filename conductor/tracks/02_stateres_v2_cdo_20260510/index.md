@@ -13,6 +13,9 @@
 - [Track Metadata (`./metadata.json`)](./metadata.json)
 - [Public-Safety Audit (`../../audits/rezzy_docs_public_safety_audit.md`)](../../audits/rezzy_docs_public_safety_audit.md)
 
+## Reviews & Critiques
+- [Multi-Perspective Architectural Review (`./review.md`)](./review.md) — 8-persona critique covering `critic-pm`, `critic-eng-lead`, `critic-compliance`, `critic-perf`, `critic-formal-crypto`, `critic-federation-interop`, `critic-redteam-qa`, and `critic-dx-integrator`
+
 ### Linked Repository Documentation
 - [`../../../docs/cdo_soundness_anomalies.md`](../../../docs/cdo_soundness_anomalies.md) — Post-mortem on the Causal Domination Operator (CDO), the dominator-validity gap, Anomaly 19 (`19_demoted_but_still_authorized.jsonl`), and Anomaly 20 (`20_concurrent_ban_still_holds.jsonl`)
 - [`../../../README.md`](../../../README.md) — Room version to State Resolution version mapping (V1, V2/[MSC1693](https://github.com/matrix-org/matrix-spec-proposals/pull/1693), V2.1/[MSC4297](https://github.com/matrix-org/matrix-spec-proposals/pull/4297))

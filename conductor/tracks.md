@@ -1,6 +1,6 @@
 # Tracks Registry
 
-This registry tracks the complete historical feature trajectory of `rezzy` (`01`–`12`) across 924 commits and 16 technical/audit documents, followed by stage-gated public-safety remediation tracks.
+This registry tracks the complete historical feature trajectory of `rezzy` (`01`–`12`) across 924 commits and 16 technical/audit documents, followed by the 6 standalone public-safety and architectural remediation tracks (`13`–`18`).
 
 ---
 
@@ -61,3 +61,33 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 - [x] **Track: 12 — `rezzy-cli`: Deterministic JSONL Aggregation, `.rezzy-meta.jsonl` Sidecar & Signed Federation Crawler (`0.6.0-rc.1`)**
   *Link: [./tracks/12_rezzy_cli_federation_agg_20261010/index.md](./tracks/12_rezzy_cli_federation_agg_20261010/index.md)*
+
+---
+
+- [ ] **Track: 13 — P0 Remediation: Enforce Unconditional Fail-Closed Cross-Room Auth Rejection (`MSC4307` Rule 2.5)**
+  *Link: [./tracks/13_p0_msc4307_fail_closed_auth/index.md](./tracks/13_p0_msc4307_fail_closed_auth/index.md)*
+
+---
+
+- [ ] **Track: 14 — P0 Remediation: Relocate Retired Causal Domination Operator (`cdo.rs`) Out of Production `src/`**
+  *Link: [./tracks/14_p0_retire_cdo_from_src/index.md](./tracks/14_p0_retire_cdo_from_src/index.md)*
+
+---
+
+- [ ] **Track: 15 — P0 Remediation: Seal Permissive Canonical JSON & Lossy `as_f64` Integer Rounding (`rezzy-json`)**
+  *Link: [./tracks/15_p0_strict_canonical_json_bounds/index.md](./tracks/15_p0_strict_canonical_json_bounds/index.md)*
+
+---
+
+- [ ] **Track: 16 — P0 Remediation: Prevent Mixed-Federation Split-Brain (`V2.1.1` `SEND01` & `Ed25519` Verification Guards)**
+  *Link: [./tracks/16_p0_federation_consensus_guards/index.md](./tracks/16_p0_federation_consensus_guards/index.md)*
+
+---
+
+- [ ] **Track: 17 — P1 Remediation: Implement Tier-2 Pre-Auth Validation (`validate.rs`, `fork.rs`) & Bucket-Split E2E Tests**
+  *Link: [./tracks/17_p1_tier2_validation_and_e2e_recon/index.md](./tracks/17_p1_tier2_validation_and_e2e_recon/index.md)*
+
+---
+
+- [ ] **Track: 18 — P1 Remediation: Harden Hash Tables Against HashDoS & Land `u32` Arena Interning (`InternId`)**
+  *Link: [./tracks/18_p1_hashdos_and_arena_interning/index.md](./tracks/18_p1_hashdos_and_arena_interning/index.md)*

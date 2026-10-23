@@ -13,6 +13,9 @@
 - [Track Metadata (`./metadata.json`)](./metadata.json)
 - [Public-Safety Audit (`../../audits/rezzy_docs_public_safety_audit.md`)](../../audits/rezzy_docs_public_safety_audit.md)
 
+## Reviews & Critiques
+- [Multi-Perspective Architectural Review (`./review.md`)](./review.md) — 8-persona critique covering `critic-pm`, `critic-eng-lead`, `critic-compliance`, `critic-perf`, `critic-formal-crypto`, `critic-federation-interop`, `critic-redteam-qa`, and `critic-dx-integrator`
+
 ### Linked Repository Documentation & Build Manifests
 - [`../../../README.md`](../../../README.md) — Crate overview, supported Matrix room versions, and test-first development workflow
 - [`../../../TODO.txt`](../../../TODO.txt) — Architectural notes on `KahnSortResult::CycleDetected`, `build_mainline_with_cache` cycle handling, arithmetization vs. set reconciliation, and Lean 4 `progressiveFold` gap assessment

@@ -1,0 +1,15 @@
+{
+  "track_id": "14_p0_retire_cdo_from_src",
+  "title": "P0 Remediation: Relocate Retired Causal Domination Operator (cdo.rs) Out of Production src/",
+  "type": "compliance",
+  "status": "new",
+  "priority": "P0",
+  "origin_tracks": ["02_stateres_v2_cdo_20260510"],
+  "created_at": "2026-10-23T06:36:00Z",
+  "updated_at": "2026-10-23T06:36:00Z",
+  "linked_docs": [
+    "../../../docs/cdo_soundness_anomalies.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "Critical (Split-Brain): Retired Causal Domination Operator (src/resolve/cdo.rs) proven unsound by Anomalies 19 & 20 still resides inside production src/resolve/."
+}

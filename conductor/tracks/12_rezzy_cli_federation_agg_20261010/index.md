@@ -24,3 +24,8 @@
 ## Executive Summary
 
 Track 12 captures the end-to-end engineering of [`rezzy-cli`](../../../rezzy-cli/src/lib.rs) for forensic Matrix room corpus acquisition, deduplication, and inspection. Between September 24 and October 12, 2026, the CLI gained: (1) `rezzy aggregate` ([`rezzy-cli/src/aggregate.rs`](../../../rezzy-cli/src/aggregate.rs), [`docs/jsonl-aggregation.md`](../../../docs/jsonl-aggregation.md)), which merges raw `unmerged/*.jsonl` captures into causally sorted `merged/merged-<room>.jsonl` files while preserving stripped non-envelope fields (`__rejected`, `__soft_fail`, `__pducount`) and source disagreements in a `<output>.rezzy-meta.jsonl` provenance sidecar (`e3d1a55`); (2) automatic Matrix event ID repair and room version inference (`43ad27c`, `8eeec74`); (3) a TLS-gated, `X-Matrix`-signed federation crawler (`get-remote-dag`, `gap-fill`, `inspect gaps`) with streaming writes and atomic frontier checkpointing (`49d8a6e`, `3e0aaef`, `bc471bf`); and (4) an architectural pivot from OS keyring storage (`e197f8a`, `bc276b8`) to portable Argon2id + XChaCha20-Poly1305 encrypted keyfiles (`e44c5e1`) with a 64 MiB Argon2 memory cap (`2703bb2`).
+
+## Reviews & Critiques
+
+- [Multi-Perspective Track Review (`./review.md`)](./review.md) — 8-persona architectural, forensic chain-of-custody, federation interop, and public-safety critique (identifies `T12-F1`..`T12-F5`, including redacted-over-unredacted event shadowing in `jsonl_merge.rs` and `__rejected` stripping replay pollution risks).
+

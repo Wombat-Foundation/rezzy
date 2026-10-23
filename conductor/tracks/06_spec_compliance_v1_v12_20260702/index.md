@@ -12,6 +12,10 @@
 - [Track Metadata (`./metadata.json`)](./metadata.json)
 - [Public-Safety Audit (`../../audits/rezzy_docs_public_safety_audit.md`)](../../audits/rezzy_docs_public_safety_audit.md)
 
+## Reviews & Critiques
+
+- [Track 06 Multi-Perspective Review & Critique (`./review.md`)](./review.md)
+
 ## Linked Repository Documentation & Source Modules
 
 ### Documentation (`docs/`)
