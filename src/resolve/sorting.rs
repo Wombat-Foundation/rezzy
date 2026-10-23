@@ -941,4 +941,168 @@ mod tests {
             ]
         );
     }
+
+    /// Regression test (`F-01.1`): `get_power_level_from_auth_chain` must not trust
+    /// an unverified envelope `event.power_level()` claim when no `m.room.power_levels`
+    /// event is cited in `dag_edges`. Non-creator senders must default to `0` (`DEFAULT_PL_USER`),
+    /// while the room creator in V1–V11 defaults to `100` when no PL event exists.
+    #[test]
+    fn test_get_power_level_from_auth_chain_ignores_unverified_envelope_pl() {
+        let create_ev = LeanEvent::<String> {
+            event_id: "$create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@creator:x".into(),
+            content: crate::json!({ "creator": "@creator:x" }),
+            ..Default::default()
+        };
+        let forged_attacker_ev = LeanEvent::<String> {
+            event_id: "$forged_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@victim:x".into()),
+            sender: "@attacker:x".into(),
+            origin_server_ts: 10,
+            // Unverified envelope field claims PL 100 while omitting the PL auth edge.
+            power_level: 100,
+            auth_events: alloc::vec!["$create".into()],
+            ..Default::default()
+        };
+        let creator_bootstrap_pl = LeanEvent::<String> {
+            event_id: "$pl0".into(),
+            event_type: "m.room.power_levels".into(),
+            state_key: Some(String::new()),
+            sender: "@creator:x".into(),
+            origin_server_ts: 1,
+            power_level: 0,
+            auth_events: alloc::vec!["$create".into()],
+            content: crate::json!({ "users": { "@creator:x": 100, "@mod:x": 50 } }),
+            ..Default::default()
+        };
+        let valid_mod_ev = LeanEvent::<String> {
+            event_id: "$valid_ban".into(),
+            event_type: "m.room.member".into(),
+            state_key: Some("@victim:x".into()),
+            sender: "@mod:x".into(),
+            origin_server_ts: 5,
+            power_level: 0,
+            auth_events: alloc::vec!["$create".into(), "$pl0".into()],
+            ..Default::default()
+        };
+
+        let mut ctx = HashMap::new();
+        ctx.insert(create_ev.event_id.clone(), create_ev.clone());
+        ctx.insert(creator_bootstrap_pl.event_id.clone(), creator_bootstrap_pl.clone());
+        ctx.insert(forged_attacker_ev.event_id.clone(), forged_attacker_ev.clone());
+        ctx.insert(valid_mod_ev.event_id.clone(), valid_mod_ev.clone());
+
+        assert_eq!(
+            get_power_level_from_auth_chain(
+                &forged_attacker_ev,
+                &ctx,
+                Some(&create_ev),
+                StateResVersion::V2,
+            ),
+            0,
+            "unprivileged sender omitting PL auth edge must default to 0, not event.power_level()"
+        );
+        assert_eq!(
+            get_power_level_from_auth_chain(
+                &forged_attacker_ev,
+                &ctx,
+                None,
+                StateResVersion::V2,
+            ),
+            0,
+            "missing create_ev and missing PL auth edge must still default to 0"
+        );
+        assert_eq!(
+            get_power_level_from_auth_chain(
+                &creator_bootstrap_pl,
+                &ctx,
+                Some(&create_ev),
+                StateResVersion::V2,
+            ),
+            100,
+            "V1-V11 creator bootstrap event without prior PL must receive room creator default 100"
+        );
+
+        let mut conflict = HashMap::new();
+        conflict.insert(forged_attacker_ev.event_id.clone(), forged_attacker_ev);
+        conflict.insert(valid_mod_ev.event_id.clone(), valid_mod_ev);
+        let sorted = KahnSortInputs::new(
+            &conflict,
+            &ctx,
+            Some(&create_ev),
+            StateResVersion::V2,
+            &mut HashMap::new(),
+        )
+        .sort();
+        // $forged_ban (effective PL 0) must pop before $valid_ban (effective PL 50)
+        // so $valid_ban is applied later.
+        assert_eq!(
+            sorted,
+            alloc::vec![String::from("$forged_ban"), String::from("$valid_ban")]
+        );
+    }
+
+    /// Regression test (`F-01.2`, `F-01.4`): mainline construction must not truncate
+    /// a valid ancestor PL when an intermediate PL event also carries a cyclic back-edge
+    /// to an already-visited mainline PL event, and library sorting must not pollute stderr.
+    #[test]
+    fn test_build_mainline_cycle_back_edge_does_not_truncate_valid_ancestor() {
+        // PL2 -> PL1, and PL1 has a malformed back-edge to PL2 before its real ancestor PL0.
+        let pl0 = LeanEvent::<String> {
+            event_id: "PL0".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec![],
+            ..Default::default()
+        };
+        let pl1 = LeanEvent::<String> {
+            event_id: "PL1".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL2".into(), "PL0".into()],
+            ..Default::default()
+        };
+        let pl2 = LeanEvent::<String> {
+            event_id: "PL2".into(),
+            event_type: "m.room.power_levels".into(),
+            auth_events: alloc::vec!["PL1".into()],
+            ..Default::default()
+        };
+
+        let mut ctx = HashMap::new();
+        ctx.insert("PL0".into(), pl0);
+        ctx.insert("PL1".into(), pl1);
+        ctx.insert("PL2".into(), pl2);
+
+        let mut resolved = SharedState::new();
+        resolved.insert(("m.room.power_levels".into(), String::new()), "PL2".into());
+
+        let mut cache = FastMap::default();
+        let mainline = build_mainline_with_cache(
+            &resolved,
+            &ctx,
+            &mut cache,
+            &String::new(),
+            StateResVersion::V2,
+        );
+        assert_eq!(
+            mainline,
+            alloc::vec![
+                String::from("PL2"),
+                String::from("PL1"),
+                String::from("PL0")
+            ],
+            "cyclic back-edge PL1 -> PL2 must not truncate reachable ancestor PL0"
+        );
+
+        let prod_src = include_str!("sorting.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            !prod_src.contains("eprintln!"),
+            "library sorting functions must not write to global stderr via eprintln! (F-01.4)"
+        );
+    }
 }
