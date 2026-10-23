@@ -631,4 +631,116 @@ mod tests {
             result.err()
         );
     }
+
+    #[test]
+    fn merge_prefers_unredacted_content_and_unions_signatures_on_duplicate_event_id() {
+        let redacted_copy = json!({
+            "event_id": "$msg1",
+            "type": "m.room.message",
+            "sender": "@alice:a.example",
+            "origin_server_ts": 1000,
+            "depth": 2,
+            "content": {},
+            "prev_events": ["$create"],
+            "auth_events": ["$create"],
+            "signatures": {
+                "a.example": {
+                    "ed25519:key_a": "sig_a"
+                }
+            },
+            "unsigned": {
+                "redacted_because": {
+                    "event_id": "$redact1"
+                }
+            }
+        });
+        let unredacted_copy = json!({
+            "event_id": "$msg1",
+            "type": "m.room.message",
+            "sender": "@alice:a.example",
+            "origin_server_ts": 1000,
+            "depth": 2,
+            "content": {
+                "msgtype": "m.text",
+                "body": "unredacted payload"
+            },
+            "prev_events": ["$create"],
+            "auth_events": ["$create"],
+            "signatures": {
+                "b.example": {
+                    "ed25519:key_b": "sig_b"
+                }
+            }
+        });
+
+        let a_slice = [redacted_copy];
+        let b_slice = [unredacted_copy];
+        let merged = merge_event_slices(
+            &[
+                ("a.jsonl".into(), a_slice.as_slice()),
+                ("b.jsonl".into(), b_slice.as_slice()),
+            ],
+            Some("12"),
+            false,
+            true,
+        )
+        .expect("redacted + unredacted copy with same redacted canonical form must merge");
+
+        assert_eq!(merged.events.len(), 1);
+        assert_eq!(merged.duplicate_copies, 1);
+        let ev = &merged.events[0];
+        assert_eq!(
+            ev["content"]["body"].as_str(),
+            Some("unredacted payload"),
+            "unredacted content must supersede redacted empty content regardless of file order"
+        );
+        assert_eq!(
+            ev["signatures"]["a.example"]["ed25519:key_a"].as_str(),
+            Some("sig_a"),
+            "first server signature must be retained"
+        );
+        assert_eq!(
+            ev["signatures"]["b.example"]["ed25519:key_b"].as_str(),
+            Some("sig_b"),
+            "second server signature must be unioned into merged event"
+        );
+    }
+
+    #[test]
+    fn merge_preserves_rejected_flag_across_duplicate_copies() {
+        let copy_without_flag = json!({
+            "event_id": "$forged_pl",
+            "type": "m.room.power_levels",
+            "state_key": "",
+            "sender": "@mallory:example.org",
+            "origin_server_ts": 2000,
+            "depth": 3,
+            "content": {"users": {"@mallory:example.org": 100}},
+            "prev_events": ["$create"],
+            "auth_events": ["$create"]
+        });
+        let mut copy_with_rejected = copy_without_flag.clone();
+        copy_with_rejected["__rejected"] = json!(true);
+
+        let a_slice = [copy_without_flag];
+        let b_slice = [copy_with_rejected];
+        let merged = merge_event_slices(
+            &[
+                ("a.jsonl".into(), a_slice.as_slice()),
+                ("b.jsonl".into(), b_slice.as_slice()),
+            ],
+            Some("12"),
+            false,
+            true,
+        )
+        .expect("duplicate copies should merge");
+
+        assert_eq!(merged.events.len(), 1);
+        let parsed = rezzy::LeanEvent::from_value(&merged.events[0], Some("12"))
+            .expect("merged event should parse into LeanEvent");
+        assert!(
+            parsed.rejected,
+            "rejection flag (__rejected/rejected) must be preserved across duplicate merge"
+        );
+    }
 }

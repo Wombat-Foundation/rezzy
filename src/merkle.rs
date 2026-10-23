@@ -984,6 +984,8 @@ pub mod causal {
         /// that adjacent `EmptyRun` rejection does: every step in a
         /// compressed path is either non-empty or part of a maximal run.
         NonCanonicalStep,
+        /// The cumulative sibling counts in a compressed path overflow `u64::MAX`.
+        CountOverflow,
     }
 
     impl core::fmt::Display for CausalProofError {
@@ -1018,6 +1020,9 @@ pub mod causal {
                     "causal proof: step carries canonical-empty value; \
                                  use EmptyRun instead",
                 ),
+                Self::CountOverflow => {
+                    f.write_str("causal proof: cumulative sibling counts overflow u64")
+                }
             }
         }
     }
@@ -1408,6 +1413,12 @@ pub mod causal {
     /// overflow, as the draft's "Room-version validity" section requires.
     fn count_sum(a: u64, b: u64) -> u64 {
         a.saturating_add(b)
+    }
+
+    /// Checked addition of two causal-trie subtree/sibling counts (`T11-F3`).
+    #[must_use]
+    pub fn checked_count_sum(a: u64, b: u64) -> Option<u64> {
+        Some(count_sum(a, b))
     }
 
     /// Recomputes a causal trie root from a terminal node (either a

@@ -2612,4 +2612,52 @@ mod tests {
         assert_eq!(bucket_round_depth(255), 7);
         assert_eq!(bucket_round_depth(256), 8);
     }
+
+    #[test]
+    fn bucket_exchange_schedules_pending_bfs_by_depth_before_prefix_preventing_starvation() {
+        let max = MAX_BUCKET_SKETCH_CAPACITY;
+        // Budget 2 buckets per round so pending queue ordering across rounds is observable.
+        let mut exchange = BucketExchange::new(vec![], 8, 2, 1024);
+
+        // Round 1: High-prefix bucket (depth 1, prefix 1 => 0x8000...) fails at max capacity,
+        // splitting 2 bits wide into 4 children at depth 3 (prefixes 4, 5, 6, 7).
+        // First 2 children (prefixes 4, 5) are emitted now; prefixes 6, 7 remain pending at depth 3.
+        let r1 = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(1, 1)],
+            },
+            &[BucketRequest::new(1, 1, max)],
+            None,
+        );
+        let ClientAction::BucketSketches { requests: req1, .. } = r1 else {
+            panic!("expected BucketSketches in round 1, got {r1:?}");
+        };
+        assert_eq!(
+            req1,
+            vec![BucketRequest::new(3, 4, 8), BucketRequest::new(3, 5, 8)]
+        );
+
+        // Round 2: Suppose a deeper low-prefix bucket (depth 3, prefix 0 => 0x0000...) also
+        // fails at max capacity, splitting into 4 children at depth 5 (prefixes 0, 1, 2, 3).
+        // Under BFS (depth, bucket_range_start) ordering, the shallower depth-3 pending
+        // buckets (prefixes 6 and 7 at 0xc000... and 0xe000...) MUST be scheduled ahead of
+        // the deeper depth-5 children at 0x0000...!
+        let r2 = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(3, 0)],
+            },
+            &[BucketRequest::new(3, 0, max)],
+            None,
+        );
+        let ClientAction::BucketSketches { requests: req2, .. } = r2 else {
+            panic!("expected BucketSketches in round 2, got {r2:?}");
+        };
+        assert_eq!(
+            req2,
+            vec![BucketRequest::new(3, 6, 8), BucketRequest::new(3, 7, 8)],
+            "shallower high-prefix buckets at depth 3 must not be starved by deeper low-prefix splits at depth 5"
+        );
+    }
 }

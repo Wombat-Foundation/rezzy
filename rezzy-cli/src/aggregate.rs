@@ -1761,4 +1761,84 @@ mod tests {
         assert!(!root.join("merged/room.rezzy-meta.jsonl").exists());
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn aggregate_replayed_through_run_cli_enforces_sidecar_rejection_status() {
+        let root = unique_test_dir();
+        let raw_dir = root.join("unmerged");
+        fs::create_dir_all(&raw_dir).unwrap();
+
+        let create = rezzy::json!({
+            "event_id": "$create",
+            "room_id": "!r:example.org",
+            "type": "m.room.create",
+            "state_key": "",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 100,
+            "depth": 1,
+            "prev_events": [],
+            "auth_events": [],
+            "content": {"creator": "@alice:example.org", "room_version": "10"}
+        });
+        let join = rezzy::json!({
+            "event_id": "$join",
+            "room_id": "!r:example.org",
+            "type": "m.room.member",
+            "state_key": "@alice:example.org",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 200,
+            "depth": 2,
+            "prev_events": ["$create"],
+            "auth_events": ["$create"],
+            "content": {"membership": "join"}
+        });
+        let rejected_topic = rezzy::json!({
+            "event_id": "$bad_topic",
+            "room_id": "!r:example.org",
+            "type": "m.room.topic",
+            "state_key": "",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 300,
+            "depth": 3,
+            "prev_events": ["$join"],
+            "auth_events": ["$create", "$join"],
+            "content": {"topic": "forged topic"},
+            "__rejected": true
+        });
+        let raw_path = raw_dir.join("remote-room-v10.jsonl");
+        fs::write(
+            &raw_path,
+            format!(
+                "{}{}{}",
+                event_line(&create),
+                event_line(&join),
+                event_line(&rejected_topic)
+            ),
+        )
+        .unwrap();
+
+        aggregate(&options(&root, false)).unwrap();
+        let merged_path = root.join("merged/room.jsonl");
+        assert!(merged_path.exists());
+        assert!(root.join("merged/room.rezzy-meta.jsonl").exists());
+
+        let cli_matches = crate::cli_command()
+            .try_get_matches_from([
+                "rezzy",
+                "-i",
+                merged_path.to_str().unwrap(),
+                "-f",
+                "default",
+                "-q",
+            ])
+            .unwrap();
+        let cli_args = crate::Args::from_matches(&cli_matches);
+        let output = crate::run_cli(&cli_args).unwrap();
+        let resolved_str = rezzy::json::write_string_value(&output).unwrap();
+        assert!(
+            !resolved_str.contains("$bad_topic"),
+            "rejected state event from .rezzy-meta.jsonl sidecar must not enter resolved state: {resolved_str}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }
