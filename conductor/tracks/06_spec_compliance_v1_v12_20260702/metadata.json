@@ -1,0 +1,20 @@
+{
+  "track_id": "06_spec_compliance_v1_v12_20260702",
+  "title": "Matrix Room V1-V12 Spec Compliance, 3PI Delegation, Knocking & PDU Invariants",
+  "type": "compliance",
+  "status": "completed",
+  "epoch": "v0.4.0-v0.5.0 + Jul/Sep 2026 (Jun 2026 - Sep 2026)",
+  "commit_range": "a56a6b8..85464d3",
+  "created_at": "2026-06-29T00:00:00Z",
+  "updated_at": "2026-09-29T21:10:58Z",
+  "linked_docs": [
+    "../../../docs/spec_audit.md",
+    "../../../docs/spec_coverage.csv",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": {
+    "risk_level": "Critical (Fail-Open API) & Moderate (Overconfidence in spec_coverage.csv)",
+    "primary_finding": "Cross-room auth rejection (MSC4307 Rule 2.5) is opt-in via Option<RoomId> (None by default), Ed25519 signature checks are externalized, and 31/35 rows in spec_coverage.csv are marked 'full' despite these partial/delegated boundaries.",
+    "audit_reference": "../../audits/rezzy_docs_public_safety_audit.md"
+  }
+}

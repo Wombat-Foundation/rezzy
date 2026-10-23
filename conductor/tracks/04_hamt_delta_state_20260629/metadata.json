@@ -1,0 +1,20 @@
+{
+  "track_id": "04_hamt_delta_state_20260629",
+  "title": "Persistent HAMT Delta State Compression & Live-Frontier Citation GC",
+  "type": "architecture",
+  "status": "completed",
+  "epoch": "v0.2.0-v0.5.2 (Jun 2026 - Oct 2026)",
+  "commit_range": "6e14836..0d0a87d",
+  "created_at": "2026-06-28T00:32:19Z",
+  "updated_at": "2026-10-18T22:53:21Z",
+  "linked_docs": [
+    "../../../docs/hamt_live_frontier_retention.md",
+    "../../../docs/design_notes.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": {
+    "risk_level": "High (RAM Exhaustion)",
+    "primary_finding": "Unmerged 'hydra' DAG frontiers hold child_citations > 0, pinning Arc<HamtNode> trees in RAM during adversarial wide-frontier attacks.",
+    "audit_reference": "../../audits/rezzy_docs_public_safety_audit.md"
+  }
+}

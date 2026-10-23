@@ -1,0 +1,16 @@
+{
+  "track_id": "12_rezzy_cli_federation_agg_20261010",
+  "title": "Track 12 — rezzy-cli: Deterministic JSONL Aggregation, .rezzy-meta.jsonl Sidecar & Signed Federation Crawler (0.6.0-rc.1)",
+  "type": "feature",
+  "status": "completed",
+  "epoch": "Sep–Oct 2026 (0.6.0-rc.1 – 0.6.0-rc.2)",
+  "commit_range": "dd74d21..35a0457",
+  "created_at": "2026-09-24T00:00:00Z",
+  "updated_at": "2026-10-12T23:59:59Z",
+  "linked_docs": [
+    "../../../docs/jsonl-aggregation.md",
+    "../../../docs/homeserver_utilities.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "Moderate (Forensic Integrity & Replay Pollution): Deduplicating raw JSONL events by their Matrix redacted canonical form (reference-hash input) and stripping non-envelope ingestion markers (__rejected, __soft_fail, __pducount) into an optional .rezzy-meta.jsonl sidecar (--no-provenance) risks replaying rejected or unverified events if downstream state-resolution consumers read merged-<room>.jsonl without enforcing sidecar rejection claims and signature checks."
+}

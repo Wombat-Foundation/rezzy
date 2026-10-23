@@ -1,0 +1,23 @@
+{
+  "track_id": "08_lthash_cryptography_20260705",
+  "title": "MSC4500 Homomorphic LtHash Cryptography, BLAKE3 XOF & AES-CTR Profile",
+  "type": "feature",
+  "status": "completed",
+  "epoch": "v0.5.0 - 0.6.0-rc.2 & Oct 2026",
+  "commit_range": "b28ffbb..8dcd1c1",
+  "created_at": "2026-07-03T18:10:00-04:00",
+  "updated_at": "2026-10-15T19:32:41-04:00",
+  "linked_docs": [
+    "../../../docs/homeserver_utilities.md",
+    "../../../docs/gf128_widening_analysis.md",
+    "../../../docs/perf_audits.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": {
+    "risk_level": "High",
+    "primary_concerns": [
+      "High (Missing Guards): LtHash::seed intentionally skips cryptographic and syntactic validation of Matrix Event IDs on the hot hashing path, delegating structural validation to caller ingestion boundaries while Tier-2 validation (src/auth/validate.rs) in docs/homeserver_utilities.md remains unimplemented.",
+      "Moderate (Algebraic & Crypto Profile Separation): In docs/gf128_widening_analysis.md and docs/perf_audits.md, Path B (non-interfering fork skip via LtHash digest) was rejected as a correctness cliff equivalent to CDO; Path A (identical-fork fast path) requires structural equality fallback (ptr_eq || ==) and strict domain separation between BLAKE3 XOF (msc4500:lthash16:blake3:v1) and the gomatrixcrypto AES-256-CTR profile."
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "track_id": "07_roaring_lazy_provider_20260703",
+  "title": "Roaring Bitmap Auth-Difference, Lazy EventProvider & Homeserver Utilities",
+  "type": "feature",
+  "status": "completed",
+  "epoch": "v0.5.0 - v0.5.2 & Oct 2026",
+  "commit_range": "3caa4ca..95a8ffb",
+  "created_at": "2026-07-03T15:12:58-04:00",
+  "updated_at": "2026-10-09T18:43:24-04:00",
+  "linked_docs": [
+    "../../../docs/architecture.md",
+    "../../../docs/homeserver_utilities.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": {
+    "risk_level": "Critical",
+    "primary_concerns": [
+      "Critical (OOM / Starvation): Pre-fetching full conflicted graphs into memory per docs/architecture.md exposes the homeserver caller to Out-Of-Memory collapse, async executor thread starvation on adversarial forks (10^4+ events), and transitive bitmap cache corruption.",
+      "High (Missing Guards): Hot-path Tier-1 APIs (auth chain diff, roaring auth_difference, state diff, lazy EventProvider, raw event spans) shipped in production while Tier-2 syntactic validation (src/auth/validate.rs) and DAG health / fork detection (src/dag/fork.rs) remain unimplemented in docs/homeserver_utilities.md."
+    ]
+  }
+}
