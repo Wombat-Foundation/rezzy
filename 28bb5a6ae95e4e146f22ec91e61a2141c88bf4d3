@@ -1,0 +1,1 @@
+Track 15 Phase 1 (T10-F1, T10-F3): Add Red-phase regression tests verifying validate_canonical_number, compute_content_hash, reference_hash, and try_canonical_redacted_json reject integers > u64::MAX and < i64::MIN in Room Versions 6+, and pin Number::try_as_f64_exact boundary behavior across [-2^53+1, 2^53-1], 2^53, 2^53+1, and > u64::MAX.
