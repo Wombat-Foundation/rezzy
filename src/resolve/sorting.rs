@@ -243,7 +243,7 @@ where
                 mut stuck,
             } => {
                 #[cfg(feature = "std")]
-                std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
+                rezzy_log::warn!(stuck = ?stuck, "KAHN CYCLE DETECTED");
                 stuck.sort_by(|a, b| {
                     let ev_a = events.get(a).unwrap();
                     let ev_b = events.get(b).unwrap();

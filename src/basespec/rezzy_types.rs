@@ -3145,9 +3145,8 @@ impl<Id, C, K> LeanEvent<Id, C, K> {
     /// Per Synapse parity, the 255-byte length limits on `event_id`/`sender`/
     /// `event_type`/`state_key` are only hard-enforced for room version 11+
     /// (`strict_event_byte_limits_room_versions`); for earlier versions a
-    /// violation is logged (via `eprintln!`, `std` feature only) rather than
-    /// rejected, to avoid breaking pre-existing rooms with legacy oversized
-    /// fields.
+    /// violation is returned as a validation warning rather than rejected, to
+    /// avoid breaking pre-existing rooms with legacy oversized fields.
     ///
     /// # TODO(compliance): PDU structural invariants not yet enforced
     ///

@@ -412,21 +412,21 @@ pub fn reconstruct_state_batch<Id: crate::basespec::rezzy_types::EventId>(
                     apply_state_delta(parent_state, &cp.deltas)
                 } else {
                     #[cfg(feature = "std")]
-                    std::eprintln!(
+                    rezzy_log::warn!(
                         "state_delta: checkpoint {idx} parent {p_idx} not reconstructed"
                     );
                     continue; // BROKEN CHAIN: Parent was required but not reconstructed (gap in chain)
                 }
             } else {
                 #[cfg(feature = "std")]
-                std::eprintln!(
+                rezzy_log::warn!(
                     "state_delta: checkpoint {idx} has no earlier match for parent_hash {parent_hash:?}"
                 );
                 continue; // BROKEN CHAIN: No earlier checkpoint matches parent_hash
             }
         } else {
             #[cfg(feature = "std")]
-            std::eprintln!(
+            rezzy_log::warn!(
                 "state_delta: checkpoint {idx} is an orphan (no snapshot, no parent_hash)"
             );
             continue; // BROKEN CHAIN: No snapshot and no parent_hash — orphan checkpoint
