@@ -4,12 +4,19 @@
   "type": "compliance",
   "status": "new",
   "priority": "P0",
-  "origin_tracks": ["10_rezzy_json_crate_20261004"],
+  "origin_tracks": [
+    "10_rezzy_json_crate_20261004"
+  ],
   "created_at": "2026-10-23T06:36:00Z",
   "updated_at": "2026-10-23T06:36:00Z",
   "linked_docs": [
     "../../../docs/json_numeric_limits.md",
     "../../audits/rezzy_docs_public_safety_audit.md"
   ],
-  "public_safety_audit_summary": "Critical (Hash Split): Dual permissive/strict canonical JSON writers and silent lossy Number::as_f64 rounding above 2^53 create reference-hash and signature split risks."
+  "public_safety_audit_summary": "Critical (Hash Split): Dual permissive/strict canonical JSON writers and silent lossy Number::as_f64 rounding above 2^53 create reference-hash and signature split risks.",
+  "remediated_findings": [
+    "T10-F1",
+    "T10-F2",
+    "T10-F3"
+  ]
 }

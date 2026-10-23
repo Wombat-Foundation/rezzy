@@ -4,7 +4,10 @@
   "type": "compliance",
   "status": "new",
   "priority": "P0",
-  "origin_tracks": ["05_lattice_v22_msc4242_20260630", "06_spec_compliance_v1_v12_20260702"],
+  "origin_tracks": [
+    "05_lattice_v22_msc4242_20260630",
+    "06_spec_compliance_v1_v12_20260702"
+  ],
   "created_at": "2026-10-23T06:37:00Z",
   "updated_at": "2026-10-23T06:37:00Z",
   "linked_docs": [
@@ -12,5 +15,14 @@
     "../../../docs/spec_audit.md",
     "../../audits/rezzy_docs_public_safety_audit.md"
   ],
-  "public_safety_audit_summary": "Critical (DAG Withholding / Split-Brain): Experimental V2.1.1 diverges from Stock V2.1 on SEND01, and mixing ZIP-215 ed25519-zebra with RFC 8032 ed25519-dalek risks federation split-brain."
+  "public_safety_audit_summary": "Critical (DAG Withholding / Split-Brain): Experimental V2.1.1 diverges from Stock V2.1 on SEND01, and mixing ZIP-215 ed25519-zebra with RFC 8032 ed25519-dalek risks federation split-brain.",
+  "remediated_findings": [
+    "F-05-01",
+    "F-05-03",
+    "F-07-01",
+    "F-07-03",
+    "F-08-01",
+    "F-08-02",
+    "F-08-03"
+  ]
 }
