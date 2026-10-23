@@ -1173,7 +1173,7 @@ mod tests {
         check_values(&intersection, &expected_intersection);
 
         check_values(&(a.clone() - &b), &expected_difference);
-        let mut difference = a.clone();
+        let mut difference = a;
         difference -= &b;
         check_values(&difference, &expected_difference);
     }

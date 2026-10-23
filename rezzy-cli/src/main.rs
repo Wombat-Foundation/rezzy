@@ -18,5 +18,8 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
+    #[cfg(feature = "logging")]
+    rezzy::init_logging();
+
     rezzy_cli::main_entry();
 }

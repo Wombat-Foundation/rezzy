@@ -243,7 +243,7 @@ where
                 mut stuck,
             } => {
                 #[cfg(feature = "std")]
-                std::eprintln!("KAHN CYCLE DETECTED! Stuck: {stuck:?}");
+                rezzy_log::warn!(stuck = ?stuck, "KAHN CYCLE DETECTED");
                 stuck.sort_by(|a, b| {
                     let ev_a = events.get(a).unwrap();
                     let ev_b = events.get(b).unwrap();
@@ -313,8 +313,7 @@ where
 
     while let Some(eid) = current {
         if !seen_in_mainline.insert(eid.clone()) {
-            #[cfg(feature = "std")]
-            std::eprintln!("REZZY_WARN: MAINLINE CYCLE DETECTED!");
+            rezzy_log::warn!("cycle detected while building power-level mainline");
             break; // Cycle detected in the power-levels mainline!
         }
         mainline.push(eid.clone());
@@ -517,6 +516,9 @@ mod tests {
 
     #[test]
     fn test_build_mainline_cycle_detection() {
+        #[cfg(feature = "logging")]
+        crate::init_logging();
+
         // A and B both claim to be m.room.power_levels, and auth against each other, forming a cycle.
         let a = LeanEvent::<String> {
             event_id: alloc::string::String::from("A"),

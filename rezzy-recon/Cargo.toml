@@ -13,11 +13,13 @@ categories = ["algorithms", "mathematics"]
 build = "build.rs"
 
 [features]
-default = ["std"]
+default = ["std", "logging"]
 std = []
+logging = ["std", "rezzy-log/logging"]
 
 [dependencies]
 base64.workspace = true
+rezzy-log.workspace = true
 sha2.workspace = true
 
 [lints]

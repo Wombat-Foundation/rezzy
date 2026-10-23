@@ -675,7 +675,7 @@ where
             Ok(()) => {}
             Err(StateComputationError::CycleDetected) => {
                 #[cfg(feature = "std")]
-                std::eprintln!(
+                rezzy_log::warn!(
                     "rezzy::compute_state_at: Cycle detected! Reachable subgraph is malformed."
                 );
             }

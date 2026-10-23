@@ -31,7 +31,8 @@ exclude = [
     "lean-toolchain",
     ".codecov.yml",
     ".envrc",
-    ".env.example",
+    ".env",
+    ".env.*",
     ".github",
     ".gitignore",
     ".editorconfig",
@@ -65,7 +66,7 @@ ignored = ["zeroize"]
 
 [workspace]
 resolver = "2"
-members = ["rezzy-cli", "rezzy-json", "rezzy-recon"]
+members = ["rezzy-cli", "rezzy-ffi", "rezzy-json", "rezzy-log", "rezzy-recon"]
 
 [workspace.package]
 version = "0.6.0-rc.1"
@@ -78,13 +79,15 @@ repository = "https://github.com/gamesguru/rezzy"
 [workspace.dependencies]
 rezzy = { path = ".", version = "0.6.0-rc.1", default-features = false }
 rezzy-json = { path = "rezzy-json", version = "0.6.0-rc.1" }
-rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1" }
+rezzy-log = { path = "rezzy-log", version = "0.6.0-rc.1", default-features = false }
+rezzy-recon = { path = "rezzy-recon", version = "0.6.0-rc.1", default-features = false }
 
 base64 = { version = "0.23", default-features = false }
 blake3 = { version = "1.5", default-features = false }
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
 ryu = { version = "1.0", default-features = false }
 sha2 = { version = "0.11", default-features = false }
+tracing = { version = "0.1.44", default-features = false }
 
 # CLI-only
 clap = { version = "4.5.48", default-features = false, features = ["std", "env", "help", "usage", "error-context", "color", "suggestions"] }
@@ -157,8 +160,9 @@ path = "src/bin/regen_oracles.rs"
 required-features = ["regen"]
 
 [features]
-default = ["std"]
-std = []
+default = ["std", "logging"]
+std = ["rezzy-recon/std"]
+logging = ["std", "rezzy-log/logging"]
 cli = ["std", "dep:clap"]
 regen = ["std"]
 # Backend-agnostic signature verification (`SignatureVerifier`, `verify_event_signatures`).
@@ -171,6 +175,7 @@ unstable-refcount-gc = []
 
 [dependencies]
 rezzy-json.workspace = true
+rezzy-log.workspace = true
 rezzy-recon.workspace = true
 
 base64.workspace = true
@@ -263,6 +268,14 @@ debug = 0
 strip = "debuginfo"
 incremental = true
 codegen-units = 256
+
+# Argon2id key derivation runs once per spawned CLI in the integration tests;
+# unoptimized it dominates their runtime.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.test]
 debug = 0

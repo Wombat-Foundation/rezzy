@@ -4,7 +4,11 @@ SHELL=/bin/bash
 LAKE ?= lake
 CARGO ?= cargo
 PYTHON ?= python3
-TEST_FEATURES ?=
+PREFIX ?= $(HOME)/.local
+LIBDIR ?= $(PREFIX)/lib
+DYLIB_EXT ?= $(if $(filter Darwin,$(shell uname -s)),dylib,so)
+INCLUDEDIR ?= $(PREFIX)/include
+TEST_FEATURES ?= logging
 CARGO_FEATURE_ARGS ?= $(if $(TEST_FEATURES),--features $(TEST_FEATURES),)
 
 LINT_LOCS_PY = $$(git ls-files '*.py')
@@ -19,7 +23,7 @@ _default: format lint ##H Default: format + lint (bare `make`)
 
 .PHONY: format
 format: ##H Format codebase (Rust + Lean + scripts)
-	-prettier -w $$(git ls-files '.*md' '*.y*ml' '.*json' .prettierrc)
+	-prettier --prose-wrap always --print-width 80 --write $$(git ls-files '*.md' '*.y*ml' '*.json' .prettierrc)
 	-markdownlint $$(git ls-files '*.md')
 	-pre-commit run --all-files
 	$(CARGO) sort --workspace --grouped
@@ -49,7 +53,7 @@ lint: ##H Run all linters
 fix:	##H Clippy auto-fix (per-package; workspace-wide --fix silently drops fixes)
 	@for pkg in $$($(CARGO) metadata --no-deps --format-version 1 | $(PYTHON) -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))'); do \
 		echo "fix: $$pkg"; \
-		$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests -p $$pkg $(CARGO_FEATURE_ARGS); \
+		$(CARGO) clippy --allow-dirty --allow-staged --fix --lib --bins --tests -p $$pkg; \
 	done
 
 
@@ -102,8 +106,9 @@ all: format lint check doc test
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: rust/build
-rust/build: ##H Compile Rust binary (release)
-	$(CARGO) build --locked --release --timings -p rezzy-cli
+rust/build: ##H Compile Rust binary and the C ABI library (release)
+	$(CARGO) build --locked --release --timings -p rezzy-cli -p rezzy-ffi
+	@echo "Built: target/release/librezzy_ffi.$(DYLIB_EXT) and target/release/librezzy_ffi.a (header: rezzy-ffi/include/rezzy.h)"
 
 .PHONY: rust/so
 rust/so: ##H Compile shared object (librezzy.so) from the library
@@ -111,7 +116,7 @@ rust/so: ##H Compile shared object (librezzy.so) from the library
 	@echo "Built: target/release/librezzy.so"
 
 .PHONY: rust/test
-rust/test: ##H Run Rust tests (p=NAME for specific test, a=ARGS for test binary args)
+rust/test: ##H Run Rust tests (set "p" for a specific integration-test target, and "a" for test binary args)
 ifdef p
 	$(CARGO) test --timings --workspace --test $(p) $(CARGO_FEATURE_ARGS) $(if $(a),-- $(a))
 else
@@ -154,12 +159,23 @@ rust/clean: ##H Remove Rust build artifacts
 	rm -rf .coverage/
 
 .PHONY: rust/install
-rust/install: ##H Install rezzy binary to cargo bin
-	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls
+rust/install: ##H Install rezzy binary to cargo bin, and the C ABI lib + header + rezzy.pc under PREFIX
+	$(CARGO) install --timings --locked --path rezzy-cli --bin rezzy --features tls,logging
+	$(CARGO) build --locked --release -p rezzy-ffi
+	install -d $(DESTDIR)$(LIBDIR)/pkgconfig $(DESTDIR)$(INCLUDEDIR)
+	install -m755 target/release/librezzy_ffi.$(DYLIB_EXT) $(DESTDIR)$(LIBDIR)/
+	install -m644 target/release/librezzy_ffi.a $(DESTDIR)$(LIBDIR)/
+	install -m644 rezzy-ffi/include/rezzy.h $(DESTDIR)$(INCLUDEDIR)/
+	printf 'prefix=$(PREFIX)\nlibdir=$(LIBDIR)\nincludedir=$(INCLUDEDIR)\n\nName: rezzy\nDescription: C ABI for rezzy event hashing\nVersion: %s\nLibs: -L$${libdir} -lrezzy_ffi\nCflags: -I$${includedir}\n' \
+		"$$($(CARGO) metadata --no-deps --format-version 1 | $(PYTHON) -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="rezzy-ffi"))')" \
+		> $(DESTDIR)$(LIBDIR)/pkgconfig/rezzy.pc
+	@echo "Installed to $(PREFIX); for pkg-config: export PKG_CONFIG_PATH=$(LIBDIR)/pkgconfig:\$$PKG_CONFIG_PATH"
 
 .PHONY: rust/uninstall
-rust/uninstall: ##H Uninstall rezzy binary from cargo bin
-	$(CARGO) uninstall rezzy
+rust/uninstall: ##H Uninstall rezzy binary and the C ABI files
+	-$(CARGO) uninstall rezzy-cli
+	rm -f $(DESTDIR)$(LIBDIR)/librezzy_ffi.$(DYLIB_EXT) $(DESTDIR)$(LIBDIR)/librezzy_ffi.a \
+		$(DESTDIR)$(LIBDIR)/pkgconfig/rezzy.pc $(DESTDIR)$(INCLUDEDIR)/rezzy.h
 
 .PHONY: rust/e2e
 rust/e2e: ##H Run e2e integration test on real JSON

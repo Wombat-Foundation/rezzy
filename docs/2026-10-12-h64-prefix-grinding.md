@@ -91,6 +91,33 @@ extra consensus appears not to exist. What remains is bounding the damage
 
 This policy describes the verified `BucketExchange::advance_verified` path.
 
+### One-sided chains and the population cutoff
+
+A one-sided poisoned prefix does not advance `no_progress_rounds`: each split
+has one failing child and one successfully decoded empty sibling. The retry
+therefore remains a one-bit split per round, and the default 20-round budget
+limits its depth. A node small enough for one overflow sketch first spends a
+round on that retry, and a larger failure may fan out by up to seven bits, so
+the budget is not exactly 20 one-bit advances. As an illustrative one-bit-chain
+example, 20 one-bit advances from an initial request at depth `d` constrain
+`d + 20` `h64` bits, which costs about `2^(d + 20)` event hashes per candidate
+event; with about 33 candidate events, that is roughly `33 * 2^(d + 20)` hashes.
+For initial depths 0 through 6, that is about `33 * 2^20` to `33 * 2^26` hashes.
+This is not an upper bound: larger fan-out can reach greater depth within 20
+rounds, so the work can exceed this range. The exact work depends on the
+starting depth and how candidate events are constructed; this is a grinding
+estimate, not a protocol guarantee.
+
+The stop rule is population-based, not a short no-progress timer. After a failed
+overflow decode, if the larger of the local and remote node populations is at
+most `COLLISION_GIVE_UP_POPULATION` (64, or twice the normal bucket capacity),
+the exchange marks that prefix `ladder_failed` for caller-applied fallback. A
+larger failed node continues splitting. Thus an empty sibling does not trigger a
+shallow fallback: an attacker must keep the poisoned population concentrated
+until it is small enough to meet the cutoff. The 20-round and depth limits
+remain terminal safety bounds; if either is reached first, the caller may still
+need to fall back on a larger prefix.
+
 1. **Overflow decode small residuals.** For an undecodable normal bucket that
    was not rejected by phase-1 verification, if the sum of both sides' node
    counts is at most 256 and the aggregate budget admits it, request one
@@ -106,20 +133,20 @@ This policy describes the verified `BucketExchange::advance_verified` path.
    rounds.
 3. **Keep terminal fallback local.** `ClientAction::ResolveRoots` exposes
    terminal failures through `ladder_failed`; it does not perform ID fallback.
-   The caller must apply bounded ID fallback to each failed node, limiting the
-   transferred IDs to that node's population in the attacked region.
+   The caller must apply ID fallback to each failed node. Population-triggered
+   give-up is limited to nodes with at most 64 events on either side; depth or
+   round exhaustion can still expose a larger prefix, so callers must also bound
+   fallback work.
 
 Each additional constrained digest bit doubles the expected hashes per attacker
-element. The responder's fallback cost is proportional to the node population,
-whose elements must cross the symmetric difference regardless. A fully
-exhausted 32-bit prefix therefore costs about 2^32 hashes per element to
-construct and causes only a node-local transfer. This is a complete
-no-amplification answer; unpredictability still requires entropy, but is not
-needed to make grinding economically unattractive.
+element. Prefix grinding remains possible, but ordinary population-triggered
+fallback is delayed until the affected node is small. Unpredictability still
+requires entropy; the client policy bounds routine fallback size rather than
+preventing an attacker from choosing predictable prefixes.
 
 ## Scope
 
 This does not make placement unpredictable. Per-session salts, keyed
 re-placement, and epoch keys remain protocol-level options if unpredictability
-is ever required. They are unnecessary for the economic objective here and
-would add coordination or change node-membership semantics.
+is ever required. They are unnecessary for the economic objective here and would
+add coordination or change node-membership semantics.

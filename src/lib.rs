@@ -11,6 +11,7 @@
 //! | Feature     | Default | Description |
 //! |-------------|:-------:|-------------|
 //! | `std`       | ✓       | Enables `std::collections::{HashMap, HashSet}` and thread-parallel lattice resolution. |
+//! | `logging`   | ✓       | Enables `tracing` events in auth and MSC4521 reconciliation (requires `std`). |
 //! | `cli`       | ✗       | Builds the `rezzy` CLI binary and merge utilities. |
 //! | `mock-ruma` | ✗       | Enables Ruma SDK interop for upstream parity testing. |
 //! | `regen`     | ✗       | Builds the `regen-oracles` snapshot regeneration binary. |
@@ -52,6 +53,18 @@ extern crate std;
 
 extern crate alloc;
 
+/// Install Rezzy's compact stderr tracing subscriber, filtered by a bare level in `RUST_LOG`
+/// (`off`, `error`, `warn`, `info`, `debug`, `trace`; default `info`).
+///
+/// This is opt-in because libraries should generally let their host own the
+/// process-wide subscriber. Applications can call this once during startup.
+#[cfg(feature = "logging")]
+pub fn init_logging() {
+    rezzy_log::init();
+}
+
+pub use rezzy_log::{debug, error, info, trace, warn};
+
 pub use rezzy_json as json;
 pub use rezzy_json::json;
 
@@ -65,6 +78,8 @@ pub mod basespec;
 pub mod bitmap;
 pub mod cuckoo_verify;
 pub mod dense_index;
+#[cfg(feature = "std")]
+pub mod event_report;
 pub mod hamt;
 pub mod incremental;
 pub mod merkle;

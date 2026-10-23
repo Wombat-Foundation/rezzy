@@ -273,6 +273,12 @@ mod validation_error_display_tests {
                 },
                 "event $c references missing event $m in prev_state_events",
             ),
+            (
+                StateDagValidationError::<&str>::UnsupportedVersionForDag {
+                    version: "V1".into(),
+                },
+                "State-DAG traversal requires room version 2.2 or later, got V1",
+            ),
         ];
 
         for (error, expected) in cases {
@@ -663,6 +669,25 @@ mod state_dag_branch_coverage_tests {
             validate_state_dag_ancestors(&missing_parent, &events),
             Err(StateDagError::IncompleteDag { missing_event_ids })
                 if missing_event_ids == vec!["$missing".to_string()]
+        ));
+    }
+
+    #[test]
+    fn state_before_rejects_pre_v2_2_room_versions() {
+        let empty_key = String::new();
+        let event = event("$event", Some(""));
+        let events = TestMap::default();
+
+        assert!(matches!(
+            compute_state_before_from_dag(&DagInputs::new(
+                &event,
+                &events,
+                StateResVersion::V1,
+                &empty_key
+            )),
+            Err(StateDagError::Validation(
+                StateDagValidationError::UnsupportedVersionForDag { version }
+            )) if version == "V1"
         ));
     }
 

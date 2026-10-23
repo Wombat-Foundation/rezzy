@@ -467,6 +467,16 @@ impl BucketExchange {
             };
             self.parents.remove(slot);
             if !count_valid || descendant_summary != parent_summary {
+                rezzy_log::warn!(
+                    depth = parent.0,
+                    prefix = parent.1,
+                    count_valid,
+                    expected_count = parent_summary.count,
+                    actual_count = descendant_summary.count,
+                    expected_digest = parent_summary.digest,
+                    actual_digest = descendant_summary.digest,
+                    "split summaries are inconsistent; discarding parent bucket"
+                );
                 self.ladder_fail(parent, batch);
             }
         }
@@ -535,16 +545,46 @@ impl BucketExchange {
     {
         let (mut batch, verified, rejected) =
             crate::verify::verify_batch(batch, requests, local, remote, local_candidates)?;
+        self.schedule_overflow_retries(&batch, &rejected, requests, local, remote);
 
+        // Responder inconsistency first: it invalidates whole regions.
+        self.check_split_consistency(requests, remote, &mut batch);
+        self.give_up_small_failed_overflows(&mut batch, &rejected, requests, local, remote);
+
+        // A phase-1 failure is not a capacity problem, so the node is split,
+        // never given a bigger capacity. A repeat under a different sketch is
+        // a *known* collision, which only narrowing can help: keep splitting
+        // it, and give up on the prefix only once it is small or no split is
+        // possible (depth cap or round budget).
+        self.handle_phase1_rejections(rejected, requests, local, remote, &mut batch);
+        self.remember_failed_nodes(&batch, requests, remote);
+
+        let verified: alloc::vec::Vec<Classified> = verified
+            .into_iter()
+            .filter(|c| {
+                !self
+                    .ladder_failed
+                    .iter()
+                    .any(|&region| covers(region, c.node()))
+            })
+            .collect();
+        self.classified.extend(verified);
+        Ok(self.advance(batch, requests, global_estimate))
+    }
+
+    fn schedule_overflow_retries(
+        &mut self,
+        batch: &BucketDecodeBatch,
+        rejected: &[(u8, u64, alloc::vec::Vec<u64>)],
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+    ) {
         // A node whose entire population fits one overflow sketch should not
         // descend the ordinary 32-capacity ladder. Counts are already part of
         // the per-node summaries, so this needs no wire change.
-        let phase_failed: alloc::vec::Vec<_> = rejected
-            .iter()
-            .map(|(depth, prefix, _)| (*depth, *prefix))
-            .collect();
         for &(depth, prefix) in &batch.failed_buckets {
-            if phase_failed.contains(&(depth, prefix)) {
+            if rejected.iter().any(|&(d, p, _)| (d, p) == (depth, prefix)) {
                 continue;
             }
             if let Some(slot) = requests
@@ -566,45 +606,51 @@ impl BucketExchange {
                 }
             }
         }
+    }
 
-        // Responder inconsistency first: it invalidates whole regions.
-        self.check_split_consistency(requests, remote, &mut batch);
-
-        // A phase-1 failure is not a capacity problem, so the node is split,
-        // never given a bigger capacity. A repeat under a different sketch is
-        // a *known* collision, which only narrowing can help: keep splitting
-        // it, and give up on the prefix only once it is small or no split is
-        // possible (depth cap or round budget).
-        for (depth, prefix, roots) in rejected {
-            let node = (depth, prefix);
-            if self
-                .ladder_failed
-                .iter()
-                .any(|&region| covers(region, node))
-            {
-                continue;
-            }
-            let Some(slot) = requests.iter().position(|r| (r.depth, r.prefix) == node) else {
-                continue;
-            };
-            let capacity = requests[slot].capacity;
-            let repeats = self.repeats_earlier_failure(node, capacity, &roots);
-            let population = local[slot].count.max(remote[slot].count);
-            let cannot_narrow = depth >= crate::MAX_DEPTH
-                || self.rounds_emitted.saturating_add(1) >= self.max_rounds;
-            if cannot_narrow || (repeats && population <= COLLISION_GIVE_UP_POPULATION) {
-                self.ladder_fail(node, &mut batch);
-            } else {
-                self.failures.push(Phase1Failure {
-                    depth,
-                    prefix,
-                    capacity,
-                    roots,
-                });
-                self.force_split.push(node);
-            }
+    fn give_up_small_failed_overflows(
+        &mut self,
+        batch: &mut BucketDecodeBatch,
+        rejected: &[(u8, u64, alloc::vec::Vec<u64>)],
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+    ) {
+        // Phase-1 rejections are not capacity failures; they get their own
+        // split-first handling in `handle_phase1_rejections`.
+        // The overflow attempt is the last decode retry for a small node.
+        // If it still fails and either side's population is already within
+        // the collision give-up threshold, keep fallback local to this node
+        // instead of splitting it into an even smaller prefix.
+        let small_failed_overflows: alloc::vec::Vec<_> = batch
+            .failed_buckets
+            .iter()
+            .copied()
+            .filter(|&(depth, prefix)| {
+                if rejected.iter().any(|&(d, p, _)| (d, p) == (depth, prefix)) {
+                    return false;
+                }
+                let Some(slot) = requests
+                    .iter()
+                    .position(|request| (request.depth, request.prefix) == (depth, prefix))
+                else {
+                    return false;
+                };
+                requests[slot].overflow
+                    && local[slot].count.max(remote[slot].count) <= COLLISION_GIVE_UP_POPULATION
+            })
+            .collect();
+        for node in small_failed_overflows {
+            self.ladder_fail(node, batch);
         }
+    }
 
+    fn remember_failed_nodes(
+        &mut self,
+        batch: &BucketDecodeBatch,
+        requests: &[BucketRequest],
+        remote: &[NodeSummary],
+    ) {
         // Remember surviving failed nodes' responder summaries: they may be
         // split next, and their children are checked against them.
         for &(depth, prefix) in &batch.failed_buckets {
@@ -623,18 +669,62 @@ impl BucketExchange {
                 }
             }
         }
+    }
 
-        let verified: alloc::vec::Vec<Classified> = verified
-            .into_iter()
-            .filter(|c| {
-                !self
-                    .ladder_failed
-                    .iter()
-                    .any(|&region| covers(region, c.node()))
-            })
-            .collect();
-        self.classified.extend(verified);
-        Ok(self.advance(batch, requests, global_estimate))
+    fn handle_phase1_rejections(
+        &mut self,
+        rejected: alloc::vec::Vec<(u8, u64, alloc::vec::Vec<u64>)>,
+        requests: &[BucketRequest],
+        local: &[NodeSummary],
+        remote: &[NodeSummary],
+        batch: &mut BucketDecodeBatch,
+    ) {
+        for (depth, prefix, roots) in rejected {
+            let node = (depth, prefix);
+            if self
+                .ladder_failed
+                .iter()
+                .any(|&region| covers(region, node))
+            {
+                continue;
+            }
+            let Some(slot) = requests.iter().position(|r| (r.depth, r.prefix) == node) else {
+                continue;
+            };
+            let capacity = requests[slot].capacity;
+            let repeats = self.repeats_earlier_failure(node, capacity, &roots);
+            let population = local[slot].count.max(remote[slot].count);
+            let cannot_narrow = depth >= crate::MAX_DEPTH
+                || self.rounds_emitted.saturating_add(1) >= self.max_rounds;
+            rezzy_log::debug!(
+                depth,
+                prefix,
+                roots = roots.len(),
+                capacity,
+                population,
+                repeats,
+                cannot_narrow,
+                "phase-one bucket verification failed"
+            );
+            if cannot_narrow || (repeats && population <= COLLISION_GIVE_UP_POPULATION) {
+                rezzy_log::warn!(
+                    depth,
+                    prefix,
+                    population,
+                    repeats,
+                    "giving up on an unverifiable bucket"
+                );
+                self.ladder_fail(node, batch);
+            } else {
+                self.failures.push(Phase1Failure {
+                    depth,
+                    prefix,
+                    capacity,
+                    roots,
+                });
+                self.force_split.push(node);
+            }
+        }
     }
 
     /// Returns the accumulated roots carried through the exchange so far.
@@ -678,6 +768,11 @@ impl BucketExchange {
 
     fn drain_pending_round(&mut self) -> Result<VecDeque<BucketRequest>, ClientAction> {
         if self.rounds_emitted >= self.max_rounds {
+            rezzy_log::warn!(
+                rounds_emitted = self.rounds_emitted,
+                max_rounds = self.max_rounds,
+                "reconciliation round budget exhausted; using fallback - ExtremityDiff"
+            );
             return Err(ClientAction::ExtremityDiff);
         }
 
@@ -699,10 +794,23 @@ impl BucketExchange {
         }
 
         if requests.is_empty() {
+            rezzy_log::warn!(
+                pending_requests = self.pending.len(),
+                max_buckets = self.max_buckets_per_round,
+                max_aggregate_capacity = self.max_aggregate_capacity,
+                "pending buckets cannot fit in a round; using fallback - ExtremityDiff"
+            );
             return Err(ClientAction::ExtremityDiff);
         }
 
         self.rounds_emitted = self.rounds_emitted.saturating_add(1);
+        rezzy_log::debug!(
+            round = self.rounds_emitted,
+            request_count = requests.len(),
+            total_capacity = total,
+            pending_requests = self.pending.len(),
+            "emitting bucket request round"
+        );
         Ok(requests)
     }
 
@@ -1074,45 +1182,82 @@ impl ReconciliationClient {
         remote: RemoteDigest,
         concurrency_headroom: usize,
     ) -> ClientAction {
+        if let Some(action) = Self::action_for_remote_state(local, &remote) {
+            if action == ClientAction::ExtremityDiff {
+                rezzy_log::info!(
+                    frame_matches = remote.frame_matches,
+                    unknown_extremity = remote.has_unknown_extremity,
+                    "adaptive reconciliation has chosen the fallback path"
+                );
+            }
+            return action;
+        }
+
+        let estimated_delta = match Self::estimate_delta(local, &remote) {
+            Ok(delta) => delta,
+            Err(action) => return action,
+        };
+
+        self.select_sketch_action(estimated_delta, concurrency_headroom)
+    }
+
+    const fn action_for_remote_state(
+        local: &ResidentKernel,
+        remote: &RemoteDigest,
+    ) -> Option<ClientAction> {
         if !remote.frame_matches || remote.has_unknown_extremity {
-            return ClientAction::ExtremityDiff;
+            return Some(ClientAction::ExtremityDiff);
         }
         if local.accumulator().digest() == remote.digest
             && local.accumulator().known_event_count() == remote.known_event_count
         {
-            return ClientAction::Synchronized;
+            return Some(ClientAction::Synchronized);
         }
 
+        None
+    }
+
+    fn estimate_delta(local: &ResidentKernel, remote: &RemoteDigest) -> Result<u64, ClientAction> {
         let count_delta = local
             .accumulator()
             .known_event_count()
             .abs_diff(remote.known_event_count);
-        let estimated_delta = match crate::triage::estimate_strata(
+        let Ok(estimate) = crate::triage::estimate_strata(
             local.strata(),
             &remote.strata,
             crate::triage::MAX_STRATA_FACTOR_WORK,
-        ) {
-            Ok(estimate) => estimate.delta.max(count_delta),
-            // If the estimator exhausts its work budget, it cannot size a
-            // first-round sketch safely. Start with bounded root extraction
-            // and let bucket decoding localize any over-capacity region.
-            Err(_) => {
-                return ClientAction::BucketSketches {
-                    requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY,)],
-                    accumulated_roots: alloc::vec::Vec::new(),
-                };
-            }
+        ) else {
+            // If estimation exhausts its work budget, bounded root extraction
+            // lets bucket decoding localize the difference without trusting an estimate.
+            rezzy_log::warn!(
+                "strata estimate budget exceeded; using fallback - bounded root extraction"
+            );
+            return Err(Self::root_bucket_action());
         };
 
+        Ok(estimate.delta.max(count_delta))
+    }
+
+    fn select_sketch_action(
+        self,
+        estimated_delta: u64,
+        concurrency_headroom: usize,
+    ) -> ClientAction {
         if estimated_delta >= SATURATED_DELTA_ESTIMATE {
-            return ClientAction::BucketSketches {
-                requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
-                accumulated_roots: alloc::vec::Vec::new(),
-            };
+            rezzy_log::warn!(
+                estimated_delta,
+                "strata estimate saturates; using fallback - bounded root extraction"
+            );
+            return Self::root_bucket_action();
         }
 
         if let Some(threshold) = self.gate_threshold {
             if estimated_delta > threshold {
+                rezzy_log::warn!(
+                    estimated_delta,
+                    threshold,
+                    "estimated delta exceeds configured gate; using fallback - ExtremityDiff"
+                );
                 return ClientAction::ExtremityDiff;
             }
         }
@@ -1127,6 +1272,10 @@ impl ReconciliationClient {
         // `ExtremityDiff` instead of just clamping.
         let capped = provisioned.map(|value| value.min(self.max_aggregate_capacity as u64));
         let Some(target_capacity) = capped.and_then(|value| usize::try_from(value).ok()) else {
+            rezzy_log::warn!(
+                estimated_delta,
+                "sketch capacity exceeds configured limits; using fallback - ExtremityDiff"
+            );
             return ClientAction::ExtremityDiff;
         };
 
@@ -1152,8 +1301,22 @@ impl ReconciliationClient {
         // ceiling lower than one round's worst-case provisioning should have
         // it enforced here, not silently ignored.
         if buckets > MAX_BUCKETS_PER_ROUND || total_capacity > self.max_aggregate_capacity {
+            rezzy_log::warn!(
+                buckets,
+                max_buckets = MAX_BUCKETS_PER_ROUND,
+                total_capacity,
+                max_aggregate_capacity = self.max_aggregate_capacity,
+                "bucket plan exceeds configured limits; using fallback - ExtremityDiff"
+            );
             return ClientAction::ExtremityDiff;
         }
+
+        rezzy_log::info!(
+            estimated_delta,
+            bucket_count = buckets,
+            bucket_capacity = per_bucket,
+            "choosing bucket/sketch plan"
+        );
 
         let mut requests = alloc::vec::Vec::with_capacity(buckets);
         let Ok(max_prefix) = u64::try_from(buckets) else {
@@ -1166,6 +1329,13 @@ impl ReconciliationClient {
         ClientAction::BucketSketches {
             requests,
             accumulated_roots: alloc::vec![],
+        }
+    }
+
+    fn root_bucket_action() -> ClientAction {
+        ClientAction::BucketSketches {
+            requests: alloc::vec![BucketRequest::new(0, 0, MAX_BUCKET_SKETCH_CAPACITY)],
+            accumulated_roots: alloc::vec::Vec::new(),
         }
     }
 
@@ -1217,8 +1387,15 @@ impl ReconciliationClient {
                 ladder_failed: alloc::vec::Vec::new(),
             };
         }
+        rezzy_log::debug!(
+            failed_bucket_count = batch.failed_buckets.len(),
+            "bucket decode error; using fallback - bounded retry or split"
+        );
 
         let Ok(resolved_count) = u64::try_from(accumulated_roots.len()) else {
+            rezzy_log::warn!(
+                "resolved root cardinality exceeds u64; using fallback - ExtremityDiff"
+            );
             return ClientAction::ExtremityDiff;
         };
         let unaccounted = global_estimate.unwrap_or(0).saturating_sub(resolved_count);
@@ -1235,14 +1412,29 @@ impl ReconciliationClient {
             let Ok(next_requests) =
                 retry_failed_bucket(previous_requests, depth, prefix, share, false, 1)
             else {
+                rezzy_log::warn!(
+                    depth,
+                    prefix,
+                    "MSC4521 failed bucket could not be refined; using fallback - ExtremityDiff"
+                );
                 return ClientAction::ExtremityDiff;
             };
             for request in next_requests {
                 total = match total.checked_add(request.capacity) {
                     Some(total) if total <= aggregate_limit => total,
-                    _ => return ClientAction::ExtremityDiff,
+                    _ => {
+                        rezzy_log::warn!(
+                            aggregate_limit,
+                            "retry plan exceeds aggregate capacity; using fallback - ExtremityDiff"
+                        );
+                        return ClientAction::ExtremityDiff;
+                    }
                 };
                 if requests.len() >= MAX_BUCKETS_PER_ROUND {
+                    rezzy_log::warn!(
+                        max_buckets = MAX_BUCKETS_PER_ROUND,
+                        "retry plan exceeds per-round bucket limit; using fallback - ExtremityDiff"
+                    );
                     return ClientAction::ExtremityDiff;
                 }
                 requests.push(request);
@@ -2081,7 +2273,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_overflow_retry_fans_out_instead_of_repeating() {
+    fn failed_small_overflow_retry_ladder_fails_local_prefix() {
         let mut exchange = fresh_exchange();
         let requests = [BucketRequest::new(0, 0, 8)];
         let small = [summary(40, 0)];
@@ -2111,11 +2303,72 @@ mod tests {
                 |_| vec![],
             )
             .unwrap();
+        assert_eq!(
+            action,
+            ClientAction::ResolveRoots {
+                roots: vec![],
+                ladder_failed: vec![(0, 0)],
+            }
+        );
+    }
+
+    #[test]
+    fn phase_one_failure_on_small_overflow_splits_instead_of_giving_up() {
+        let mut exchange = fresh_exchange();
+        let requests = [BucketRequest::with_overflow(
+            0,
+            0,
+            super::super::triage::MAX_OVERFLOW_BUCKET_CAPACITY,
+        )];
+        let empty = [summary(0, 0)];
+        let action = exchange
+            .advance_verified(
+                success(0, 0, &[5]),
+                &requests,
+                &empty,
+                &empty,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
         let ClientAction::BucketSketches { requests, .. } = action else {
-            panic!("expected fan-out after overflow failure, got {action:?}");
+            panic!("expected a split after a phase-1 failure, got {action:?}");
         };
-        assert!(requests.len() > 1);
-        assert!(requests.iter().all(|request| !request.overflow));
+        assert!(
+            requests.iter().all(|request| !request.overflow),
+            "phase-1 failure must split, not retry the overflow: {requests:?}"
+        );
+        assert!(exchange.ladder_failed().is_empty());
+    }
+
+    #[test]
+    fn empty_sibling_does_not_give_up_large_failed_overflow_prefix() {
+        let mut exchange = fresh_exchange();
+        let requests = [
+            BucketRequest::with_overflow(1, 0, super::super::triage::MAX_OVERFLOW_BUCKET_CAPACITY),
+            BucketRequest::new(1, 1, 8),
+        ];
+        let local = [summary(100, 0), summary(0, 0)];
+        let remote = [summary(100, 0), summary(0, 0)];
+        let action = exchange
+            .advance_verified(
+                BucketDecodeBatch {
+                    successful_buckets: vec![super::super::triage::BucketDecodeSuccess {
+                        depth: 1,
+                        prefix: 1,
+                        roots: vec![],
+                    }],
+                    failed_buckets: vec![(1, 0)],
+                },
+                &requests,
+                &local,
+                &remote,
+                None,
+                |_| vec![],
+            )
+            .unwrap();
+        assert!(matches!(action, ClientAction::BucketSketches { .. }));
+        assert!(exchange.ladder_failed().is_empty());
     }
 
     #[test]

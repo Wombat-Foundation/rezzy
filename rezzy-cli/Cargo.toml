@@ -30,6 +30,7 @@ tls = [
     "dep:getrandom",
     "getrandom/std",
 ]
+logging = ["rezzy/logging"]
 
 [dependencies]
 argon2 = { workspace = true, optional = true }

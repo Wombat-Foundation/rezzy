@@ -22,7 +22,7 @@
 //!   that applies to the portable AES path.
 //!
 //! Before timing anything the bench proves it is measuring what it claims: the
-//! `shake+blake2` stack must reproduce the published MSC4500 test vectors, the
+//! `shake+blake2` stack must reproduce the earlier-profile MSC4500 test vectors, the
 //! `blake3+blake3` stack must match `rezzy::incremental::LtHash` byte for byte, and
 //! every candidate primitive must clear its own published vectors (NIST/FIPS)
 //! before it is timed. A fast number can therefore never come from a
@@ -417,7 +417,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Proves the measured stacks are the algorithms they claim to be:
-/// `shake+blake2` against the published MSC4500 vectors, `blake3+blake3`
+/// `shake+blake2` against the earlier-profile MSC4500 vectors, `blake3+blake3`
 /// against the production `rezzy::incremental::LtHash`.
 fn check_correctness(step: &mut u32) {
     checkpoint(step);
@@ -448,7 +448,7 @@ fn check_correctness(step: &mut u32) {
     );
     println!("  production parity (blake3+blake3): ok");
 
-    // The shake+blake2 stack must reproduce MSC4500's published vectors.
+    // The shake+blake2 stack must reproduce MSC4500's earlier-profile vectors.
     let s0 = LtHash::ZERO;
     assert_eq!(
         URL_SAFE_NO_PAD.encode(Stack::ShakeBlake2.collapse(s0.lattice())),
@@ -498,7 +498,7 @@ fn check_correctness(step: &mut u32) {
         "eqev6DfKxlhX6RocDu97tQghpBYRRQ9TfbGXiiQiSZA",
         "scenario 4 digest vector"
     );
-    println!("  MSC4500 published vectors (shake+blake2): ok");
+    println!("  MSC4500 earlier-profile vectors (shake+blake2): ok");
 }
 
 /// Expansion: element -> 2048-byte seed. This is the per-insert cost and the
