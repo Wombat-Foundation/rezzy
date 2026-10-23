@@ -942,10 +942,12 @@ fn is_supported_room_version(room_version: &str) -> bool {
 /// retained), encoded with the room version's base64 alphabet (STANDARD for
 /// v3, URL-safe for v4+; no `$` prefix).
 ///
-/// Canonicalization is tolerant of out-of-range integers (like Synapse's
-/// `relaxed` mode): the JSON writer serializes whatever numbers are
-/// present rather than rejecting them. Keys are already lexicographically
-/// sorted because `crate::json::Object` is a `BTreeMap`.
+/// For room versions 6 and later, canonicalization strictly enforces Matrix
+/// Canonical JSON integer bounds (`[-(2^53 - 1), 2^53 - 1]`) and rejects
+/// fractional or exponent numbers (including wide integers exceeding
+/// `u64::MAX` or `< i64::MIN`). Only legacy room versions (v3–v5) use relaxed
+/// number serialization. Keys are already lexicographically sorted because
+/// `crate::json::Object` is a `BTreeMap`.
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
@@ -1163,24 +1165,31 @@ fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Re
 
 /// Returns `Ok(())` if `n` is a valid Matrix Canonical JSON integer for
 /// room versions v6 and later. Rejects fractional values, exponent notation,
-/// and out-of-range (beyond ±(2^53 − 1)) numbers.
+/// and out-of-range (beyond ±(2^53 − 1), including `> u64::MAX` and `< i64::MIN`) numbers.
 ///
 /// For legacy room versions (pre-v6) no validation is performed.
 fn validate_canonical_number(n: &crate::json::Number) -> Result<(), CanonicalizationError> {
-    let s = n.to_string();
+    let s = n.as_str();
     // Fractional or exponent form.
-    if s.contains('.') || s.contains('e') || s.contains('E') {
+    if s.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
         return Err(CanonicalizationError::FractionalOrExponentNumber);
     }
-    // Range check: must fit within ±(2^53 − 1).
+    // Range check: must fit within ±(2^53 − 1) and be a canonical integer.
     if let Some(v) = n.as_i64() {
-        if v.unsigned_abs() > (1_u64 << 53) - 1 {
+        if v.unsigned_abs() > crate::json::MAX_SAFE_INTEGER {
             return Err(CanonicalizationError::OutOfRangeNumber);
         }
     } else if let Some(v) = n.as_u64() {
-        if v > (1_u64 << 53) - 1 {
+        if v > crate::json::MAX_SAFE_INTEGER {
             return Err(CanonicalizationError::OutOfRangeNumber);
         }
+    } else {
+        // Integer token whose magnitude exceeds `u64::MAX` or `< i64::MIN`
+        // (both `as_i64()` and `as_u64()` returned `None`).
+        return Err(CanonicalizationError::OutOfRangeNumber);
+    }
+    if !n.is_canonical_integer() {
+        return Err(CanonicalizationError::OutOfRangeNumber);
     }
     Ok(())
 }

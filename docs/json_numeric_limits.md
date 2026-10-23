@@ -10,11 +10,11 @@ number.**
 
 ## The three ranges
 
-| Range                        | Parse / `write_string_value` / permissive canonical | Strict canonical     | `ruma` canonical JSON    |
-| ---------------------------- | --------------------------------------------------- | -------------------- | ------------------------ |
-| `\|n\| <= 2^53-1`            | exact                                               | accepted             | accepted                 |
-| `2^53-1 < \|n\| <= u64::MAX` | exact                                               | `Err(InvalidNumber)` | `Err` (`js_int::Int`)    |
-| `\|n\| > u64::MAX`           | exact                                               | `Err(InvalidNumber)` | `Err` (cannot serialize) |
+| Range                        | Parse / `write_string_value` / permissive canonical | Strict canonical (`write_raw_canonical_filtered_strict` & `rezzy` v6+) | `ruma` canonical JSON    |
+| ---------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------ |
+| `\|n\| <= 2^53-1`            | exact                                               | accepted                                                               | accepted                 |
+| `2^53-1 < \|n\| <= u64::MAX` | exact                                               | `Err(InvalidNumber)` / `Err(OutOfRangeNumber)`                         | `Err` (`js_int::Int`)    |
+| `\|n\| > u64::MAX`           | exact                                               | `Err(InvalidNumber)` / `Err(OutOfRangeNumber)`                         | `Err` (cannot serialize) |
 
 All three rows round-trip byte-exactly in the first column, including integers
 far wider than `u64`:
@@ -70,32 +70,36 @@ value _and_ the signed bytes, and contradicted the crate's own contract that
 integers retain their source spelling. It is fixed; the behaviour is now covered
 by tests rather than documentation alone.
 
-## `as_f64` is lossy from `2^53 + 1`
+## `as_f64` is lossy from `2^53 + 1` (use `try_as_f64_exact` for checked conversion)
 
-The canonical _string_ stays correct; only the accessor rounds. `f64` is exact
-through `2^53` inclusive — `2^53` is a power of two, so it survives — and lossy
-for essentially everything above it:
+The canonical _string_ stays correct; only the lossy `as_f64` accessor rounds.
+`f64` is exact through `2^53` inclusive — `2^53` is a power of two, so it
+survives — and lossy for essentially everything above it. By contrast,
+`Number::try_as_f64_exact` (and `Value::try_as_f64_exact`) rejects any integer
+literal outside `[-(2^53 - 1), 2^53 - 1]` (`[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]`):
 
-| input                         | `as_f64`               | exact?            |
-| ----------------------------- | ---------------------- | ----------------- |
-| `9007199254740991` (`2^53-1`) | `9007199254740991`     | yes               |
-| `9007199254740992` (`2^53`)   | `9007199254740992`     | yes, power of two |
-| `9007199254740993` (`2^53+1`) | `9007199254740992`     | **no**            |
-| `175928847299117063`          | `175928847299117060`   | **no**            |
-| `9223372036854775807`         | `9223372036854776000`  | **no**            |
-| `18446744073709551615`        | `18446744073709552000` | **no**            |
-| `1e400`                       | `None`                 | n/a, not finite   |
+| input                         | `as_f64`               | `try_as_f64_exact`     | exact?            |
+| ----------------------------- | ---------------------- | ---------------------- | ----------------- |
+| `9007199254740991` (`2^53-1`) | `9007199254740991`     | `Some(9007199254740991.0)` | yes           |
+| `9007199254740992` (`2^53`)   | `9007199254740992`     | `None`                 | yes, power of two (outside canonical range) |
+| `9007199254740993` (`2^53+1`) | `9007199254740992`     | `None`                 | **no**            |
+| `175928847299117063`          | `175928847299117060`   | `None`                 | **no**            |
+| `9223372036854775807`         | `9223372036854776000`  | `None`                 | **no**            |
+| `18446744073709551615`        | `18446744073709552000` | `None`                 | **no**            |
+| `18446744073709551616`        | `18446744073709552000` | `None`                 | **no**            |
+| `1e400`                       | `None`                 | `None`                 | n/a, not finite   |
 
-Two things worth internalising. The loss starts at `2^53 + 1`, not at `2^53`, so
-a spot check on `2^53` will not reveal it. And `as_f64` returns `Some` with a
-rounded value rather than `None` for these — `None` appears only when the
-literal overflows `f64` entirely, as with `1e400`. `as_f64` is therefore not a
-validity check.
+Two things worth internalising. The loss in `as_f64` starts at `2^53 + 1`, not
+at `2^53`, so a spot check on `2^53` will not reveal it. And `as_f64` returns
+`Some` with a rounded value rather than `None` for these — `None` appears only
+when the literal overflows `f64` entirely, as with `1e400`. `as_f64` is
+therefore not a validity check; use `try_as_f64_exact` whenever out-of-range
+integers must fail closed instead of silently rounding.
 
 Anything that routes an identifier through a float — an `f64` field, a
 `serde_json::Value` conversion, an `f64`-keyed map — corrupts it. For integer
-identifiers use `as_i64` / `as_u64`, or `Number::as_str` when the range is
-unknown.
+identifiers use `as_i64` / `as_u64`, `try_as_f64_exact`, or `Number::as_str`
+when the range is unknown.
 
 ## Snowflake IDs
 
@@ -135,21 +139,25 @@ The scalar path maps the source spelling `-0` to `-0.0` and preserves the sign
 of negative zero through `as_f64` (`Some(-0.0)`), because `-0` is
 distinguishable and Matrix-significant.
 
-## Strict versus non-strict
+## Strict versus non-strict (Consensus Hash-Split Risk)
 
-`write_raw_canonical_filtered` is the permissive writer. Integer spellings pass
-through unchanged; floats are normalized in place (`1e21` becomes `1e+21`). Use
-it to read and re-emit content you do not sign.
+`write_raw_canonical_filtered` is the **permissive** writer. Integer spellings
+pass through unchanged; floats are normalized in place (`1e21` becomes `1e+21`).
+Use it only to inspect or re-emit content you do not sign or hash.
 
-`write_raw_canonical_filtered_strict` enforces Matrix's rule that numbers are
-integers with no fraction or exponent, within `±(2^53-1)`. It validates numeric
-spans directly without constructing a DOM, and rejects everything above with
-`Error::InvalidNumber`.
+`write_raw_canonical_filtered_strict` (along with `rezzy`'s DOM-based
+`validate_canonical_number` in `reference_hash`, `compute_content_hash`, and
+`try_canonical_redacted_json` for Room Versions 6+) enforces Matrix's rule that
+numbers are integers with no fraction or exponent, within `±(2^53-1)`. Both the
+raw-span writer (`is_canonical_integer_str`) and the DOM validator
+(`validate_canonical_number`) explicitly reject integers exceeding `u64::MAX` or
+below `i64::MIN` (where both `as_i64()` and `as_u64()` return `None`).
 
-The distinction is the thing most likely to be got wrong: the permissive
-writer's acceptance is **not** a signing guarantee. A value can canonicalize
-cleanly under the permissive writer and still be rejected by the strict writer
-or by `ruma`.
+The distinction is consensus-critical: the permissive writer's acceptance is
+**not** a signing guarantee. Passing untrusted federation payloads through
+`write_raw_canonical_filtered` for event signing or reference hashing will
+produce a hash/signature split against RFC 8785 / Matrix Spec compliant
+homeservers (`ruma` `js_int::Int`).
 
 ## Verifying changes to this behaviour
 
@@ -164,13 +172,26 @@ well inside `2^53`, no exponent-notation floats, no identifiers past `u64::MAX`,
 no lone surrogates, and no nesting past 128. Such a corpus passes with zero
 golden mismatches on a build that gets every row of these tables wrong. Any
 regression harness for this crate needs the boundary values as explicit cases:
-`2^53-1`, `2^53`, `2^53+1`, `i64::MAX`, `u64::MAX`, `u64::MAX+1`, `2^100`,
-`1e21`, `1e308`, `1e400`, `"\ud800"`, and 200-deep nesting.
-`numeric_range_boundaries_are_pinned` in `rezzy-json/src/lib.rs` covers the
-integer and `f64` rows.
+`2^53-1`, `2^53`, `2^53+1`, `i64::MAX`, `i64::MIN-1`, `u64::MAX`, `u64::MAX+1`,
+`2^100`, `1e21`, `1e308`, `1e400`, `"\ud800"`, and 200-deep nesting.
+`numeric_range_boundaries_are_pinned` and
+`number_try_as_f64_exact_enforces_canonical_integer_bounds` in
+`rezzy-json/src/lib.rs`, together with
+`validate_rejects_integers_beyond_u64_max_and_i64_min` and
+`strict_version_rejects_beyond_u64_max_and_i64_min` in
+`src/basespec/rezzy_types.rs`, cover these integer and `f64` boundary rows.
 
-## Open items
+## Resolved remediations (`Track 15`)
 
-- **`as_f64` has no guard.** It is lossy from `2^53 + 1` by construction, and it
-  answers `Some(rounded)` rather than `None`, so it reads as trustworthy at the
-  call site. Documented, but not defended against.
+- **`T10-F1` (`> u64::MAX` / `< i64::MIN` fallthrough in `validate_canonical_number`)**:
+  `validate_canonical_number` in `src/basespec/rezzy_types.rs` now explicitly returns
+  `Err(CanonicalizationError::OutOfRangeNumber)` when an integer token overflows
+  both `as_i64()` and `as_u64()` (and verifies `n.is_canonical_integer()`), matching
+  `write_raw_canonical_filtered_strict`.
+- **`T10-F2` (Permissive vs. strict canonical writer warnings)**:
+  `write_raw_canonical_filtered` and the `rezzy-json` crate docs carry explicit
+  consensus hash-split security warnings directing all signing and hashing callers
+  to `write_raw_canonical_filtered_strict` (also re-exported at the `rezzy` root).
+- **`T10-F3` (Checked `try_as_f64_exact`)**:
+  `Number::try_as_f64_exact` and `Value::try_as_f64_exact` reject integer literals
+  outside `[-(2^53 - 1), 2^53 - 1]` with `None` instead of silently rounding via `as f64`.
