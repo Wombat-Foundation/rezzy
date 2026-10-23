@@ -989,7 +989,7 @@ fn test_auth_chain_rejects_unauthorized() {
         r#"
 {"event_id":"$create","type":"m.room.create","state_key":"","sender":"@alice:x.com","depth":0,"origin_server_ts":1000,"content":{"room_version":"12"},"prev_events":[],"auth_events":[]}
 {"event_id":"$alice_join","type":"m.room.member","state_key":"@alice:x.com","sender":"@alice:x.com","depth":1,"origin_server_ts":1001,"content":{"membership":"join"},"prev_events":["$create"],"auth_events":[]}
-{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"ban":50,"users":{"@alice:x.com":100}},"prev_events":["$alice_join"],"auth_events":["$alice_join"]}
+{"event_id":"$pl","type":"m.room.power_levels","state_key":"","sender":"@alice:x.com","depth":2,"origin_server_ts":1002,"content":{"ban":50},"prev_events":["$alice_join"],"auth_events":["$alice_join"]}
 {"event_id":"$ban_bob","type":"m.room.member","state_key":"@bob:x.com","sender":"@alice:x.com","depth":3,"origin_server_ts":1003,"content":{"membership":"ban"},"prev_events":["$pl"],"auth_events":["$alice_join","$pl"]}
 {"event_id":"$bob_msg","type":"m.room.message","sender":"@bob:x.com","depth":4,"origin_server_ts":1004,"content":{"body":"I am banned"},"prev_events":["$ban_bob"],"auth_events":["$ban_bob","$pl"]}
     "#,
@@ -4131,3 +4131,426 @@ fn test_v2_2_auth_context_skips_auth_events_selection_rules() {
          classic auth_events selection algorithm: {result:?}"
     );
 }
+
+#[test]
+fn test_check_auth_with_context_and_check_auth_reject_foreign_room_events() {
+    let room_a = rezzy::RoomId::new("!room_a:example.com");
+    let room_b = rezzy::RoomId::new("!room_b:example.com");
+
+    let mut create = make_create("$create", "@alice:example.com", json!({}));
+    create.room_id = Some(room_a.clone());
+
+    let mut join = make_member("$join", "@alice:example.com", "@alice:example.com", "join");
+    join.room_id = Some(room_a.clone());
+
+    let mut foreign_pl = make_event(
+        "$foreign_pl",
+        M_ROOM_POWER_LEVELS,
+        Some(""),
+        "@alice:example.com",
+        json!({"users": {"@alice:example.com": 100}}),
+    );
+    foreign_pl.room_id = Some(room_b.clone());
+
+    let mut state = RoomState::new();
+    state.insert((M_ROOM_CREATE.to_string(), String::new()), create.clone());
+    state.insert(
+        (
+            rezzy::basespec::event_types::M_ROOM_MEMBER.to_string(),
+            "@alice:example.com".to_string(),
+        ),
+        join.clone(),
+    );
+    state.insert(
+        (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+        foreign_pl.clone(),
+    );
+
+    let mut provider = rezzy::HashMap::new();
+    provider.insert("$create".to_string(), create);
+    provider.insert("$join".to_string(), join);
+    provider.insert("$foreign_pl".to_string(), foreign_pl.clone());
+
+    let mut msg = make_event(
+        "$msg",
+        "m.room.message",
+        None,
+        "@alice:example.com",
+        json!({"body": "hello"}),
+    );
+    msg.room_id = Some(room_a);
+    msg.auth_events = vec!["$create".into(), "$join".into(), "$foreign_pl".into()];
+
+    // 1. Direct check_auth_with_context must reject the foreign auth event.
+    let ctx_res = check_auth_with_context(
+        &msg,
+        &state,
+        StateResVersion::V2,
+        None,
+        Some(&provider),
+    );
+    assert!(
+        matches!(
+            ctx_res,
+            Err(AuthError::ForeignRoomEvent {
+                ref event_id,
+                ref auth_event_id,
+                actual: Some(ref actual),
+                ..
+            }) if event_id == "$msg" && auth_event_id == "$foreign_pl" && actual == "!room_b:example.com"
+        ),
+        "check_auth_with_context must reject foreign room auth_event: {ctx_res:?}"
+    );
+
+    // 2. Direct check_auth (without auth_context) must also reject foreign auth state.
+    let direct_res = check_auth(&msg, &state, StateResVersion::V2, None);
+    assert!(
+        matches!(
+            direct_res,
+            Err(AuthError::ForeignRoomEvent {
+                ref event_id,
+                ref auth_event_id,
+                actual: Some(ref actual),
+                ..
+            }) if event_id == "$msg" && auth_event_id == "$foreign_pl" && actual == "!room_b:example.com"
+        ),
+        "check_auth must reject foreign room state event: {direct_res:?}"
+    );
+
+    // 3. Fail-closed when citing event omits room_id (None) but cited auth event carries a foreign room_id.
+    let untagged_create = make_create("$create", "@alice:example.com", json!({}));
+    let untagged_join = make_member("$join", "@alice:example.com", "@alice:example.com", "join");
+    let mut untagged_state = RoomState::new();
+    untagged_state.insert(
+        (M_ROOM_CREATE.to_string(), String::new()),
+        untagged_create.clone(),
+    );
+    untagged_state.insert(
+        (
+            rezzy::basespec::event_types::M_ROOM_MEMBER.to_string(),
+            "@alice:example.com".to_string(),
+        ),
+        untagged_join.clone(),
+    );
+    untagged_state.insert(
+        (M_ROOM_POWER_LEVELS.to_string(), String::new()),
+        foreign_pl.clone(),
+    );
+    let mut untagged_provider = rezzy::HashMap::new();
+    untagged_provider.insert("$create".to_string(), untagged_create);
+    untagged_provider.insert("$join".to_string(), untagged_join);
+    untagged_provider.insert("$foreign_pl".to_string(), foreign_pl);
+
+    let mut untagged_citing_msg = msg.clone();
+    untagged_citing_msg.room_id = None;
+    let untagged_ctx_res = check_auth_with_context(
+        &untagged_citing_msg,
+        &untagged_state,
+        StateResVersion::V2,
+        None,
+        Some(&untagged_provider),
+    );
+    assert!(
+        matches!(
+            untagged_ctx_res,
+            Err(AuthError::ForeignRoomEvent {
+                ref event_id,
+                ref auth_event_id,
+                actual: Some(ref actual),
+                ..
+            }) if event_id == "$msg" && auth_event_id == "$foreign_pl" && actual == "!room_b:example.com"
+        ),
+        "untagged citing event must not fail open when citing a tagged foreign room event: {untagged_ctx_res:?}"
+    );
+}
+
+#[test]
+fn test_check_auth_enforces_create_room_id_and_accepted_create_room_id() {
+    // 1. V12+ m.room.create declaring a room_id must be rejected by check_auth (Rule 1.2).
+    let mut v12_create = make_create(
+        "$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+        "@alice:example.com",
+        json!({"room_version": "12"}),
+    );
+    v12_create.room_id = Some(rezzy::RoomId::new(
+        "!QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+    ));
+    let res_v12_create = check_auth(
+        &v12_create,
+        &RoomState::new(),
+        StateResVersion::V2_1,
+        None,
+    );
+    assert!(
+        matches!(res_v12_create, Err(AuthError::InvalidSyntax(ref s)) if s.contains("m.room.create must not declare room_id")),
+        "check_auth must reject V12 m.room.create with room_id: {res_v12_create:?}"
+    );
+
+    // 2. Pre-V12 m.room.create with sender/room_id domain mismatch must be rejected by check_auth (Rule 1.2).
+    let mut v10_create = make_create(
+        "$create:example.com",
+        "@alice:example.com",
+        json!({"room_version": "10"}),
+    );
+    v10_create.room_id = Some(rezzy::RoomId::new("!room:other.org"));
+    let res_v10_create = check_auth(
+        &v10_create,
+        &RoomState::new(),
+        StateResVersion::V2,
+        None,
+    );
+    assert!(
+        matches!(res_v10_create, Err(AuthError::InvalidSyntax(ref s)) if s.contains("domain does not match sender")),
+        "check_auth must reject pre-V12 m.room.create with mismatched room_id domain: {res_v10_create:?}"
+    );
+
+    // 3. V12+ non-create event whose room_id does not match the accepted m.room.create event ID must be rejected by check_auth (Rule 2).
+    let accepted_create = make_create(
+        "$QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+        "@alice:example.com",
+        json!({"room_version": "12"}),
+    );
+    let mut state = RoomState::new();
+    state.insert((M_ROOM_CREATE.to_string(), String::new()), accepted_create);
+
+    let mut bad_pl = make_event(
+        "$pl",
+        M_ROOM_POWER_LEVELS,
+        Some(""),
+        "@alice:example.com",
+        json!({"users": {"@bob:example.com": 50}}),
+    );
+    bad_pl.room_id = Some(rezzy::RoomId::new(
+        "!QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI",
+    ));
+    let res_bad_pl = check_auth(&bad_pl, &state, StateResVersion::V2_1, None);
+    assert!(
+        matches!(res_bad_pl, Err(AuthError::InvalidSyntax(ref s)) if s.contains("is not the event ID of an accepted m.room.create event")),
+        "check_auth must reject V12 event whose room_id does not match accepted m.room.create: {res_bad_pl:?}"
+    );
+}
+
+#[test]
+fn test_v12_rule_10_4_rejects_create_sender_in_power_levels_users_without_content_creator() {
+    // In Room V12 (MSC4289), m.room.create omits `content.creator` and uses
+    // `create_event.sender()` as the room creator. Rule 10.4 forbids the room
+    // creator from appearing in `m.room.power_levels` `content.users`.
+    let mut state = RoomState::new();
+    insert_create(
+        &mut state,
+        "$create_v12",
+        "@creator:example.com",
+        json!({"room_version": "12"}),
+    );
+    insert_join(&mut state, "$join_creator", "@creator:example.com");
+
+    let pl_with_creator = make_event(
+        "$pl_bad",
+        M_ROOM_POWER_LEVELS,
+        Some(""),
+        "@creator:example.com",
+        json!({"users": {"@creator:example.com": 100}}),
+    );
+    let res = check_auth(&pl_with_creator, &state, StateResVersion::V2_1, None);
+    assert!(
+        matches!(
+            res,
+            Err(AuthError::InvalidSyntax(ref msg))
+                if msg.contains("m.room.power_levels users contains creator @creator:example.com")
+        ),
+        "V12 Rule 10.4 must reject m.room.power_levels containing create_event.sender() in users even when content.creator is absent: {res:?}"
+    );
+}
+
+#[test]
+fn test_event_content_default_has_user_in_users_delegates_to_visit_user_keys() {
+    use rezzy::basespec::rezzy_types::EventContent;
+
+    #[derive(Clone, Debug, Default)]
+    struct CustomPlContent {
+        users: Vec<(String, i64)>,
+    }
+
+    impl EventContent for CustomPlContent {
+        fn get_membership(&self) -> Option<&str> {
+            None
+        }
+        fn get_join_rule(&self) -> Option<&str> {
+            None
+        }
+        fn get_user_power_level(&self, user: &str) -> Option<i64> {
+            self.users
+                .iter()
+                .find_map(|(u, pl)| (u == user).then_some(*pl))
+        }
+        fn get_event_power_level(&self, _event_type: &str) -> Option<i64> {
+            None
+        }
+        fn get_users_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_events_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_state_default(&self) -> Option<i64> {
+            None
+        }
+        fn get_ban(&self) -> Option<i64> {
+            None
+        }
+        fn get_kick(&self) -> Option<i64> {
+            None
+        }
+        fn get_invite(&self) -> Option<i64> {
+            None
+        }
+        fn get_redact(&self) -> Option<i64> {
+            None
+        }
+        fn get_creator(&self) -> Option<&str> {
+            None
+        }
+        fn has_additional_creator(&self, _sender: &str) -> bool {
+            false
+        }
+        fn get_join_authorised_via_users_server(&self) -> Option<&str> {
+            None
+        }
+        fn visit_event_power_levels<'a>(&'a self, _visitor: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_user_power_levels<'a>(&'a self, visitor: &mut dyn FnMut(&'a str, i64)) {
+            for (u, pl) in &self.users {
+                visitor(u.as_str(), *pl);
+            }
+        }
+        fn visit_notification_power_levels<'a>(&'a self, _visitor: &mut dyn FnMut(&'a str, i64)) {}
+        fn visit_user_keys<'a>(&'a self, visitor: &mut dyn FnMut(&'a str)) {
+            for (u, _) in &self.users {
+                visitor(u.as_str());
+            }
+        }
+    }
+
+    let content = CustomPlContent {
+        users: vec![("@creator:example.com".to_string(), 100)],
+    };
+    assert!(
+        content.has_user_in_users("@creator:example.com"),
+        "default EventContent::has_user_in_users must delegate to visit_user_keys so Rule 10.4 fails closed"
+    );
+    assert!(!content.has_user_in_users("@other:example.com"));
+}
+
+#[test]
+fn test_validate_forward_extremity_enforces_default_verifier_on_restricted_join_second_pass() {
+    use rezzy::auth::{validate_forward_extremity, ForwardExtremityResult};
+    use rezzy::basespec::event_types::{M_ROOM_JOIN_RULES, M_ROOM_MEMBER};
+
+    // Pass 1 state (auth_events_state): room is public, so join is allowed without
+    // consulting `verify_join_authorised_via_users_server`.
+    let mut auth_events_state = RoomState::new();
+    insert_create(
+        &mut auth_events_state,
+        "$create",
+        "@admin:example.com",
+        json!({"room_version": "12"}),
+    );
+    insert_join(&mut auth_events_state, "$admin_join", "@admin:example.com");
+    insert_event(
+        &mut auth_events_state,
+        M_ROOM_JOIN_RULES,
+        "",
+        make_event(
+            "$jr_public",
+            M_ROOM_JOIN_RULES,
+            Some(""),
+            "@admin:example.com",
+            json!({"join_rule": "public"}),
+        ),
+    );
+
+    // Pass 2 state (current_room_state): room is restricted, so join requires
+    // `verify_join_authorised_via_users_server`, which defaults to fail-closed Err on PassThroughVerifier.
+    let mut current_room_state = auth_events_state.clone();
+    insert_event(
+        &mut current_room_state,
+        M_ROOM_JOIN_RULES,
+        "",
+        make_event(
+            "$jr_restricted",
+            M_ROOM_JOIN_RULES,
+            Some(""),
+            "@admin:example.com",
+            json!({
+                "join_rule": "restricted",
+                "allow": [{"type": "m.room_membership", "room_id": "!space:example.com"}]
+            }),
+        ),
+    );
+
+    let join_ev = make_event(
+        "$bob_join",
+        M_ROOM_MEMBER,
+        Some("@bob:example.com"),
+        "@bob:example.com",
+        json!({
+            "membership": "join",
+            "join_authorised_via_users_server": "@admin:example.com"
+        }),
+    );
+
+    let result = validate_forward_extremity(
+        &join_ev,
+        &auth_events_state,
+        &current_room_state,
+        StateResVersion::V2_1,
+        Some(&PassThroughVerifier),
+    );
+    assert!(
+        matches!(
+            result,
+            ForwardExtremityResult::SoftFailed(AuthError::InvalidSyntax(ref msg))
+                if msg.contains("join_authorised_via_users_server")
+        ),
+        "validate_forward_extremity must thread verifier to pass 2 so default fail-closed restricted join verification is enforced: {result:?}"
+    );
+}
+
+#[test]
+fn test_rule_1_2_create_allows_historical_uppercase_mxid_and_rejects_malformed_mxid() {
+    let historical_create = make_create(
+        "$create_hist",
+        "@Alice:example.com",
+        json!({"room_version": "10", "creator": "@Alice:example.com"}),
+    );
+    assert!(
+        historical_create.validate_syntactic("10").is_ok(),
+        "validate_syntactic accepts historical uppercase MXID per MSC4303"
+    );
+    let auth_res = check_auth(
+        &historical_create,
+        &RoomState::new(),
+        StateResVersion::V2,
+        None,
+    );
+    assert!(
+        auth_res.is_ok(),
+        "Rule 1.2 in check_auth must agree with validate_syntactic and allow historical uppercase MXID: {auth_res:?}"
+    );
+
+    let malformed_create = make_create(
+        "$create_bad",
+        "alice:example.com",
+        json!({"room_version": "10"}),
+    );
+    let bad_res = check_auth(
+        &malformed_create,
+        &RoomState::new(),
+        StateResVersion::V2,
+        None,
+    );
+    assert!(
+        matches!(bad_res, Err(AuthError::InvalidSyntax(ref msg)) if msg.contains("m.room.create sender must be a valid MXID")),
+        "Malformed MXID on m.room.create must still be rejected: {bad_res:?}"
+    );
+}
+
