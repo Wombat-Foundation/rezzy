@@ -25,6 +25,11 @@
 //! only one of these 20 files that does).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+extern crate alloc;
+
+#[path = "../support/cdo_retired.rs"]
+pub mod cdo;
+
 // Declared once here rather than separately by each child module below --
 // they all reference this single instance via `use crate::utils;` instead
 // of each re-declaring their own `mod utils;` (which would compile 9

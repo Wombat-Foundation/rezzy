@@ -12,10 +12,9 @@ mod tests {
     use super::utils;
     use core::cmp::Ordering;
     use rezzy::*;
-    // `apply_cdo_filter` is no longer re-exported into the flat public API
-    // (see src/resolve/mod.rs) since the CDO is retired/unsound legacy code;
-    // pull it in explicitly for the regression tests still exercising it.
-    use rezzy::resolve::cdo::apply_cdo_filter;
+    // `apply_cdo_filter` is relocated out of `src/` into `tests/support/cdo_retired.rs`
+    // (`crate::cdo`) so retired CDO code is only compiled in test targets (`F-02.1`).
+    use crate::cdo::apply_cdo_filter;
 
     #[cfg(not(feature = "std"))]
     use hashbrown::HashMap;
@@ -787,23 +786,46 @@ mod tests {
         expected: &[&str],
     ) {
         let mut events: HashMap<String, LeanEvent> = HashMap::new();
+        let mut users = rezzy::JsonObject::new();
         for r in rows {
+            users.insert(r.0.to_string(), rezzy::JsonValue::from(r.1));
+            let mut auth_events: Vec<String> = r.4.iter().map(ToString::to_string).collect();
+            auth_events.push("$pl".to_string());
             events.insert(
                 r.0.to_string(),
                 LeanEvent {
                     event_id: r.0.to_string(),
                     event_type: "m.room.member".into(),
                     state_key: Some("@alice:example.com".into()),
+                    sender: r.0.to_string(),
                     power_level: r.1,
                     origin_server_ts: r.2,
                     depth: r.3,
                     prev_events: r.4.iter().map(ToString::to_string).collect(),
-                    auth_events: r.4.iter().map(ToString::to_string).collect(),
+                    auth_events,
                     ..Default::default()
                 },
             );
         }
-        let result = super::kahn_sort(&events, version);
+        let mut auth_ctx = events.clone();
+        auth_ctx.insert(
+            "$pl".to_string(),
+            LeanEvent {
+                event_id: "$pl".into(),
+                event_type: "m.room.power_levels".into(),
+                state_key: Some(String::new()),
+                content: rezzy::json!({ "users": rezzy::JsonValue::Object(users) }),
+                ..Default::default()
+            },
+        );
+        let result = rezzy::KahnSortInputs::new(
+            &events,
+            &auth_ctx,
+            None,
+            version,
+            &mut HashMap::new(),
+        )
+        .sort();
         assert_eq!(
             result,
             expected.iter().map(ToString::to_string).collect::<Vec<_>>()
@@ -2741,7 +2763,7 @@ fn apply_cdo_split(events: &[LeanEvent], conflicted_ids: &[&str]) -> HashMap<Str
             auth_context.insert(ev.event_id.clone(), ev.clone());
         }
     }
-    rezzy::resolve::cdo::apply_cdo_filter(&conflicted, &auth_context)
+    crate::cdo::apply_cdo_filter(&conflicted, &auth_context)
 }
 
 /// Builds the `create` + `pl` auth context and the two `A`/`B` member events
@@ -4752,7 +4774,7 @@ fn test_cdo_disconnected_child_missing_from_conflicted() {
     // apply_cdo_filter must not panic when a conflicted event cites an event
     // ("B") that exists only in the auth context, not in the conflicted set.
     // Such an event is never a direct-domination drop candidate and is kept.
-    use rezzy::cdo;
+    use crate::cdo;
 
     let mut events_map: HashMap<String, LeanEvent> = HashMap::new();
     events_map.insert(
@@ -4811,7 +4833,7 @@ fn test_cdo_coverage_branches() {
     };
     events_map.insert(event_id.clone(), ev1);
 
-    let _filtered = rezzy::resolve::cdo::apply_cdo_filter(&events_map, &auth_context);
+    let _filtered = crate::cdo::apply_cdo_filter(&events_map, &auth_context);
 }
 
 #[test]
@@ -4819,7 +4841,7 @@ fn test_cdo_is_ancestor() {
     let mut ctx: HashMap<String, LeanEvent> = HashMap::new();
 
     // Equal IDs -> true
-    assert!(rezzy::resolve::cdo::is_ancestor("A", "A", &ctx));
+    assert!(crate::cdo::is_ancestor("A", "A", &ctx));
 
     // Missing child -> false
     ctx.insert(
@@ -4829,7 +4851,7 @@ fn test_cdo_is_ancestor() {
             ..Default::default()
         },
     );
-    assert!(!rezzy::resolve::cdo::is_ancestor("missing", "B", &ctx));
+    assert!(!crate::cdo::is_ancestor("missing", "B", &ctx));
 
     // Missing ancestor -> false
     ctx.insert(
@@ -4839,7 +4861,7 @@ fn test_cdo_is_ancestor() {
             ..Default::default()
         },
     );
-    assert!(!rezzy::resolve::cdo::is_ancestor("C", "missing", &ctx));
+    assert!(!crate::cdo::is_ancestor("C", "missing", &ctx));
 
     // Depth pruning - child depth > ancestor depth -> false
     let mut ev_child = LeanEvent {
@@ -4856,7 +4878,7 @@ fn test_cdo_is_ancestor() {
             ..Default::default()
         },
     );
-    assert!(!rezzy::resolve::cdo::is_ancestor(
+    assert!(!crate::cdo::is_ancestor(
         "child_pruned",
         "and_shallow",
         &ctx
@@ -4885,7 +4907,7 @@ fn test_cdo_is_ancestor() {
         },
     );
 
-    assert!(rezzy::resolve::cdo::is_ancestor(
+    assert!(crate::cdo::is_ancestor(
         "valid_child",
         "valid_and",
         &ctx
@@ -4914,7 +4936,7 @@ fn test_cdo_is_ancestor_ignores_forged_depth_relationship() {
     // $and is a genuine auth_events parent of $child, so it IS an ancestor
     // regardless of the (forged-looking) depth relationship.
     assert!(
-        rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
+        crate::cdo::is_ancestor("$child", "$and", &ctx),
         "a real auth_events edge must be honored even when the depth field disagrees with it"
     );
 }
@@ -4938,7 +4960,7 @@ fn test_cdo_is_ancestor_disconnected_branch() {
     // $and has no edge into that chain from either direction, so it's
     // correctly reported unreachable.
     assert!(
-        !rezzy::resolve::cdo::is_ancestor("$child", "$and", &ctx),
+        !crate::cdo::is_ancestor("$child", "$and", &ctx),
         "$and is on a genuinely disconnected branch"
     );
 }
@@ -5951,8 +5973,8 @@ fn test_msc4289_lean_event_get_redact_and_creator() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_coverage_sweeper_for_unreachable_edges() {
+    use crate::cdo::is_ancestor;
     use rezzy::basespec::rezzy_types::{EventProvider, SortPriority};
-    use rezzy::resolve::cdo::is_ancestor;
     use rezzy::resolve::semilattice::resolve_semilattice_fold;
     use rezzy::state::at::StateComputationError;
     use rezzy::state::delta::{reconstruct_state_batch, CompactedCheckpoint};
@@ -7550,8 +7572,9 @@ fn test_performance_and_correctness_dense_bifurcations() {
 /// Regression coverage for conflicted-key derivation before CDO filtering.
 #[test]
 fn test_conflicted_keys_derived_before_cdo() {
+    use crate::cdo;
     use rezzy::basespec::event_types::EventType;
-    use rezzy::{cdo, StateResVersion};
+    use rezzy::StateResVersion;
     use std::collections::HashMap;
 
     let events = utils::parse_jsonl_events(
