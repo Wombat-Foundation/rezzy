@@ -1,0 +1,20 @@
+{
+  "track_id": "05_lattice_v22_msc4242_20260630",
+  "title": "Iterative Sort vs. Lattice Fold (V2.1.1 & V2.2 / MSC4242) & Security Comparison",
+  "type": "architecture",
+  "status": "completed",
+  "epoch": "v0.3.0-v0.4.0 + Sep 2026 (Jun 2026 - Sep 2026)",
+  "commit_range": "60dd404..f56b068",
+  "created_at": "2026-06-29T05:00:32Z",
+  "updated_at": "2026-09-28T04:14:31Z",
+  "linked_docs": [
+    "../../../docs/rezzy_msc4242_security_comparison.md",
+    "../../../docs/cdo_soundness_anomalies.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": {
+    "risk_level": "Critical (DAG Withholding & Mixed-Federation Split-Brain)",
+    "primary_finding": "Experimental V2.1.1 diverges from Stock V2.1 on SEND01 progressive ban handling; neither V2.1.1 nor MSC4242 V2.2 solves 'DAG honesty' (branch withholding by a malicious sender).",
+    "audit_reference": "../../audits/rezzy_docs_public_safety_audit.md"
+  }
+}
