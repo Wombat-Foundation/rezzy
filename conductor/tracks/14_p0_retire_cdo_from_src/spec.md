@@ -10,5 +10,5 @@ As documented in [`docs/cdo_soundness_anomalies.md`](../../../docs/cdo_soundness
    - Remove `mod cdo;` and any internal re-exports from `src/resolve/mod.rs`.
 
 ## 3. Acceptance Criteria
-- [ ] `src/resolve/cdo.rs` no longer exists in `src/`.
-- [ ] Anomaly 19 & 20 regression tests in `tests/` still pass (`cargo test --workspace`).
+- [x] `src/resolve/cdo.rs` no longer exists in `src/`.
+- [x] Anomaly 19 & 20 regression tests in `tests/` still pass (`cargo test --workspace`).
