@@ -1,0 +1,17 @@
+{
+  "track_id": "10_rezzy_json_crate_20261004",
+  "title": "Track 10 — rezzy-json Crate Extraction, Dependency-Free Parser & Canonical Numeric Limits (0.6.0-rc.1)",
+  "type": "architecture",
+  "status": "completed",
+  "epoch": "Sep–Oct 2026 (0.6.0-rc.1 – 0.6.0-rc.2)",
+  "commit_range": "a636e18..1504cc7",
+  "created_at": "2026-09-20T00:00:00Z",
+  "updated_at": "2026-10-12T23:59:59Z",
+  "linked_docs": [
+    "../../../docs/json_numeric_limits.md",
+    "../../../docs/homeserver_utilities.md",
+    "../../../docs/tech_debt.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "Critical (Hash Split): Dual permissive (write_raw_canonical_filtered) and strict (write_raw_canonical_filtered_strict) canonical JSON writers, coupled with silent lossy as_f64 rounding for integers >= 2^53+1 (returning Some(rounded) instead of None), expose federation callers to reference-hash and content-signature split-brain risks if a caller confuses parser/permissive acceptance with Matrix signing canonicality."
+}
