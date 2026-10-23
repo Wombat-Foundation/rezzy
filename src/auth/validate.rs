@@ -19,7 +19,13 @@
 
 use core::fmt;
 
-use crate::basespec::rezzy_types::{DagNode, EventLike};
+use crate::basespec::event_types::{
+    MAX_PREV_STATE_EVENTS, MAX_SAFE_JSON_INTEGER, M_ROOM_CREATE,
+};
+use crate::basespec::rezzy_types::{
+    is_acceptable_historical_mxid, is_valid_mxid, DagNode, EventLike, StateResVersion,
+};
+use crate::FastSet;
 
 /// Maximum number of `prev_events` permitted on a Matrix PDU.
 pub const MAX_PREV_EVENTS: usize = 20;
@@ -118,16 +124,139 @@ impl fmt::Display for ValidationError {
     }
 }
 
+fn enforces_v11_field_byte_limits(room_version: &str) -> bool {
+    matches!(
+        room_version,
+        "11" | "12" | "12.1" | "org.matrix.msc4242.12" | "tk.nutra.cdo.12"
+    )
+}
+
+fn has_duplicates<T: Eq + core::hash::Hash>(slice: &[T]) -> bool {
+    if slice.len() <= 1 {
+        return false;
+    }
+    let mut seen = FastSet::default();
+    for item in slice {
+        if !seen.insert(item) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Validates structural PDU invariants before authorization checks (`F-07-04`).
+///
+/// Checks:
+/// - Recognised `room_version`.
+/// - Non-empty `event_type`, `sender`, and `$`-prefixed `event_id`.
+/// - Valid or historical `sender` MXID grammar.
+/// - V11+ 255-byte identifier field limits.
+/// - `depth <= MAX_SAFE_JSON_INTEGER` (`2^53 - 1`).
+/// - `m.room.create` invariants (`prev_events` empty, `auth_events` empty, `state_key == Some("")`).
+/// - Non-create invariants (`!prev_events.is_empty()`).
+/// - Fanout bounds (`prev_events.len() <= 20`, `auth_events.len() <= 10` or `prev_state_events.len() <= 20` in V2.2).
+/// - Duplicate rejection in `prev_events` and `auth_events`.
 ///
 /// # Errors
 ///
 /// Returns [`ValidationError`] if the event violates any structural PDU rule
 /// for `room_version`.
 pub fn validate_event_structure<E: EventLike>(
-    _event: &E,
-    _room_version: &str,
+    event: &E,
+    room_version: &str,
 ) -> Result<(), ValidationError> {
+    let Some(version) = StateResVersion::from_room_version(room_version) else {
+        return Err(ValidationError::UnsupportedRoomVersion);
+    };
+
+    let event_type = event.event_type();
+    if event_type.is_empty() {
+        return Err(ValidationError::MissingField("type"));
+    }
+
+    let sender = event.sender();
+    if sender.is_empty() {
+        return Err(ValidationError::MissingField("sender"));
+    }
+    if !is_valid_mxid(sender) && !is_acceptable_historical_mxid(sender) {
+        return Err(ValidationError::InvalidSenderMxid);
+    }
+
+    let id_str = alloc::format!("{}", event.event_id());
+    if id_str.len() <= 1 || !id_str.starts_with('$') {
+        return Err(ValidationError::InvalidEventId);
+    }
+
+    if enforces_v11_field_byte_limits(room_version) {
+        for (value, field) in [
+            (id_str.as_str(), "event_id"),
+            (sender, "sender"),
+            (event_type.as_ref(), "event_type"),
+        ] {
+            if value.len() > MAX_IDENTIFIER_BYTES_V11 {
+                return Err(ValidationError::FieldTooLong {
+                    field,
+                    len: value.len(),
+                    limit: MAX_IDENTIFIER_BYTES_V11,
+                });
+            }
+        }
+        if let Some(sk) = event.state_key() {
+            if sk.len() > MAX_IDENTIFIER_BYTES_V11 {
+                return Err(ValidationError::FieldTooLong {
+                    field: "state_key",
+                    len: sk.len(),
+                    limit: MAX_IDENTIFIER_BYTES_V11,
+                });
+            }
+        }
+    }
+
+    if event.depth() > MAX_SAFE_JSON_INTEGER {
+        return Err(ValidationError::DepthOverflow);
+    }
+
+    let prev_events = event.prev_events();
+    let auth_events = if version == StateResVersion::V2_2 {
+        event.prev_state_events()
+    } else {
+        event.auth_events()
+    };
+
+    if event_type.as_ref() == M_ROOM_CREATE {
+        if !prev_events.is_empty() {
+            return Err(ValidationError::CreateHasPrevEvents);
+        }
+        if !auth_events.is_empty() {
+            return Err(ValidationError::CreateHasAuthEvents(auth_events.len()));
+        }
+        if event.state_key() != Some("") {
+            return Err(ValidationError::CreateMissingStateKey);
+        }
+    } else if prev_events.is_empty() {
+        return Err(ValidationError::EmptyPrevEvents);
+    }
+
+    if prev_events.len() > MAX_PREV_EVENTS {
+        return Err(ValidationError::TooManyPrevEvents(prev_events.len()));
+    }
+
+    let max_auth = if version == StateResVersion::V2_2 {
+        MAX_PREV_STATE_EVENTS
+    } else {
+        MAX_AUTH_EVENTS
+    };
+    if auth_events.len() > max_auth {
+        return Err(ValidationError::TooManyAuthEvents(auth_events.len()));
+    }
+
+    if has_duplicates(prev_events) {
+        return Err(ValidationError::DuplicatePrevEvents);
+    }
+    if has_duplicates(auth_events) {
+        return Err(ValidationError::DuplicateAuthEvents);
+    }
+
     Ok(())
 }
 
@@ -154,14 +283,30 @@ pub fn validate_pdu_invariants<E: EventLike>(
 pub fn validate_event_with_parents<'a, E, P, F>(
     event: &E,
     room_version: &str,
-    _lookup_parent: F,
+    lookup_parent: F,
 ) -> Result<(), ValidationError>
 where
     E: EventLike,
     P: DagNode<Id = E::Id> + 'a,
     F: Fn(&E::Id) -> Option<&'a P>,
 {
-    validate_event_structure(event, room_version)
+    validate_event_structure(event, room_version)?;
+    let mut max_parent_depth: Option<u64> = None;
+    for parent_id in event.prev_events() {
+        if let Some(parent) = lookup_parent(parent_id) {
+            let pd = parent.depth();
+            max_parent_depth = Some(max_parent_depth.map_or(pd, |cur| cur.max(pd)));
+        }
+    }
+    if let Some(max_pd) = max_parent_depth {
+        if event.depth() < max_pd {
+            return Err(ValidationError::ParentDepthViolation {
+                event_depth: event.depth(),
+                max_parent_depth: max_pd,
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

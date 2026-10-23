@@ -68,34 +68,17 @@ snapshots. Useful for:
 
 ### 5. Event Well-Formedness Validation
 
-**Status**: ❌ Not implemented
+**Status**: ✅ Implemented (`src/auth/validate.rs`)
 
-Structural validation before auth checking:
+Structural validation before auth checking (`validate_event_structure`,
+`validate_pdu_invariants`, `validate_event_with_parents`):
 
-- Required fields present (type, sender, room_id, etc.)
-- `prev_events` non-empty (except `m.room.create`)
-- `depth` >= 0 and consistent with parents
-- `auth_events` reference correct types
-- `state_key` present iff state event
-- Event ID format matches room version
-
-```rust
-pub enum ValidationError {
-    MissingSender,
-    MissingRoomId,
-    EmptyPrevEvents,
-    DepthInconsistency { expected_min: i64, actual: i64 },
-    InvalidAuthEvents(String),
-    // ...
-}
-
-pub fn validate_event_structure<Id>(
-    event: &LeanEvent<Id>,
-    version: StateResVersion,
-) -> Result<(), Vec<ValidationError>>
-```
-
-**Work**: New `src/auth/validate.rs`, ~200 lines.
+- Required fields present (`type`, `sender`, `$`-prefixed `event_id`)
+- `prev_events` non-empty (except `m.room.create`, which requires 0 `prev_events` and 0 `auth_events`)
+- `depth` <= `2^53 - 1` and monotonic with parents (`validate_event_with_parents`)
+- Fanout bounds (`<= 20` `prev_events`, `<= 10` `auth_events` or `<= 20` `prev_state_events` in V2.2) and duplicate edge rejection
+- `m.room.create` requires `state_key == Some("")`
+- V11+ 255-byte identifier field limits
 
 ---
 
@@ -133,29 +116,15 @@ redaction never changes an event's ID (`event_id(e) == event_id(redact(e))`).
 
 ---
 
-### 7. DAG Health Metrics
+### 7. DAG Health Metrics & Fork Analysis
 
-**Status**: ❌ Not implemented
+**Status**: ✅ Implemented (`src/dag/fork.rs`)
 
-Diagnostic queries over the event graph:
+Diagnostic queries and live frontier width guards over the event graph:
 
-```rust
-pub struct DagHealth {
-    pub total_events: usize,
-    pub forward_extremities: usize,
-    pub backward_extremities: usize,
-    pub max_fork_width: usize,
-    pub avg_depth: f64,
-    pub max_depth: i64,
-    pub orphaned_events: usize,
-}
-
-pub fn compute_dag_health<Id>(
-    events: &HashMap<Id, LeanEvent<Id>>,
-) -> DagHealth
-```
-
-**Work**: New utility, ~80 lines.
+- `compute_dag_health(events)` — computes `DagHealth` (`total_events`, `forward_extremities`, `backward_extremities`, `max_fork_width`, `avg_depth`, `max_depth`, `orphaned_events`).
+- `detect_forks(events)` — identifies unmerged `ForkBranch` heads, their nearest shared `fork_point`, and per-branch state/timeline event counts.
+- `check_frontier_width(events, max_width)` — enforces a live citation frontier width bound (`DEFAULT_MAX_FRONTIER_WIDTH = 100`) to guard against hydra/braided DAG memory amplification (`F-04-01`).
 
 ---
 

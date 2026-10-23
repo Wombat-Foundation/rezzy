@@ -250,29 +250,6 @@ production caller. A caller adopting rezzy today should use `hamt::audit`'s
 reachability sweep (or retain nodes until explicit room purge), not hand-wire
 `RefcountTable`, unless it can enforce a strict linear root history.
 
-### No deterministic end-to-end test for the bucket-split retry path
-
-`tests/unit/test_reconcile_e2e.rs` drives the real client<->server
-`ReconciliationClient`/`BucketExchange` round-trip loop (not just
-`estimate_strata`/`PinSketch` in isolation) and covers a clean single-round
-decode and a `low_confidence`-estimate case that still converges. It
-deliberately does **not** cover `retry_or_split_bucket`'s multi-round
-capacity-then-depth escalation end-to-end: a uniformly random delta rarely
-overflows any single auto-sized bucket (so it doesn't reliably force a retry),
-and a hand-constructed "hot bucket" skewed enough to force one tended to either
-overshoot `MAX_RECONCILIATION_ROUNDS` (bailing to `ExtremityDiff`) or undershoot
-it, depending on exact construction -- turning the assertion into something that
-would flake rather than reliably exercise the path. `benches/reconcile.rs`'s
-`benchmark_bucket_exchange_from_pool` already runs this path at scale, just
-without assertions (it's a timing harness, not a correctness gate). The strata
-estimator now has a shared work budget (`MAX_STRATA_FACTOR_WORK`) preventing the
-32× amplification path; the residual gap is the bucket-split retry path's
-end-to-end determinism, not the estimator's cost model. Circle back with a
-construction that provably lands a chosen delta in exactly one prefix range at a
-chosen depth (rather than approximating it via hash clustering) so the round
-count is an exact, assertable function of the inputs instead of an empirical
-one.
-
 ### Dead CDO module (`src/resolve/cdo.rs`)
 
 `apply_cdo_filter` is retired from the live resolution path (superseded by

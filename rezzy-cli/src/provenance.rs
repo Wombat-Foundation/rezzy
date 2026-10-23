@@ -565,13 +565,17 @@ fn sidecar_error(error: impl core::fmt::Display) -> AppError {
     )
 }
 
-/// One event's stream-order facts read from a sidecar.
+/// One event's stream-order and rejection facts read from a sidecar.
 #[derive(Debug, Clone)]
 pub struct SidecarEvent {
     /// `sha256:<hex>` of the merged event this record describes.
     pub payload_sha256: String,
     /// Unambiguous stream order, or `None` when absent or conflicting.
     pub stream_ordering: Option<u64>,
+    /// Whether this event was marked rejected in the provenance sidecar.
+    pub rejected: bool,
+    /// Whether this event was marked soft-failed in the provenance sidecar.
+    pub soft_failed: bool,
 }
 
 /// Parsed contents of a `.rezzy-meta.jsonl` sidecar.
@@ -678,6 +682,10 @@ fn sidecar_event(value: &JsonValue) -> Option<(String, SidecarEvent)> {
         .to_owned();
     let mut values = BTreeSet::new();
     let mut conflicted = false;
+    let mut any_rejected_true = false;
+    let mut any_rejected_false = false;
+    let mut any_soft_failed_true = false;
+    let mut any_soft_failed_false = false;
     if let Some(observations) = value.get("observations").and_then(JsonValue::as_array) {
         for observation in observations {
             if observation
@@ -693,6 +701,16 @@ fn sidecar_event(value: &JsonValue) -> Option<(String, SidecarEvent)> {
             {
                 values.insert(stream);
             }
+            match observation.get("rejected").and_then(JsonValue::as_bool) {
+                Some(true) => any_rejected_true = true,
+                Some(false) => any_rejected_false = true,
+                None => {}
+            }
+            match observation.get("soft_failed").and_then(JsonValue::as_bool) {
+                Some(true) => any_soft_failed_true = true,
+                Some(false) => any_soft_failed_false = true,
+                None => {}
+            }
         }
     }
     let stream_ordering = if conflicted || values.len() > 1 {
@@ -700,11 +718,15 @@ fn sidecar_event(value: &JsonValue) -> Option<(String, SidecarEvent)> {
     } else {
         values.into_iter().next()
     };
+    let rejected = any_rejected_true && !any_rejected_false;
+    let soft_failed = any_soft_failed_true && !any_soft_failed_false;
     Some((
         event_id,
         SidecarEvent {
             payload_sha256,
             stream_ordering,
+            rejected,
+            soft_failed,
         },
     ))
 }
