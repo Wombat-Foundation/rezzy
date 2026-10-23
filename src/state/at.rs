@@ -378,6 +378,16 @@ pub type SharedState<Id = String, K = String> = crate::state::PersistentOrdMap<(
 ///
 /// Build the inputs with [`intern_events`](crate::intern_events), which
 /// allocates each event id and state key once and shares it everywhere.
+///
+/// > **Scale Warning (`>= 5,000` room members under parallel resolution):**
+/// > In multi-threaded batch resolution (`std::thread::scope`), `Arc<str>`
+/// > atomic refcount traffic on shared [`InternedKey`](crate::InternedKey)
+/// > headers can cause `+3%` to `+16%` cross-core cache-line contention at
+/// > 5,000+ members. For large parallel rooms, prefer `Copy + Send + Sync`
+/// > `u32` arena interning via [`Interner`](crate::Interner) and
+/// > [`InternId`](crate::InternId) (`src/basespec/interned_key.rs`), which
+/// > compares and hashes by `u32` rank in $O(1)$ with zero atomic refcount
+/// > operations.
 pub type FastSharedState = SharedState<alloc::sync::Arc<str>, crate::InternedKey>;
 
 /// Computes the resolved room state *after* a given event.
