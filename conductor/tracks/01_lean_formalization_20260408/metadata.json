@@ -1,0 +1,18 @@
+{
+  "track_id": "01_lean_formalization_20260408",
+  "title": "Lean 4 Formalization, Kahn Topological Sort & Trace Compiler (v0.1.0–v0.1.1)",
+  "type": "architecture",
+  "status": "completed",
+  "epoch": "v0.1.0–v0.1.1",
+  "commit_range": "be1774b..5cf21de (plus 5817344, 995f139, a88b53a)",
+  "created_at": "2026-04-08T00:00:00Z",
+  "updated_at": "2026-04-14T04:25:26Z",
+  "linked_docs": [
+    "../../../README.md",
+    "../../../TODO.txt",
+    "../../../Makefile",
+    "../../../Cargo.toml",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "Establishes the foundational Lean 4 ordering proofs, Kahn topological sort with cycle detection (KahnSortResult::CycleDetected), and initial #![no_std] state resolution kernel. Identifies two enduring public-safety considerations documented in TODO.txt and rezzy_docs_public_safety_audit.md: (1) cycle detection in build_mainline_with_cache silently truncates mainlines rather than returning an explicit Result error, and (2) the behavioral gap in single-pass progressiveFold termination under mutual demotion in V2.1.1 empty-start-state semantics."
+}

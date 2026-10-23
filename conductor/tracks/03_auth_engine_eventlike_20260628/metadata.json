@@ -1,0 +1,17 @@
+{
+  "track_id": "03_auth_engine_eventlike_20260628",
+  "title": "Version-Aware Auth Engine, EventLike Trait & Streaming Auth Cache (v0.2.0)",
+  "type": "architecture",
+  "status": "completed",
+  "epoch": "v0.2.0",
+  "commit_range": "4abfb43..6268aab (plus 0cce801, a83ec17, 71e2f3e)",
+  "created_at": "2026-05-20T00:00:00Z",
+  "updated_at": "2026-07-02T23:59:59Z",
+  "linked_docs": [
+    "../../../docs/architecture.md",
+    "../../../docs/design_notes.md",
+    "../../../README.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "Establishes the version-aware PDU authorization engine (src/auth/mod.rs), generic EventId/EventContent/EventLike/RawEvent zero-copy traits, streaming state reconstruction (compute_state_at_streaming), LocalAuthCache hoisting, and zero-copy SortContext. Cross-references two key findings in rezzy_docs_public_safety_audit.md: (1) Row #2 (architecture.md, Critical OOM / Starvation) where pre-fetching full conflicted graphs in the synchronous I/O sandwich exposes the homeserver to OOM or executor starvation on catastrophic forks, and (2) Row #4 (design_notes.md, High Heuristic Bypass) where assuming 10-50 conflicted events fit in L1 cache underestimates 10^4+ event adversarial partitions and custom EventContent implementations risk subtle spec drift."
+}

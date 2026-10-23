@@ -1,0 +1,16 @@
+{
+  "track_id": "02_stateres_v2_cdo_20260510",
+  "title": "Core #![no_std] State Resolution V1/V2/V2.1 & CDO Soundness Retirement (v0.1.2–v0.1.4)",
+  "type": "feature",
+  "status": "completed",
+  "epoch": "v0.1.2–v0.1.4",
+  "commit_range": "5cf21de..4abfb43 (plus CDO lifecycle ae41adc, 34fde0c, f56b068)",
+  "created_at": "2026-04-12T00:00:00Z",
+  "updated_at": "2026-05-20T23:59:59Z",
+  "linked_docs": [
+    "../../../docs/cdo_soundness_anomalies.md",
+    "../../../README.md",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": "Critical (Split-Brain): Proves that heuristic pre-filtering via the Causal Domination Operator (CDO) causes permanent federation split-brain due to the dominator-validity gap (dropping events dominated by an unverified, forged low-power ban/kick/demotion/lockdown) and Anomaly 19 (independent-branch demotion wiping pre-authorized bans). While CDO was disconnected from prepare_conflicted_and_keys in src/resolve/iterative.rs and replaced by post-power is_sender_banned screening, the retired src/resolve/cdo.rs module still resides inside production src/resolve/ (P0 Remediation item #2 in rezzy_docs_public_safety_audit.md)."
+}
