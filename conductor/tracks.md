@@ -89,7 +89,7 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 ---
 
-- [~] **Track: 18 — P1 Remediation: Harden Hash Tables Against HashDoS, `DenseIndex` Short-Circuit & `u32` Arena Interning (`InternId`)**
+- [x] **Track: 18 — P1 Remediation: Harden Hash Tables Against HashDoS, `DenseIndex` Short-Circuit & `u32` Arena Interning (`InternId`)**
   *Link: [./tracks/18_p1_hashdos_and_arena_interning/index.md](./tracks/18_p1_hashdos_and_arena_interning/index.md)*
 
 ---
