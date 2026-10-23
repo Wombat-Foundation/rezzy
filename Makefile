@@ -108,7 +108,7 @@ all: format lint check doc test
 .PHONY: rust/build
 rust/build: ##H Compile Rust binary and the C ABI library (release)
 	$(CARGO) build --locked --release --timings -p rezzy-cli -p rezzy-ffi
-	@echo "Built: target/release/librezzy_ffi.{$(DYLIB_EXT),a} (header: rezzy-ffi/include/rezzy.h)"
+	@echo "Built: target/release/librezzy_ffi.$(DYLIB_EXT) and target/release/librezzy_ffi.a (header: rezzy-ffi/include/rezzy.h)"
 
 .PHONY: rust/so
 rust/so: ##H Compile shared object (librezzy.so) from the library

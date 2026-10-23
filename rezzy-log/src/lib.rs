@@ -192,8 +192,13 @@ mod subscriber {
     ///
     /// Supported values are `off`, `error`, `warn`, `info`, `debug`, and `trace`.
     /// ANSI colors are used when stderr is a terminal and `NO_COLOR` is unset.
-    /// Calls after a subscriber has already been installed are ignored.
+    /// Only the first call has any effect; later calls are ignored.
     pub fn init() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(install);
+    }
+
+    fn install() {
         let max_level = std::env::var("RUST_LOG")
             .ok()
             .as_deref()
