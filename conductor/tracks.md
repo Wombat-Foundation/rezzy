@@ -1,6 +1,6 @@
 # Tracks Registry
 
-This registry tracks the complete historical feature trajectory of `rezzy` (`01`–`12`) across 924 commits and 16 technical/audit documents, followed by the 6 standalone public-safety and architectural remediation tracks (`13`–`18`).
+This registry tracks the complete historical feature trajectory of `rezzy` (`01`–`12`) across 924 commits and 16 technical/audit documents, followed by **12 standalone Stage B remediation tracks (`13`–`24`)** that account for **100% (82/82)** of the structured findings across the 8-perspective critiques (`review.md`) and [`rezzy_docs_public_safety_audit.md`](./audits/rezzy_docs_public_safety_audit.md).
 
 ---
 
@@ -64,30 +64,60 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 ---
 
-- [ ] **Track: 13 — P0 Remediation: Enforce Unconditional Fail-Closed Cross-Room Auth Rejection (`MSC4307` Rule 2.5)**
+- [ ] **Track: 13 — P0 Remediation: Enforce Unconditional Fail-Closed Cross-Room Auth Rejection (`MSC4307` Rule 2.5) & V12 Rule 10.4**
   *Link: [./tracks/13_p0_msc4307_fail_closed_auth/index.md](./tracks/13_p0_msc4307_fail_closed_auth/index.md)*
 
 ---
 
-- [ ] **Track: 14 — P0 Remediation: Relocate Retired Causal Domination Operator (`cdo.rs`) Out of Production `src/`**
+- [ ] **Track: 14 — P0 Remediation: Relocate Retired Causal Domination Operator (`cdo.rs`) Out of Production `src/` & Harden Sorting**
   *Link: [./tracks/14_p0_retire_cdo_from_src/index.md](./tracks/14_p0_retire_cdo_from_src/index.md)*
 
 ---
 
-- [ ] **Track: 15 — P0 Remediation: Seal Permissive Canonical JSON & Lossy `as_f64` Integer Rounding (`rezzy-json`)**
+- [ ] **Track: 15 — P0 Remediation: Seal Permissive Canonical JSON, Fix `> u64::MAX` Fallthrough & Lossy `as_f64` (`rezzy-json`)**
   *Link: [./tracks/15_p0_strict_canonical_json_bounds/index.md](./tracks/15_p0_strict_canonical_json_bounds/index.md)*
 
 ---
 
-- [ ] **Track: 16 — P0 Remediation: Prevent Mixed-Federation Split-Brain (`V2.1.1` `SEND01` & `Ed25519` Verification Guards)**
+- [ ] **Track: 16 — P0 Remediation: Prevent Mixed-Federation Split-Brain (`V2.1.1` `SEND01`, Lazy `unconflicted_state` & `LtHash` Guards)**
   *Link: [./tracks/16_p0_federation_consensus_guards/index.md](./tracks/16_p0_federation_consensus_guards/index.md)*
 
 ---
 
-- [ ] **Track: 17 — P1 Remediation: Implement Tier-2 Pre-Auth Validation (`validate.rs`, `fork.rs`) & Bucket-Split E2E Tests**
+- [ ] **Track: 17 — P1 Remediation: Implement Tier-2 Pre-Auth Validation (`validate.rs`, `fork.rs`), Fair Prefix Queueing & Bucket-Split E2E**
   *Link: [./tracks/17_p1_tier2_validation_and_e2e_recon/index.md](./tracks/17_p1_tier2_validation_and_e2e_recon/index.md)*
 
 ---
 
-- [ ] **Track: 18 — P1 Remediation: Harden Hash Tables Against HashDoS & Land `u32` Arena Interning (`InternId`)**
+- [ ] **Track: 18 — P1 Remediation: Harden Hash Tables Against HashDoS, `DenseIndex` Short-Circuit & `u32` Arena Interning (`InternId`)**
   *Link: [./tracks/18_p1_hashdos_and_arena_interning/index.md](./tracks/18_p1_hashdos_and_arena_interning/index.md)*
+
+---
+
+- [ ] **Track: 19 — P1 Remediation: State Resolution Conflicted-Keys Isolation, Cycle Tie-Breaks & Lean 4 Proof Parity (`F-01.3`..`F-02.7`)**
+  *Link: [./tracks/19_p1_stateres_api_panics_and_conflicted_keys/index.md](./tracks/19_p1_stateres_api_panics_and_conflicted_keys/index.md)*
+
+---
+
+- [ ] **Track: 20 — P1 Remediation: I/O Sandwich Subgraph Bounds, `LocalAuthCache` Zero-Clone, Ingest Hash Verification & Rule 11 (`F-03.2`..`F-06-06`)**
+  *Link: [./tracks/20_p1_auth_memory_bounds_and_ingest_hardening/index.md](./tracks/20_p1_auth_memory_bounds_and_ingest_hardening/index.md)*
+
+---
+
+- [ ] **Track: 21 — P1 Remediation: HAMT Domain Separation, `PersistentOrdMap` Rebalancing, Cold Snapshot Diffing & `MSC4242` State DAG Bounds (`F-04-02`..`F-09-05`)**
+  *Link: [./tracks/21_p1_hamt_ordmap_and_state_dag_hardening/index.md](./tracks/21_p1_hamt_ordmap_and_state_dag_hardening/index.md)*
+
+---
+
+- [ ] **Track: 22 — P1 Remediation: Thread-Safe `LeanEventCache`, Fallible `EventProvider` Error Propagation & `DenseIndex`/Roaring Consolidation (`F-07-02`..`F-09-06`)**
+  *Link: [./tracks/22_p1_lazy_cache_sync_and_roaring_consolidation/index.md](./tracks/22_p1_lazy_cache_sync_and_roaring_consolidation/index.md)*
+
+---
+
+- [ ] **Track: 23 — P2 Remediation: `LtHash` Custom DST Length-Prefix Framing, `AES-256-CTR` Profile, Stack Reduction & Constant-Time Equality (`F-08-04`..`F-08-08`)**
+  *Link: [./tracks/23_p2_lthash_domain_framing_and_constant_time/index.md](./tracks/23_p2_lthash_domain_framing_and_constant_time/index.md)*
+
+---
+
+- [ ] **Track: 24 — P2 Remediation: `rezzy-json` Float/Lookup Hardening, `rezzy-recon` Phase-1 Gate & `h64` Chunk Fix, `rezzy-cli` `Zeroize` & Cycle Signaling (`F-09-07`..`T12-F5`)**
+  *Link: [./tracks/24_p2_json_recon_cli_hardening_and_zeroize/index.md](./tracks/24_p2_json_recon_cli_hardening_and_zeroize/index.md)*
