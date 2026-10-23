@@ -1,0 +1,24 @@
+{
+  "track_id": "09_perf_interning_benchmarks_20260920",
+  "title": "Performance Audits, StateKey Interning, DenseIndex & Benchmark Suite",
+  "type": "architecture",
+  "status": "completed",
+  "epoch": "Jul - Oct 2026 (v0.5.0 - 0.6.0)",
+  "commit_range": "5384219..0d0a87d",
+  "created_at": "2026-07-02T08:11:38-04:00",
+  "updated_at": "2026-10-18T22:53:21-04:00",
+  "linked_docs": [
+    "../../../docs/perf_audits.md",
+    "../../../docs/tech_debt.md",
+    "../../../docs/format.sh",
+    "../../audits/rezzy_docs_public_safety_audit.md"
+  ],
+  "public_safety_audit_summary": {
+    "risk_level": "High",
+    "primary_concerns": [
+      "High (HashDoS / Cold Cliff): docs/perf_audits.md documents replacing SipHash with non-cryptographic foldhash (FastMap/FastSet) on internal maps keyed by external network-supplied EventIds/state_keys, exposing a HashDoS vector if an attacker grinds colliding IDs; additionally, O(1) Arc::ptr_eq fast paths experience a cold-deserialization performance cliff after process restart or cache eviction.",
+      "High (Degradation at Scale & Open Test Debt): docs/tech_debt.md documents that Arc<str>-backed InternedKey suffers +3% to +16% performance degradation at 5,000+ room members due to cross-core atomic refcount cache-line contention, while u32 arena interning (InternId) remains parked on a HRTB lifetime bound, and multi-round bucket-split retry lacks a deterministic E2E test.",
+      "Low (Tooling Hygiene): docs/format.sh invokes an unpinned global prettier binary with blind --write . across docs/."
+    ]
+  }
+}
