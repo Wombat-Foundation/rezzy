@@ -12,5 +12,5 @@ Per [`docs/json_numeric_limits.md`](../../../docs/json_numeric_limits.md) and [`
    - Replace or deprecate lossy `Number::as_f64()` for integers outside `[-2^53 + 1, 2^53 - 1]` in favor of checked conversion (`try_as_f64_exact()`).
 
 ## 3. Acceptance Criteria
-- [ ] Production hashing and signing pathways cannot accidentally invoke permissive canonical JSON serialization.
-- [ ] Integers outside `[-2^53 + 1, 2^53 - 1]` fail closed during strict parsing/canonicalization and exact numeric access.
+- [x] Production hashing and signing pathways cannot accidentally invoke permissive canonical JSON serialization.
+- [x] Integers outside `[-2^53 + 1, 2^53 - 1]` fail closed during strict parsing/canonicalization and exact numeric access.
