@@ -1718,6 +1718,11 @@ pub trait EventLike: DagNode {
         false
     }
 
+    /// The room identifier associated with this event, if populated by the caller.
+    fn room_id(&self) -> Option<&str> {
+        None
+    }
+
     // === Content accessors — default impls delegate to self.content() ===
 
     /// Returns the `membership` field from event content.
@@ -1851,6 +1856,10 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEvent<Id, C,
     fn soft_fail(&self) -> bool {
         self.soft_fail
     }
+
+    fn room_id(&self) -> Option<&str> {
+        self.room_id.as_deref()
+    }
 }
 
 // ── RawEvent + ParsedEvent: zero-boilerplate adapter ────────────────
@@ -1961,6 +1970,11 @@ pub trait RawEvent {
 
     /// Whether this event was soft-failed by the homeserver.
     fn raw_soft_fail(&self) -> bool;
+
+    /// The room identifier associated with this event, if populated by the caller.
+    fn raw_room_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Wraps a `&T` (where `T: RawEvent`) with a cached parsed
@@ -2069,6 +2083,10 @@ impl<T: RawEvent> EventLike for ParsedEvent<'_, T> {
 
     fn soft_fail(&self) -> bool {
         self.raw.raw_soft_fail()
+    }
+
+    fn room_id(&self) -> Option<&str> {
+        self.raw.raw_room_id()
     }
 }
 
@@ -2530,6 +2548,10 @@ impl<Id: EventId, C: EventContent, K: AsRef<str>> EventLike for LeanEventRef<'_,
     fn soft_fail(&self) -> bool {
         self.soft_fail
     }
+
+    fn room_id(&self) -> Option<&str> {
+        self.room_id.map(RoomId::as_ref)
+    }
 }
 
 /// Trait abstracting event content access for state resolution.
@@ -2661,8 +2683,18 @@ pub trait EventContent: Clone + core::fmt::Debug + Default {
     fn visit_user_keys<'a>(&'a self, visitor: &mut dyn FnMut(&'a str));
 
     /// Rule 10.4 (V12): Returns true if the `users` map contains the given user ID.
-    fn has_user_in_users(&self, _user_id: &str) -> bool {
-        false
+    ///
+    /// Defaults to scanning [`visit_user_keys`](Self::visit_user_keys) so custom
+    /// [`EventContent`] implementations fail closed on creator-in-`users` checks
+    /// unless they provide a faster direct lookup.
+    fn has_user_in_users(&self, user_id: &str) -> bool {
+        let mut found = false;
+        self.visit_user_keys(&mut |key| {
+            if key == user_id {
+                found = true;
+            }
+        });
+        found
     }
 }
 
