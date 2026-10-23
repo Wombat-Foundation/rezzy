@@ -542,6 +542,31 @@ mod canonicalization_error_tests {
             Err(CanonicalizationError::OutOfRangeNumber)
         );
     }
+
+    #[test]
+    fn validate_rejects_integers_beyond_u64_max_and_i64_min() {
+        for raw in [
+            "18446744073709551616",
+            "-9223372036854775809",
+            "-18446744073709551616",
+            "1267650600228229401496703205376",
+        ] {
+            let crate::json::Value::Number(n) =
+                crate::json::Value::parse(raw).expect("valid JSON integer")
+            else {
+                panic!("expected Value::Number for {raw}");
+            };
+            assert!(
+                n.as_i64().is_none() && n.as_u64().is_none(),
+                "{raw} must overflow both i64 and u64"
+            );
+            assert_eq!(
+                validate_canonical_number(&n),
+                Err(CanonicalizationError::OutOfRangeNumber),
+                "validate_canonical_number must reject wide integer {raw}"
+            );
+        }
+    }
 }
 
 /// The set of `content` keys preserved for an event type upon redaction.
@@ -4382,6 +4407,39 @@ mod canonical_parity_tests {
         let oor = json!({"n": 9_007_199_254_740_993_u64});
         let mut out = String::new();
         assert!(write_content_hash_canonical(&mut out, &oor, true).is_err());
+    }
+
+    /// Regression test for T10-F1: integers exceeding `u64::MAX` or `< i64::MIN`
+    /// where both `as_i64()` and `as_u64()` return `None` must be rejected by
+    /// `write_content_hash_canonical`, `compute_content_hash`, `reference_hash`,
+    /// and `try_canonical_redacted_json` in strict v6+ room versions.
+    #[test]
+    fn strict_version_rejects_beyond_u64_max_and_i64_min() {
+        for raw_num in [
+            "18446744073709551616",
+            "-9223372036854775809",
+            "-18446744073709551616",
+            "1267650600228229401496703205376",
+        ] {
+            let raw_event = alloc::format!(
+                r#"{{"type":"m.room.create","sender":"@mallory:evil.org","origin_server_ts":1,"depth":{raw_num},"content":{{"creator":"@mallory:evil.org","nonce":{raw_num}}}}}"#
+            );
+            let event = crate::json::Value::parse(&raw_event).expect("parse wide-int event");
+            for rv in ["6", "10", "12"] {
+                assert!(
+                    super::compute_content_hash(&event, rv).is_err(),
+                    "compute_content_hash must reject {raw_num} in room v{rv}"
+                );
+                assert!(
+                    super::reference_hash(&event, rv).is_err(),
+                    "reference_hash must reject {raw_num} in room v{rv}"
+                );
+                assert!(
+                    super::try_canonical_redacted_json(&event, rv).is_err(),
+                    "try_canonical_redacted_json must reject {raw_num} in room v{rv}"
+                );
+            }
+        }
     }
 
     /// Valid integers must pass strict v6+ validation.
