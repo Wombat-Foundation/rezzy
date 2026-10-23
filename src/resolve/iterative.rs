@@ -487,7 +487,11 @@ where
         .or_else(|| {
             conflicted_events
                 .values()
-                .filter(|ev| ev.event_type == crate::basespec::event_types::M_ROOM_CREATE)
+                .filter(|ev| {
+                    !ev.rejected
+                        && ev.prev_events.is_empty()
+                        && ev.event_type == crate::basespec::event_types::M_ROOM_CREATE
+                })
                 .min_by_key(|ev| &ev.event_id)
         });
 
