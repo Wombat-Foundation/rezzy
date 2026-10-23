@@ -370,6 +370,7 @@ impl BucketExchange {
         }
         all.sort_unstable_by_key(bucket_range_start);
         crate::triage::validate_bucket_requests(&all)?;
+        all.sort_unstable_by_key(|request| (request.depth, bucket_range_start(request)));
         let mut exchange = Self::new(
             alloc::vec::Vec::new(),
             max_rounds,
@@ -384,7 +385,9 @@ impl BucketExchange {
         let first = exchange
             .drain_pending_round()
             .map_err(|_| AlgebraicError::InvalidSketchCapacity)?;
-        Ok((exchange, first.into()))
+        let mut first: alloc::vec::Vec<BucketRequest> = first.into();
+        first.sort_unstable_by_key(bucket_range_start);
+        Ok((exchange, first))
     }
 
     /// Prefixes the exchange gave up on. The same list is returned in
@@ -740,7 +743,7 @@ impl BucketExchange {
         }
         self.pending
             .make_contiguous()
-            .sort_unstable_by_key(bucket_range_start);
+            .sort_unstable_by_key(|request| (request.depth, bucket_range_start(request)));
 
         if !had_failures && self.pending.is_empty() {
             return self.complete_action();
@@ -849,8 +852,10 @@ impl BucketExchange {
             }
             return self.partial_action();
         };
+        let mut requests: alloc::vec::Vec<BucketRequest> = requests.into_iter().collect();
+        requests.sort_unstable_by_key(bucket_range_start);
         ClientAction::BucketSketches {
-            requests: requests.into_iter().collect(),
+            requests,
             accumulated_roots: self.accumulated_roots.clone(),
         }
     }
@@ -2611,5 +2616,50 @@ mod tests {
         assert_eq!(bucket_round_depth(128), 7);
         assert_eq!(bucket_round_depth(255), 7);
         assert_eq!(bucket_round_depth(256), 8);
+    }
+
+    #[test]
+    fn bucket_exchange_schedules_pending_bfs_by_depth_before_prefix_preventing_starvation() {
+        let max = MAX_BUCKET_SKETCH_CAPACITY;
+        // Budget 1 bucket per round so pending queue ordering across rounds is observable.
+        let mut exchange = BucketExchange::new(vec![], 8, 1, 1024);
+
+        // Round 1: High-prefix bucket (depth 1, prefix 1 => 0x8000...) fails at max capacity,
+        // splitting 1 bit into 2 children at depth 2 (prefixes 2 and 3, capacity 10).
+        // Prefix 2 is emitted now; prefix 3 (0xc000...) remains pending at depth 2.
+        let r1 = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(1, 1)],
+            },
+            &[BucketRequest::new(1, 1, max)],
+            None,
+        );
+        let ClientAction::BucketSketches { requests: req1, .. } = r1 else {
+            panic!("expected BucketSketches in round 1, got {r1:?}");
+        };
+        assert_eq!(req1, vec![BucketRequest::new(2, 2, 10)]);
+
+        // Round 2: Deeper low-prefix bucket (depth 3, prefix 0 => 0x0000...) fails at max
+        // capacity, splitting 1 bit into 2 children at depth 4 (prefixes 0 and 1, capacity 10).
+        // Under BFS (depth, bucket_range_start) ordering, the shallower depth-2 pending
+        // bucket (prefix 3 at 0xc000...) MUST be scheduled ahead of the deeper depth-4
+        // children at 0x0000...!
+        let r2 = exchange.advance(
+            BucketDecodeBatch {
+                successful_buckets: vec![],
+                failed_buckets: vec![(3, 0)],
+            },
+            &[BucketRequest::new(3, 0, max)],
+            None,
+        );
+        let ClientAction::BucketSketches { requests: req2, .. } = r2 else {
+            panic!("expected BucketSketches in round 2, got {r2:?}");
+        };
+        assert_eq!(
+            req2,
+            vec![BucketRequest::new(2, 3, 10)],
+            "shallower high-prefix bucket at depth 2 must not be starved by deeper low-prefix splits at depth 4"
+        );
     }
 }

@@ -440,15 +440,15 @@ fn build_state_map<S: std::hash::BuildHasher>(
 ) -> HashMap<(EventType, String), String> {
     let mut state_map = HashMap::new();
     for ev in sorted_events {
-        if raw_map
-            .get(&ev.event_id)
-            .is_some_and(|r| r.get(FIELD_STATE_KEY).is_some())
+        if !ev.rejected
+            && raw_map
+                .get(&ev.event_id)
+                .is_some_and(|r| r.get(FIELD_STATE_KEY).is_some())
         {
-            let key = (
-                EventType::from(ev.event_type.clone()),
-                ev.state_key.clone().unwrap(),
-            );
-            state_map.insert(key, ev.event_id.clone());
+            if let Some(state_key) = ev.accepted_state_key() {
+                let key = (EventType::from(ev.event_type.clone()), state_key.clone());
+                state_map.insert(key, ev.event_id.clone());
+            }
         }
     }
     state_map
@@ -645,7 +645,7 @@ pub fn apply_global_power_levels<S: std::hash::BuildHasher>(
         M_ROOM_MEMBER,
     ];
     for ev in events_map.values() {
-        if power_event_types.contains(&ev.event_type.as_str()) {
+        if !ev.rejected && power_event_types.contains(&ev.event_type.as_str()) {
             let mut power_ev = ev.clone();
             if (!creator_user_id.is_empty() && ev.sender == creator_user_id)
                 || ev.event_type == M_ROOM_CREATE

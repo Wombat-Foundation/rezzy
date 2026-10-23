@@ -19,6 +19,8 @@
 
 pub mod roaring;
 pub mod user;
+pub mod validate;
+pub use validate::*;
 
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};

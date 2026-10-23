@@ -647,3 +647,27 @@ fn decompress_accepts_step_with_nonzero_count_at_empty_position() {
     );
     assert!(result.is_ok());
 }
+
+#[test]
+fn checked_count_sum_returns_none_on_u64_overflow() {
+    use rezzy::merkle::causal::checked_count_sum;
+    assert_eq!(checked_count_sum(10, 20), Some(30));
+    assert_eq!(checked_count_sum(u64::MAX, 0), Some(u64::MAX));
+    assert_eq!(checked_count_sum(u64::MAX, 1), None);
+    assert_eq!(checked_count_sum(u64::MAX / 2 + 2, u64::MAX / 2 + 2), None);
+}
+
+#[test]
+fn decompress_causal_path_rejects_u64_count_overflow() {
+    let step_max = CompressedCausalStep::Step(CausalProofStep {
+        hash: [0x11; 32],
+        count: u64::MAX,
+    });
+    let step_one = CompressedCausalStep::Step(CausalProofStep {
+        hash: [0x22; 32],
+        count: 1,
+    });
+    let result = decompress_causal_path(2, &[step_max, step_one]);
+    assert_eq!(result, Err(CausalProofError::CountOverflow));
+}
+

@@ -12,15 +12,10 @@
 //!
 //! This file measures **round-trip count**, not round-trip *time* -- the
 //! loop runs in-process with no simulated network latency or serialization
-//! cost. It also does not (yet) cover the over-capacity bucket-split
-//! retry path (`retry_or_split_bucket`'s multi-round escalation): reliably
-//! forcing that deterministically, without either flaking on uniform-random
-//! skew or hand-tuning a hot-bucket construction that hits the round cap,
-//! turned out to need more care than a drive-by add here -- that scenario
-//! is better exercised via `benches/reconcile.rs`'s
-//! `benchmark_bucket_exchange_from_pool` (which already runs multi-round
-//! exchanges at scale) than forced into an always-pass unit test. See
-//! `docs/tech_debt.md` for the follow-up.
+//! cost. It also deterministically covers the over-capacity bucket-split
+//! retry path (`retry_or_split_bucket`'s multi-round escalation down to
+//! `MAX_DEPTH`) and BFS `(depth, bucket_range_start)` pending queue scheduling
+//! so low-prefix wide splits never starve shallower high-prefix buckets.
 
 use rezzy_recon::client::{
     BucketExchange, ClientAction, ReconciliationClient, MAX_BUCKETS_PER_ROUND,
@@ -769,3 +764,278 @@ fn phase_two_failure_is_narrowed_by_rerunning_the_children() {
     }
     assert!(recovered.iter().all(|&r| !in_lost(r)));
 }
+
+/// Regression test for `T11-F1` and `T11-F2`:
+/// A low-prefix bucket (`0x0000...`) that repeatedly undergoes wide 7-bit splits
+/// (128 children per split, grinding down toward `MAX_DEPTH`) alongside a
+/// high-prefix bucket (`0x8000...`) whose children resolve at shallow depth (5)
+/// must NOT starve the shallow high-prefix buckets across rounds.
+#[test]
+fn e2e_low_prefix_wide_split_does_not_starve_high_prefix_shallow_buckets() {
+    let mut shared = Vec::new();
+    for i in 0_u64..64 {
+        shared.push(ElementHash {
+            h64: 0x4000_0000_0000_0000 | (i << 48) | (i + 1),
+            h128: u128::from(i + 1),
+            q3: i,
+        });
+    }
+    let local = Side::new(shared.clone());
+
+    let mut remote_elements = shared;
+    // 40 elements clustered inside the top 56 bits of 0x0000... so every 7-bit wide
+    // split at 0x0000... keeps overflowing child 0 and spawning 128 deeper children.
+    for i in 0_u64..40 {
+        let h64 = i + 1;
+        remote_elements.push(ElementHash {
+            h64,
+            h128: 0x1000_0000 + u128::from(h64),
+            q3: h64,
+        });
+    }
+    // 40 legitimate elements distributed across the 4 depth-5 children of prefix 0x8000...
+    // (10 elements in each of 0x8000..., 0x8800..., 0x9000..., 0x9800...), which fit
+    // easily within capacity 32 at depth 5 once scheduled.
+    let mut high_prefix_expected = Vec::new();
+    for sub in 0_u64..4 {
+        for j in 0_u64..10 {
+            let h64 = 0x8000_0000_0000_0000 | (sub << 59) | ((j + 1) << 32) | (sub * 10 + j + 1);
+            high_prefix_expected.push(h64);
+            remote_elements.push(ElementHash {
+                h64,
+                h128: 0x2000_0000 + u128::from(h64),
+                q3: h64,
+            });
+        }
+    }
+    high_prefix_expected.sort_unstable();
+    let remote = Side::new(remote_elements);
+
+    let client = ReconciliationClient::default().allow_unlimited_delta();
+    let ClientAction::BucketSketches {
+        mut requests,
+        accumulated_roots,
+    } = client.select_action(&local.kernel, remote_digest(&remote.kernel), 0)
+    else {
+        panic!("expected initial BucketSketches");
+    };
+    let estimate = estimate_strata(
+        local.kernel.strata(),
+        remote.kernel.strata(),
+        MAX_STRATA_FACTOR_WORK,
+    )
+    .ok()
+    .map(|e| e.delta);
+
+    let mut exchange = BucketExchange::new(
+        accumulated_roots,
+        rezzy_recon::client::MAX_RECONCILIATION_ROUNDS,
+        MAX_BUCKETS_PER_ROUND,
+        MAX_BUCKETED_SKETCH_CAPACITY,
+    );
+
+    let mut final_action = None;
+    for _round in 0..3 {
+        let action = drive_round(&local, &remote, &mut exchange, &requests, estimate);
+        match action {
+            ClientAction::BucketSketches {
+                requests: next,
+                accumulated_roots: acc,
+            } => {
+                requests = next;
+                final_action = Some(acc);
+            }
+            ClientAction::ResolveRoots { roots, .. } => {
+                final_action = Some(roots);
+                break;
+            }
+            other => panic!("unexpected action {other:?}"),
+        }
+    }
+
+    let accumulated = final_action.expect("at least one round must run");
+    for expected_root in &high_prefix_expected {
+        assert!(
+            accumulated.contains(expected_root),
+            "high-prefix shallow root {expected_root:#x} was starved by low-prefix wide splits"
+        );
+    }
+}
+
+/// Regression test for `T11-F2`:
+/// Deterministic E2E test covering `retry_or_split_bucket`'s multi-round
+/// capacity-then-depth escalation to full convergence (`ResolveRoots`), plus
+/// escalation all the way to `MAX_DEPTH` (64) where `ResolveRoots` holds off
+/// until the `MAX_DEPTH` bucket hits the depth ceiling.
+#[test]
+fn e2e_capacity_split_escalates_to_depth_limit_overflow_before_resolve_roots() {
+    // Part 1: Deterministic capacity-bump -> depth-split -> full convergence via `run_round_trip`.
+    // 48 differing elements total:
+    // - 8 elements in `0x8000...` (`depth = 2, prefix = 2`), which decode in Round 1 (capacity 19).
+    // - 40 elements in `0x0000...` (`depth = 2, prefix = 0`), placed across 2 sub-prefixes at
+    //   `depth = 4` (20 elements in `0x0000...` and 20 elements in `0x1000...`):
+    //   Round 1 (depth 2, cap 19) -> overflows -> Round 2 bumps capacity to 32 (`MAX_BUCKET_SKETCH_CAPACITY`)
+    //   -> overflows -> Round 3 splits to depth 3 (cap 31) -> `(3, 0)` overflows while `(3, 1)` is empty
+    //   -> Round 4 bumps `(3, 0)` capacity to 32 -> overflows
+    //   -> Round 5 splits to depth 4 (cap 31), where `(4, 0)` and `(4, 1)` (20 elements each) decode!
+    let mut generator = Xorshift128::new(77);
+    let mut local = ResidentKernel::new();
+    let mut remote = ResidentKernel::new();
+    let mut local_h64 = Vec::new();
+    let mut remote_h64 = Vec::new();
+    insert_shared_base(
+        &mut generator,
+        &mut local,
+        &mut remote,
+        &mut local_h64,
+        &mut remote_h64,
+        200,
+    );
+    for i in 0_u64..8 {
+        let h64 = 0x8000_0000_0000_0000 | ((i + 1) << 48) | (i + 1);
+        let hash = ElementHash {
+            h64,
+            h128: 0x3000_0000 + u128::from(h64),
+            q3: i + 1,
+        };
+        remote.insert(hash).unwrap();
+        remote_h64.push(h64);
+    }
+    for sub in 0_u64..2 {
+        for j in 0_u64..20 {
+            let h64 = (sub << 60) | ((j + 1) << 32) | (sub * 20 + j + 1);
+            let hash = ElementHash {
+                h64,
+                h128: 0x4000_0000 + u128::from(h64),
+                q3: sub * 20 + j + 1,
+            };
+            remote.insert(hash).unwrap();
+            remote_h64.push(h64);
+        }
+    }
+    local_h64.sort_unstable();
+    remote_h64.sort_unstable();
+
+    let (round_trips, mut roots, terminal) =
+        run_round_trip(&local, &local_h64, &remote_h64, &remote);
+    roots.sort_unstable();
+    assert_eq!(terminal, "ResolveRoots");
+    assert_eq!(
+        round_trips, 5,
+        "must deterministically execute initial -> cap-bump -> 1-bit split -> cap-bump -> 7-bit split"
+    );
+    assert_eq!(roots, symmetric_difference(&local_h64, &remote_h64));
+
+    // Part 2: Verified exchange where 40 elements in `0x8000...` resolve at shallow depth,
+    // while 260 distinct elements (`h64 = 1..=260`, all sharing the 32-bit prefix `0x0000_0000`
+    // and exceeding `MAX_OVERFLOW_BUCKET_CAPACITY = 256` and `MAX_BUCKET_SKETCH_CAPACITY = 32`)
+    // keep splitting all the way down to `MAX_DEPTH` (32), holding off `ResolveRoots` until
+    // `(MAX_DEPTH, 0)` is reached and recorded in `ladder_failed`.
+    let mut shared = Vec::new();
+    for i in 0_u64..64 {
+        shared.push(ElementHash {
+            h64: 0x4000_0000_0000_0000 | (i << 48) | (i + 1),
+            h128: u128::from(i + 1),
+            q3: i + 1,
+        });
+    }
+    let local_side = Side::new(shared.clone());
+
+    let mut remote_elements = shared;
+    let mut split_recoverable_roots = Vec::new();
+    for sub in 0_u64..4 {
+        for j in 0_u64..10 {
+            let h64 = 0x8000_0000_0000_0000 | (sub << 59) | ((j + 1) << 32) | (sub * 10 + j + 1);
+            split_recoverable_roots.push(h64);
+            remote_elements.push(ElementHash {
+                h64,
+                h128: 0x5000_0000 + u128::from(h64),
+                q3: h64,
+            });
+        }
+    }
+    for i in 0_u64..260 {
+        let h64 = i + 1;
+        remote_elements.push(ElementHash {
+            h64,
+            h128: 0x9000_0000 + u128::from(h64),
+            q3: i + 100,
+        });
+    }
+    let remote_side = Side::new(remote_elements);
+
+    let client = ReconciliationClient::default().allow_unlimited_delta();
+    let ClientAction::BucketSketches {
+        mut requests,
+        accumulated_roots,
+    } = client.select_action(&local_side.kernel, remote_digest(&remote_side.kernel), 0)
+    else {
+        panic!("expected initial BucketSketches");
+    };
+    let estimate = estimate_strata(
+        local_side.kernel.strata(),
+        remote_side.kernel.strata(),
+        MAX_STRATA_FACTOR_WORK,
+    )
+    .ok()
+    .map(|e| e.delta);
+
+    let mut exchange = BucketExchange::new(
+        accumulated_roots,
+        40,
+        MAX_BUCKETS_PER_ROUND,
+        MAX_BUCKETED_SKETCH_CAPACITY,
+    );
+
+    let mut reached_max_depth = false;
+    let mut intermediate_accumulated = Vec::new();
+    let mut terminal_action = None;
+    for _round in 0..40 {
+        if requests.iter().any(|r| r.depth == rezzy_recon::MAX_DEPTH) {
+            reached_max_depth = true;
+        }
+        let action = drive_round(&local_side, &remote_side, &mut exchange, &requests, estimate);
+        match action {
+            ClientAction::BucketSketches {
+                requests: next,
+                accumulated_roots: acc,
+            } => {
+                requests = next;
+                intermediate_accumulated = acc;
+            }
+            other => {
+                terminal_action = Some(other);
+                break;
+            }
+        }
+    }
+
+    assert!(
+        reached_max_depth,
+        "split path must descend all the way to MAX_DEPTH (32) before ResolveRoots fires"
+    );
+    for root in &split_recoverable_roots {
+        assert!(
+            intermediate_accumulated.contains(root),
+            "shallow sibling root {root:#x} must already be accumulated while MAX_DEPTH split continues"
+        );
+    }
+    let Some(ClientAction::ResolveRoots {
+        roots: final_roots,
+        ladder_failed,
+    }) = terminal_action
+    else {
+        panic!(
+            "expected terminal ResolveRoots with MAX_DEPTH ladder_failed, got {terminal_action:?}"
+        );
+    };
+    assert_eq!(
+        ladder_failed,
+        vec![(rezzy_recon::MAX_DEPTH, 0)],
+        "MAX_DEPTH overflow must record exact (MAX_DEPTH, 0) prefix in ladder_failed"
+    );
+    for root in &split_recoverable_roots {
+        assert!(final_roots.contains(root));
+    }
+}
+

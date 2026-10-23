@@ -64,6 +64,7 @@ pub mod auth;
 pub mod basespec;
 pub mod bitmap;
 pub mod cuckoo_verify;
+pub mod dag;
 pub mod dense_index;
 pub mod hamt;
 pub mod incremental;
@@ -75,8 +76,10 @@ pub mod signing;
 pub mod state;
 pub mod warnings;
 
+pub use auth::validate::*;
 pub use basespec::event_types::EventType;
 pub use basespec::rezzy_types::*;
+pub use dag::*;
 pub use dense_index::{DenseIndex, IndexTooLarge};
 pub use raw_event::*;
 pub use resolve::*;

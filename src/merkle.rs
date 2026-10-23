@@ -845,12 +845,13 @@ pub mod causal {
                     .unwrap_or((empty[d.wrapping_add(1)], 0));
 
                 let node = causal_node(depth, left_hash, left_count, right_hash, right_count);
+                let Some(parent_count) = count_sum(left_count, right_count) else {
+                    return false;
+                };
                 // Node at depth d is stored with prefix bits 0..d-1 set
                 // (= child_prefix with bit d cleared = left_prefix).
-                self.nodes.insert(
-                    (depth, left_prefix),
-                    (node, count_sum(left_count, right_count)),
-                );
+                self.nodes
+                    .insert((depth, left_prefix), (node, parent_count));
             }
             true
         }
@@ -943,7 +944,7 @@ pub mod causal {
     }
 
     /// Error type for compressed causal-trie proof operations.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum CausalProofError {
         /// A compressed step references a sibling depth outside
         /// `1..=CAUSAL_DEPTH`, or `terminal_depth` itself exceeds
@@ -984,6 +985,8 @@ pub mod causal {
         /// that adjacent `EmptyRun` rejection does: every step in a
         /// compressed path is either non-empty or part of a maximal run.
         NonCanonicalStep,
+        /// The cumulative sibling counts in a compressed path overflow `u64::MAX`.
+        CountOverflow,
     }
 
     impl core::fmt::Display for CausalProofError {
@@ -1018,6 +1021,9 @@ pub mod causal {
                     "causal proof: step carries canonical-empty value; \
                                  use EmptyRun instead",
                 ),
+                Self::CountOverflow => {
+                    f.write_str("causal proof: cumulative sibling counts overflow u64")
+                }
             }
         }
     }
@@ -1105,6 +1111,7 @@ pub mod causal {
         let empty = empty_table();
         let mut out: Vec<CausalProofStep> = Vec::new();
         let mut prev_was_empty_run = false;
+        let mut cumulative_count: u64 = 0;
 
         for step in compressed {
             match step {
@@ -1120,6 +1127,8 @@ pub mod causal {
                     {
                         return Err(CausalProofError::NonCanonicalStep);
                     }
+                    cumulative_count = checked_count_sum(cumulative_count, s.count)
+                        .ok_or(CausalProofError::CountOverflow)?;
                     prev_was_empty_run = false;
                     out.push(*s);
                 }
@@ -1400,14 +1409,17 @@ pub mod causal {
         )
     }
 
-    /// Sums two subtree/sibling counts. A locally built causal set's
-    /// population is bounded by the number of distinct 32-byte keys held in
-    /// memory, so this sum cannot reach `u64::MAX`; `saturating_add` avoids a
-    /// panic path without changing any reachable result. Verification of an
-    /// untrusted path uses `checked_add` in `verify_causal_path` and rejects
-    /// overflow, as the draft's "Room-version validity" section requires.
-    fn count_sum(a: u64, b: u64) -> u64 {
-        a.saturating_add(b)
+    /// Checked addition of two causal-trie subtree/sibling counts (`T11-F3`).
+    ///
+    /// Returns `None` if `a + b` overflows `u64::MAX`, matching MSC4511's
+    /// room-version validity requirement that count overflow is rejected.
+    #[must_use]
+    pub fn checked_count_sum(a: u64, b: u64) -> Option<u64> {
+        a.checked_add(b)
+    }
+
+    fn count_sum(a: u64, b: u64) -> Option<u64> {
+        checked_count_sum(a, b)
     }
 
     /// Recomputes a causal trie root from a terminal node (either a
@@ -1451,7 +1463,7 @@ pub mod causal {
                     causal_node(depth_u16(depth), cur_hash, cur_count, step.hash, step.count)
                 }
             };
-            cur_count = match cur_count.checked_add(step.count) {
+            cur_count = match count_sum(cur_count, step.count) {
                 Some(sum) => sum,
                 None => return false,
             };
@@ -1512,7 +1524,7 @@ pub mod causal {
                     right_hash,
                     right_count,
                 ),
-                count_sum(left_count, right_count),
+                count_sum(left_count, right_count).expect("in-memory key set count fits in u64"),
             )
         }
 
@@ -1588,7 +1600,8 @@ pub mod causal {
                             right_hash,
                             right_count,
                         ),
-                        count_sum(left_count, right_count),
+                        count_sum(left_count, right_count)
+                            .expect("in-memory key set count fits in u64"),
                     ),
                 );
             }
