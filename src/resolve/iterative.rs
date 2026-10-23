@@ -1950,4 +1950,70 @@ mod tests {
             "replay trace: {trace:?}"
         );
     }
+
+    /// Regression test (`F-02.4`): When `m.room.create` is absent from `unconflicted_state`,
+    /// `execute_power_phase`'s slow-path scan over `conflicted_events` must filter out
+    /// rejected events (`ev.rejected`) and non-root events (`!ev.prev_events.is_empty()`)
+    /// before selecting the lexicographically smallest `event_id`.
+    #[test]
+    fn execute_power_phase_create_slow_path_filters_rejected_and_non_root() {
+        let rejected_create = LeanEvent::<String> {
+            event_id: "$a_rejected_create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@attacker:example.com".into(),
+            rejected: true,
+            prev_events: Vec::new(),
+            content: crate::json!({ "creator": "@attacker:example.com" }),
+            ..Default::default()
+        };
+        let non_root_create = LeanEvent::<String> {
+            event_id: "$b_non_root_create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@attacker:example.com".into(),
+            rejected: false,
+            prev_events: alloc::vec!["$some_parent".into()],
+            content: crate::json!({ "creator": "@attacker:example.com" }),
+            ..Default::default()
+        };
+        let valid_create = LeanEvent::<String> {
+            event_id: "$c_valid_create".into(),
+            event_type: "m.room.create".into(),
+            state_key: Some(String::new()),
+            sender: "@alice:example.com".into(),
+            rejected: false,
+            prev_events: Vec::new(),
+            content: crate::json!({ "creator": "@alice:example.com" }),
+            ..Default::default()
+        };
+
+        let mut conflicted: HashMap<String, LeanEvent> = HashMap::new();
+        conflicted.insert(rejected_create.event_id.clone(), rejected_create);
+        conflicted.insert(non_root_create.event_id.clone(), non_root_create);
+        conflicted.insert(valid_create.event_id.clone(), valid_create);
+
+        let unconflicted: SharedState<String, String> = SharedState::new();
+        let auth_context: HashMap<String, LeanEvent> = HashMap::new();
+        let original_conflicted_keys = prepare_conflicted_and_keys(
+            &conflicted,
+            &auth_context,
+            StateResVersion::V2_1,
+        );
+
+        let (_sort_ctx, _power, _non_power, create_ev) = execute_power_phase(
+            &unconflicted,
+            &conflicted,
+            &auth_context,
+            &original_conflicted_keys,
+            StateResVersion::V2_1,
+            &String::new(),
+        );
+
+        assert_eq!(
+            create_ev.map(|ev| ev.event_id.as_str()),
+            Some("$c_valid_create"),
+            "slow-path m.room.create selection must skip rejected and non-root events"
+        );
+    }
 }
