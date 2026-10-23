@@ -64,7 +64,7 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 ---
 
-- [ ] **Track: 13 — P0 Remediation: Enforce Unconditional Fail-Closed Cross-Room Auth Rejection (`MSC4307` Rule 2.5) & V12 Rule 10.4**
+- [~] **Track: 13 — P0 Remediation: Enforce Unconditional Fail-Closed Cross-Room Auth Rejection (`MSC4307` Rule 2.5) & V12 Rule 10.4**
   *Link: [./tracks/13_p0_msc4307_fail_closed_auth/index.md](./tracks/13_p0_msc4307_fail_closed_auth/index.md)*
 
 ---

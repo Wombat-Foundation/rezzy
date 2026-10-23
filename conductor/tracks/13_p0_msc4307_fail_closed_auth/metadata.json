@@ -2,13 +2,13 @@
   "track_id": "13_p0_msc4307_fail_closed_auth",
   "title": "P0 Remediation: Enforce Unconditional Fail-Closed Cross-Room Auth Rejection (MSC4307 Rule 2.5)",
   "type": "compliance",
-  "status": "new",
+  "status": "in_progress",
   "priority": "P0",
   "origin_tracks": [
     "06_spec_compliance_v1_v12_20260702"
   ],
   "created_at": "2026-10-23T06:35:00Z",
-  "updated_at": "2026-10-23T06:35:00Z",
+  "updated_at": "2026-10-23T12:40:00Z",
   "linked_docs": [
     "../../../docs/spec_audit.md",
     "../../../docs/spec_coverage.csv",
