@@ -2973,6 +2973,66 @@ mod tests {
     fn number_as_f64_is_finite_only() {
         let value = Value::parse("1e400").unwrap();
         assert_eq!(value.as_f64(), None);
+        assert_eq!(value.try_as_f64_exact(), None);
+    }
+
+    #[test]
+    fn number_try_as_f64_exact_enforces_canonical_integer_bounds() {
+        // Exact safe-integer boundaries: 2^53 - 1 and -(2^53 - 1) succeed.
+        for (raw, expected) in [
+            ("0", 0.0_f64),
+            ("42", 42.0_f64),
+            ("9007199254740991", 9_007_199_254_740_991.0_f64),
+            ("-9007199254740991", -9_007_199_254_740_991.0_f64),
+        ] {
+            let parsed = Value::parse(raw).unwrap();
+            let Value::Number(ref num) = parsed else {
+                panic!("expected Number for {raw}");
+            };
+            assert_eq!(
+                num.try_as_f64_exact(),
+                Some(expected),
+                "try_as_f64_exact must accept canonical integer {raw}"
+            );
+            assert_eq!(parsed.try_as_f64_exact(), Some(expected));
+        }
+
+        // Out-of-range integers: 2^53, -2^53, 2^53 + 1, Snowflake IDs,
+        // u64::MAX, and > u64::MAX must all return None from try_as_f64_exact.
+        for out_of_range in [
+            "9007199254740992",
+            "-9007199254740992",
+            "9007199254740993",
+            "-9007199254740993",
+            "175928847299117063",
+            "9223372036854775807",
+            "-9223372036854775808",
+            "18446744073709551615",
+            "18446744073709551616",
+            "-18446744073709551616",
+            "1267650600228229401496703205376",
+        ] {
+            let parsed = Value::parse(out_of_range).unwrap();
+            let Value::Number(ref num) = parsed else {
+                panic!("expected Number for {out_of_range}");
+            };
+            assert_eq!(
+                num.try_as_f64_exact(),
+                None,
+                "try_as_f64_exact must reject out-of-range integer {out_of_range}"
+            );
+            assert_eq!(
+                parsed.try_as_f64_exact(),
+                None,
+                "Value::try_as_f64_exact must reject out-of-range integer {out_of_range}"
+            );
+        }
+
+        // Finite floating-point literals remain accessible through try_as_f64_exact.
+        let frac = Value::parse("1.5").unwrap();
+        assert_eq!(frac.try_as_f64_exact(), Some(1.5));
+        let neg_zero = Value::parse("-0").unwrap();
+        assert_eq!(neg_zero.try_as_f64_exact(), Some(-0.0));
     }
 
     /// The boundary values that separate the three numeric ranges.
