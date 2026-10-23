@@ -542,6 +542,31 @@ mod canonicalization_error_tests {
             Err(CanonicalizationError::OutOfRangeNumber)
         );
     }
+
+    #[test]
+    fn validate_rejects_integers_beyond_u64_max_and_i64_min() {
+        for raw in [
+            "18446744073709551616",
+            "-9223372036854775809",
+            "-18446744073709551616",
+            "1267650600228229401496703205376",
+        ] {
+            let crate::json::Value::Number(n) =
+                crate::json::Value::parse(raw).expect("valid JSON integer")
+            else {
+                panic!("expected Value::Number for {raw}");
+            };
+            assert!(
+                n.as_i64().is_none() && n.as_u64().is_none(),
+                "{raw} must overflow both i64 and u64"
+            );
+            assert_eq!(
+                validate_canonical_number(&n),
+                Err(CanonicalizationError::OutOfRangeNumber),
+                "validate_canonical_number must reject wide integer {raw}"
+            );
+        }
+    }
 }
 
 /// The set of `content` keys preserved for an event type upon redaction.
@@ -917,10 +942,12 @@ fn is_supported_room_version(room_version: &str) -> bool {
 /// retained), encoded with the room version's base64 alphabet (STANDARD for
 /// v3, URL-safe for v4+; no `$` prefix).
 ///
-/// Canonicalization is tolerant of out-of-range integers (like Synapse's
-/// `relaxed` mode): the JSON writer serializes whatever numbers are
-/// present rather than rejecting them. Keys are already lexicographically
-/// sorted because `crate::json::Object` is a `BTreeMap`.
+/// For room versions 6 and later, canonicalization strictly enforces Matrix
+/// Canonical JSON integer bounds (`[-(2^53 - 1), 2^53 - 1]`) and rejects
+/// fractional or exponent numbers (including wide integers exceeding
+/// `u64::MAX` or `< i64::MIN`). Only legacy room versions (v3–v5) use relaxed
+/// number serialization. Keys are already lexicographically sorted because
+/// `crate::json::Object` is a `BTreeMap`.
 ///
 /// # Errors
 /// Returns `Err` when the room version has no reference hash (v1/v2, whose
@@ -1138,24 +1165,31 @@ fn write_json_string<W: core::fmt::Write>(out: &mut W, s: &str) -> core::fmt::Re
 
 /// Returns `Ok(())` if `n` is a valid Matrix Canonical JSON integer for
 /// room versions v6 and later. Rejects fractional values, exponent notation,
-/// and out-of-range (beyond ±(2^53 − 1)) numbers.
+/// and out-of-range (beyond ±(2^53 − 1), including `> u64::MAX` and `< i64::MIN`) numbers.
 ///
 /// For legacy room versions (pre-v6) no validation is performed.
 fn validate_canonical_number(n: &crate::json::Number) -> Result<(), CanonicalizationError> {
-    let s = n.to_string();
+    let s = n.as_str();
     // Fractional or exponent form.
-    if s.contains('.') || s.contains('e') || s.contains('E') {
+    if s.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
         return Err(CanonicalizationError::FractionalOrExponentNumber);
     }
-    // Range check: must fit within ±(2^53 − 1).
+    // Range check: must fit within ±(2^53 − 1) and be a canonical integer.
     if let Some(v) = n.as_i64() {
-        if v.unsigned_abs() > (1_u64 << 53) - 1 {
+        if v.unsigned_abs() > crate::json::MAX_SAFE_INTEGER {
             return Err(CanonicalizationError::OutOfRangeNumber);
         }
     } else if let Some(v) = n.as_u64() {
-        if v > (1_u64 << 53) - 1 {
+        if v > crate::json::MAX_SAFE_INTEGER {
             return Err(CanonicalizationError::OutOfRangeNumber);
         }
+    } else {
+        // Integer token whose magnitude exceeds `u64::MAX` or `< i64::MIN`
+        // (both `as_i64()` and `as_u64()` returned `None`).
+        return Err(CanonicalizationError::OutOfRangeNumber);
+    }
+    if !n.is_canonical_integer() {
+        return Err(CanonicalizationError::OutOfRangeNumber);
     }
     Ok(())
 }
@@ -4382,6 +4416,39 @@ mod canonical_parity_tests {
         let oor = json!({"n": 9_007_199_254_740_993_u64});
         let mut out = String::new();
         assert!(write_content_hash_canonical(&mut out, &oor, true).is_err());
+    }
+
+    /// Regression test for T10-F1: integers exceeding `u64::MAX` or `< i64::MIN`
+    /// where both `as_i64()` and `as_u64()` return `None` must be rejected by
+    /// `write_content_hash_canonical`, `compute_content_hash`, `reference_hash`,
+    /// and `try_canonical_redacted_json` in strict v6+ room versions.
+    #[test]
+    fn strict_version_rejects_beyond_u64_max_and_i64_min() {
+        for raw_num in [
+            "18446744073709551616",
+            "-9223372036854775809",
+            "-18446744073709551616",
+            "1267650600228229401496703205376",
+        ] {
+            let raw_event = alloc::format!(
+                r#"{{"type":"m.room.create","sender":"@mallory:evil.org","origin_server_ts":1,"depth":{raw_num},"content":{{"creator":"@mallory:evil.org","nonce":{raw_num}}}}}"#
+            );
+            let event = crate::json::Value::parse(&raw_event).expect("parse wide-int event");
+            for rv in ["6", "10", "12"] {
+                assert!(
+                    super::compute_content_hash(&event, rv).is_err(),
+                    "compute_content_hash must reject {raw_num} in room v{rv}"
+                );
+                assert!(
+                    super::reference_hash(&event, rv).is_err(),
+                    "reference_hash must reject {raw_num} in room v{rv}"
+                );
+                assert!(
+                    super::try_canonical_redacted_json(&event, rv).is_err(),
+                    "try_canonical_redacted_json must reject {raw_num} in room v{rv}"
+                );
+            }
+        }
     }
 
     /// Valid integers must pass strict v6+ validation.

@@ -5,11 +5,24 @@
 //! are re-rendered); canonical
 //! validation and writing decide which spellings are acceptable.
 //!
+//! # Security Warning (Consensus Hash-Split Risk)
+//!
+//! This crate is a consensus-critical Matrix Canonical JSON primitive. Callers
+//! computing Matrix content hashes (`hashes.sha256`), V3+ reference hashes
+//! (`event_id`), or Ed25519 PDU signatures **must** use
+//! [`write_raw_canonical_filtered_strict`] (or `rezzy::reference_hash` /
+//! `rezzy::compute_content_hash`). Never pass untrusted federation payloads
+//! through the permissive [`write_raw_canonical_filtered`] or
+//! [`write_string_value`] writers for cryptographic signing or hashing:
+//! permissive writers emit floats and integers outside `[-(2^53 - 1), 2^53 - 1]`,
+//! causing a reference-hash and signature split-brain against RFC 8785 / Matrix
+//! Spec (`js_int::Int`) compliant homeservers.
+//!
 //! # Numeric ranges
 //!
 //! [`Number`] keeps the source spelling, so integers round-trip byte-exactly
 //! from [`Value::parse`] through [`write_string_value`] and
-//! [`write_raw_canonical_filtered`] all the way up to `u64::MAX`. That is much
+//! [`write_raw_canonical_filtered`] all the way up to `u64::MAX` and beyond. That is much
 //! wider than the range that is safe to sign:
 //!
 //! - `|n| <= 2^53 - 1` ([`MAX_SAFE_INTEGER`]) is the canonical range.
@@ -18,12 +31,14 @@
 //! - `2^53 - 1 < n <= u64::MAX` still round-trips exactly, but is rejected by
 //!   [`write_raw_canonical_filtered_strict`] and by `ruma`. Acceptance by the
 //!   permissive writer is **not** a signing guarantee.
-//! - Integers wider than `u64::MAX` also round-trip exactly. `simd-json` rejects
-//!   those outright; keeping them is intentional.
+//! - Integers wider than `u64::MAX` also round-trip exactly in permissive paths
+//!   and are rejected by [`write_raw_canonical_filtered_strict`]. `simd-json`
+//!   rejects those at parse time; keeping them in [`Number`] is intentional.
 //!
-//! [`Number::as_f64`] is lossy from `2^53 + 1` onward, so integer identifiers
-//! must be read with [`Number::as_i64`], [`Number::as_u64`], or
-//! [`Number::as_str`].
+//! [`Number::as_f64`] is lossy from `2^53 + 1` onward, so callers requiring
+//! exact integer-to-float conversion within `[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]`
+//! should use [`Number::try_as_f64_exact`], and integer identifiers must be read
+//! with [`Number::as_i64`], [`Number::as_u64`], or [`Number::as_str`].
 //!
 //! Store 64-bit external identifiers such as X/Twitter snowflake ids as JSON
 //! strings: that is the only encoding which is canonical, interoperable, and
@@ -153,21 +168,44 @@ impl Number {
     }
 
     #[must_use]
-    /// Returns the value as `f64`, or `None` if it is not that type.
+    /// Returns the value as `f64`, or `None` if it is not finite.
     ///
-    /// **Lossy from [`MAX_SAFE_INTEGER`] + 1.** `f64` represents every integer
-    /// through `2^53` exactly — `2^53` itself is a power of two — but rounds
-    /// essentially everything above it, so `2^53 + 1` is the first value that
-    /// comes back wrong. A 64-bit identifier read this way is corrupted
-    /// (`175928847299117063` yields `175928847299117060`) even though the
-    /// canonical spelling was preserved exactly.
+    /// # Precision Warning (Lossy Above `2^53`)
+    ///
+    /// **Lossy from [`MAX_SAFE_INTEGER`] + 2 (`2^53 + 1`).** `f64` represents
+    /// every integer through `2^53` (`9007199254740992`) exactly — `2^53` itself
+    /// is a power of two — but silently rounds integers above it, so `2^53 + 1`
+    /// (`9007199254740993`) is the first value that comes back wrong
+    /// (`9007199254740992.0`). A 64-bit Snowflake identifier read this way is
+    /// silently corrupted (`175928847299117063` yields `175928847299117060`)
+    /// even though the canonical spelling was preserved exactly.
     ///
     /// Note this returns `Some(rounded)`, not `None`: `None` appears only when
     /// the literal overflows `f64` entirely, as with `1e400`. It is therefore
-    /// not a validity check. Use [`Self::as_i64`], [`Self::as_u64`], or
+    /// not a validity check. Prefer [`Self::try_as_f64_exact`] when integer
+    /// rounding must fail closed, or use [`Self::as_i64`], [`Self::as_u64`], or
     /// [`Self::as_str`] for identifiers.
     pub fn as_f64(&self) -> Option<f64> {
         self.0.parse().ok().filter(|value: &f64| value.is_finite())
+    }
+
+    #[must_use]
+    /// Returns the value as `f64`, rejecting integer literals outside the
+    /// canonical safe integer range `[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]`
+    /// (`[-9_007_199_254_740_991, 9_007_199_254_740_991]`, i.e. `[-(2^53 - 1), 2^53 - 1]`).
+    ///
+    /// Unlike [`Self::as_f64`], which accepts `±2^53` and silently rounds wide
+    /// integers `>= 2^53 + 1` (including `> u64::MAX`) to the nearest `f64`,
+    /// this method returns `None` for any integer literal that is not a valid
+    /// Matrix Canonical JSON safe integer (`!self.is_canonical_integer()`).
+    /// Finite floating-point literals (containing `.`, `e`, or `E`) still
+    /// return `Some(f64)`, while non-finite overflows (`1e400`) return `None`.
+    pub fn try_as_f64_exact(&self) -> Option<f64> {
+        let is_float = self.0.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'));
+        if !is_float && !self.is_canonical_integer() {
+            return None;
+        }
+        self.as_f64()
     }
 
     #[must_use]
@@ -290,10 +328,24 @@ impl Value {
         }
     }
     #[must_use]
-    /// Returns the value as `f64`, or `None` if it is not that type.
+    /// Returns the value as `f64`, or `None` if it is not a finite number.
+    ///
+    /// **Warning:** For integer literals outside `[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]`,
+    /// this method silently rounds values above `2^53` (see [`Number::as_f64`]).
+    /// Prefer [`Self::try_as_f64_exact`] when out-of-range integers must be rejected.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Self::Number(n) => n.as_f64(),
+            _ => None,
+        }
+    }
+    #[must_use]
+    /// Returns the value as `f64`, or `None` if it is not a number or is an
+    /// integer literal outside `[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]`
+    /// (`[-(2^53 - 1), 2^53 - 1]`). See [`Number::try_as_f64_exact`].
+    pub fn try_as_f64_exact(&self) -> Option<f64> {
+        match self {
+            Self::Number(n) => n.try_as_f64_exact(),
             _ => None,
         }
     }
@@ -1012,14 +1064,25 @@ fn emit_number(
     Ok(())
 }
 
-/// Canonicalizes JSON from raw spans with caller-supplied field exclusion.
+/// Canonicalizes JSON from raw spans with caller-supplied field exclusion
+/// (**permissive / non-signing mode**).
 ///
-/// This is the permissive writer: any well-formed JSON number is accepted and
-/// its spelling normalized (`1E1` becomes `10.0`). Use it to read and re-emit
-/// content you do not sign. **A successful result here is not a guarantee the
-/// value is signable** — integers above [`MAX_SAFE_INTEGER`] are accepted but
-/// then rejected by [`write_raw_canonical_filtered_strict`] and by `ruma`.
-/// See the crate-level numeric range docs.
+/// # Security Warning (Consensus Hash-Split Risk)
+///
+/// **Do NOT use this function to compute Matrix event reference hashes,
+/// content hashes (`hashes.sha256`), or Ed25519 PDU signatures.**
+///
+/// This is the **permissive** writer: any well-formed JSON number is accepted
+/// and its spelling normalized (`1E1` becomes `10.0`), and integers outside
+/// `[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]` (`[-(2^53 - 1), 2^53 - 1]`, including
+/// `> u64::MAX`) are emitted verbatim. Invoking this function on untrusted
+/// federation payloads for signing or hashing will produce bytes that RFC 8785 /
+/// Matrix Spec (Room Versions 6+) and `ruma` (`js_int::Int`) reject, causing a
+/// consensus reference-hash / event-ID split across the room.
+///
+/// Always use [`write_raw_canonical_filtered_strict`] for cryptographic signing
+/// and canonical hash verification. Use this permissive writer only to inspect
+/// or re-emit legacy/non-signed JSON content.
 ///
 /// # Errors
 /// Returns [`Error`] when the input is malformed JSON or cannot be
@@ -1031,18 +1094,21 @@ where
     write_raw_canonical_filtered_internal(input, exclude, false)
 }
 
-/// Canonicalizes JSON after enforcing Matrix's strict canonical-number rules.
+/// Canonicalizes JSON after enforcing Matrix's strict canonical-number rules
+/// (**consensus signing & hashing path**).
 ///
-/// Strict mode accepts only integer spellings without fractions or exponents,
-/// and limits values to `[-(2^53 - 1), 2^53 - 1]`, matching `ruma`'s
+/// Strict mode accepts only integer spellings without fractions, leading zeros,
+/// `-0`, or exponents, and limits values to `[MIN_SAFE_INTEGER, MAX_SAFE_INTEGER]`
+/// (`[-(2^53 - 1), 2^53 - 1]`), matching Matrix Room Versions 6+ and `ruma`'s
 /// `js_int::Int` bound. Numeric spans are checked directly without constructing
-/// a DOM. Anything wider parses, and round-trips exactly, but is rejected here
-/// — which is what makes this the signing path. Store 64-bit identifiers as
-/// JSON strings.
+/// a DOM. Anything wider (including `2^53` and `> u64::MAX`) parses and
+/// round-trips in permissive mode, but is rejected here with
+/// [`Error::InvalidNumber`] — making this the mandatory entry point for
+/// signing and hashing raw JSON bytes. Store 64-bit identifiers as JSON strings.
 ///
 /// # Errors
-/// Returns [`Error::InvalidNumber`] when a number violates those rules, or a
-/// parsing error for malformed JSON.
+/// Returns [`Error::InvalidNumber`] when a number violates Matrix Canonical JSON
+/// bounds, or a parsing error for malformed JSON.
 pub fn write_raw_canonical_filtered_strict<F>(input: &[u8], exclude: F) -> Result<String, Error>
 where
     F: FnMut(&str) -> bool,
@@ -2973,6 +3039,66 @@ mod tests {
     fn number_as_f64_is_finite_only() {
         let value = Value::parse("1e400").unwrap();
         assert_eq!(value.as_f64(), None);
+        assert_eq!(value.try_as_f64_exact(), None);
+    }
+
+    #[test]
+    fn number_try_as_f64_exact_enforces_canonical_integer_bounds() {
+        // Exact safe-integer boundaries: 2^53 - 1 and -(2^53 - 1) succeed.
+        for (raw, expected) in [
+            ("0", 0.0_f64),
+            ("42", 42.0_f64),
+            ("9007199254740991", 9_007_199_254_740_991.0_f64),
+            ("-9007199254740991", -9_007_199_254_740_991.0_f64),
+        ] {
+            let parsed = Value::parse(raw).unwrap();
+            let Value::Number(ref num) = parsed else {
+                panic!("expected Number for {raw}");
+            };
+            assert_eq!(
+                num.try_as_f64_exact(),
+                Some(expected),
+                "try_as_f64_exact must accept canonical integer {raw}"
+            );
+            assert_eq!(parsed.try_as_f64_exact(), Some(expected));
+        }
+
+        // Out-of-range integers: 2^53, -2^53, 2^53 + 1, Snowflake IDs,
+        // u64::MAX, and > u64::MAX must all return None from try_as_f64_exact.
+        for out_of_range in [
+            "9007199254740992",
+            "-9007199254740992",
+            "9007199254740993",
+            "-9007199254740993",
+            "175928847299117063",
+            "9223372036854775807",
+            "-9223372036854775808",
+            "18446744073709551615",
+            "18446744073709551616",
+            "-18446744073709551616",
+            "1267650600228229401496703205376",
+        ] {
+            let parsed = Value::parse(out_of_range).unwrap();
+            let Value::Number(ref num) = parsed else {
+                panic!("expected Number for {out_of_range}");
+            };
+            assert_eq!(
+                num.try_as_f64_exact(),
+                None,
+                "try_as_f64_exact must reject out-of-range integer {out_of_range}"
+            );
+            assert_eq!(
+                parsed.try_as_f64_exact(),
+                None,
+                "Value::try_as_f64_exact must reject out-of-range integer {out_of_range}"
+            );
+        }
+
+        // Finite floating-point literals remain accessible through try_as_f64_exact.
+        let frac = Value::parse("1.5").unwrap();
+        assert_eq!(frac.try_as_f64_exact(), Some(1.5));
+        let neg_zero = Value::parse("-0").unwrap();
+        assert_eq!(neg_zero.try_as_f64_exact(), Some(-0.0));
     }
 
     /// The boundary values that separate the three numeric ranges.
