@@ -1,0 +1,5 @@
+Track 14 Green Phase:
+- F-02.1: Relocate retired CDO reference implementation from src/resolve/cdo.rs to tests/support/cdo_retired.rs and remove pub mod cdo from src/resolve/mod.rs.
+- F-01.1: Remove unverified event.power_level() fallback in get_power_level_from_auth_chain; default to DEFAULT_PL_USER (0) when no m.room.power_levels event is present in auth_events (and sender is not a V12+ creator).
+- F-01.2 & F-01.4: Eliminate unconditional std::eprintln! calls in build_mainline_with_cache, introduce MainlineResult diagnostics, and skip cyclic back-edges during BFS so valid ancestor power_levels events are not truncated.
+- F-02.4: Filter rejected and non-root (prev_events non-empty) events in execute_power_phase slow-path m.room.create lookup.
