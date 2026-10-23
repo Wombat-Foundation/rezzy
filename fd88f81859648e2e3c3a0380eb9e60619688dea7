@@ -1,0 +1,6 @@
+Track 17 Green Phase:
+- T11-F1: Sort BucketExchange::pending in BFS order (request.depth, bucket_range_start(request)) while preserving wire-sorted round drains so low-prefix wide splits never starve shallower high-prefix buckets.
+- T11-F2: Add deterministic E2E multi-round capacity-then-depth and MAX_DEPTH (32) escalation tests in tests/unit/test_reconcile_e2e.rs and retire the open item in docs/tech_debt.md.
+- T11-F3: Upgrade mod causal count arithmetic in src/merkle.rs to checked u64 addition (checked_count_sum, verify_causal_path, CausalSet::insert_mut, and decompress_causal_path with CausalProofError::CountOverflow).
+- F-04-01 & F-07-04: Implement no_std Tier-2 pre-auth PDU structural validation (src/auth/validate.rs) and fork diagnostics / frontier width guard (src/dag/fork.rs), and mark status as Implemented in docs/homeserver_utilities.md.
+- T12-F1 & T12-F2: Harden rezzy-cli/src/jsonl_merge.rs duplicate reconciliation to prefer unredacted content over redacted copies, union server signatures, and preserve rejection markers across duplicate merges and sidecar-backed CLI replay.
