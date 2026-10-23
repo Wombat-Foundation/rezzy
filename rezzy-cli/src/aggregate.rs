@@ -1011,12 +1011,15 @@ mod tests {
         })
     }
     fn unique_test_dir() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock is after the Unix epoch")
             .as_nanos();
+        // The counter keeps parallel tests apart when the clock ticks coarsely.
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "rezzy-aggregate-test-{}-{nanos}",
+            "rezzy-aggregate-test-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }
