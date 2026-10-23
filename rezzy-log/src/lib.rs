@@ -137,13 +137,9 @@ mod subscriber {
             // Ignore write failures (e.g. closed stderr): logging must not panic.
             let _ = writeln!(
                 std::io::stderr().lock(),
-                "{} {} {}: {}{}",
+                "{} {}: {}{}",
                 level,
                 metadata.target(),
-                metadata
-                    .name()
-                    .strip_prefix("event ")
-                    .unwrap_or_else(|| metadata.name()),
                 fields.message,
                 fields.fields
             );
