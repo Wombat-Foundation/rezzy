@@ -365,4 +365,65 @@ mod tests {
         // All of D's auth chain + D itself
         assert_eq!(diff.len(), 4);
     }
+
+    #[test]
+    fn test_auth_graph_build_deterministic_kahn_seed_and_cyclic_safety_f_07_07() {
+        let mut ctx: HashMap<String, LeanEvent> = HashMap::new();
+        let mut expected_roots = Vec::new();
+        for i in (0..16).rev() {
+            let id = alloc::format!("$root_{i:02}");
+            expected_roots.push(id.clone());
+            ctx.insert(
+                id.clone(),
+                LeanEvent {
+                    event_id: id,
+                    event_type: "m.room.member".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        expected_roots.sort();
+
+        let graph = AuthGraph::build(&ctx);
+        assert_eq!(
+            graph.index.items(),
+            expected_roots.as_slice(),
+            "F-07-07: AuthGraph::build must seed Kahn's queue in deterministic sorted order"
+        );
+
+        // Also verify cyclic events are retained in the dense index rather than silently dropped.
+        let mut cyclic_ctx: HashMap<String, LeanEvent> = HashMap::new();
+        cyclic_ctx.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                event_type: "m.room.create".into(),
+                ..Default::default()
+            },
+        );
+        cyclic_ctx.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                auth_events: vec!["A".into(), "C".into()],
+                ..Default::default()
+            },
+        );
+        cyclic_ctx.insert(
+            "C".into(),
+            LeanEvent {
+                event_id: "C".into(),
+                event_type: "m.room.member".into(),
+                auth_events: vec!["A".into(), "B".into()],
+                ..Default::default()
+            },
+        );
+        let cyclic_graph = AuthGraph::build(&cyclic_ctx);
+        assert_eq!(
+            cyclic_graph.index.len(),
+            3,
+            "F-07-07: cyclic events must not be silently dropped from AuthGraph::index"
+        );
+    }
 }
