@@ -1,0 +1,5 @@
+Red Phase regression tests for Track 18 (18_p1_hashdos_and_arena_interning):
+- F-07-07: Verify AuthGraph::build seeds Kahn's topological queue in deterministic sorted order and preserves cyclic nodes in DenseIndex.
+- F-09-01: Verify FastMap/FastSet use FastHashBuilder (CSPRNG/BLAKE3-seeded SipHash) with per-instance randomized seeds rather than unseeded foldhash.
+- F-09-02: Verify DenseIndex::try_build_bounded short-circuits in O(1) at the (bound + 1)-th distinct item without draining the remaining iterator into a post_bound HashSet.
+- F-09-03 / F-09-04: Verify ranked InternId hashes and orders via its u32 rank in O(1) without dereferencing string bytes.
