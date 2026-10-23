@@ -33,8 +33,8 @@ use crate::basespec::event_types::{
     RULE_KNOCK_RESTRICTED, RULE_PUBLIC, RULE_RESTRICTED,
 };
 use crate::basespec::rezzy_types::{
-    apply_redaction, domain_matches, is_valid_mxid, EventContent, EventId, EventLike,
-    EventProvider, EventVerifier, LeanEvent, StateKey, StateResVersion,
+    apply_redaction, domain_matches, is_acceptable_historical_mxid, EventContent, EventId,
+    EventLike, EventProvider, EventVerifier, LeanEvent, StateKey, StateResVersion,
 };
 
 /// An error indicating why an event failed authorization.
@@ -494,7 +494,7 @@ pub fn validate_forward_extremity<
         return ForwardExtremityResult::Rejected(e);
     }
 
-    if let Err(e) = check_auth(event, current_room_state, version, None) {
+    if let Err(e) = check_auth(event, current_room_state, version, verifier) {
         return ForwardExtremityResult::SoftFailed(e);
     }
 
@@ -599,8 +599,10 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         if !event.prev_events().is_empty() {
             return Err(AuthError::CreateWithPrevEvents);
         }
-        // Rule 1.2: Check sender MXID validity for m.room.create.
-        if !is_valid_mxid(event.sender()) {
+        check_create_room_id(event, version.is_v2_1_plus())?;
+        // Rule 1.2: Check sender MXID validity for m.room.create (accepting
+        // historical uppercase MXIDs per MSC4303, consistent with validate_syntactic).
+        if !is_acceptable_historical_mxid(event.sender()) {
             return Err(AuthError::InvalidSyntax(
                 "m.room.create sender must be a valid MXID".into(),
             ));
@@ -620,6 +622,9 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
         // Create events are always authorized if they're first
         return Ok(());
     }
+
+    check_room_id_matches_accepted_create(event, version.is_v2_1_plus(), state)?;
+    check_foreign_room_citation(event, state, auth_context, version)?;
 
     // Reject a present unsupported room-version label before any
     // authorization rule interprets it as a legacy version. Missing create
@@ -910,6 +915,20 @@ pub fn check_auth_with_context<Id: EventId, C: EventContent, E: EventLike<Id = I
                 let create_content = create_event.content();
                 if let Some(creator) = create_content.get_creator() {
                     if new_content.has_user_in_users(creator) {
+                        return Err(AuthError::InvalidSyntax(alloc::format!(
+                            "m.room.power_levels users contains creator {creator}"
+                        )));
+                    }
+                } else {
+                    let creator = create_event.sender();
+                    let is_legacy_synthetic_pl = event
+                        .auth_events()
+                        .iter()
+                        .any(|id| id == create_event.event_id())
+                        || state
+                            .get_event(M_ROOM_POWER_LEVELS, "")
+                            .is_some_and(|old_pl| old_pl.content().has_user_in_users(creator));
+                    if !is_legacy_synthetic_pl && new_content.has_user_in_users(creator) {
                         return Err(AuthError::InvalidSyntax(alloc::format!(
                             "m.room.power_levels users contains creator {creator}"
                         )));
@@ -1992,29 +2011,26 @@ pub(crate) fn get_ban_power_level<Id, C: EventContent, E: EventLike<Id = Id, Con
 /// this crate's [`LeanEvent`] (see its doc comment), and a caller that
 /// never populates it must see identical behavior to before this check
 /// existed.
-fn check_create_room_id<Id: EventId, C, K>(
-    event: &LeanEvent<Id, C, K>,
+fn check_create_room_id<E: EventLike>(
+    event: &E,
     is_v12_plus: bool,
-) -> Result<(), AuthError<Id>>
-where
-    K: StateKey,
-{
-    if event.event_type != "m.room.create" {
+) -> Result<(), AuthError<E::Id>> {
+    if event.event_type() != "m.room.create" {
         return Ok(());
     }
     if is_v12_plus {
-        if event.room_id.is_some() {
+        if event.room_id().is_some() {
             return Err(AuthError::InvalidSyntax(
                 "m.room.create must not declare room_id -- the room's ID is derived from this \
                  event's own hash and isn't knowable until this event exists"
                     .into(),
             ));
         }
-    } else if let Some(declared) = &event.room_id {
-        if !crate::basespec::rezzy_types::domain_matches(declared, event.sender.as_str()) {
+    } else if let Some(declared) = event.room_id() {
+        if !domain_matches(declared, event.sender()) {
             return Err(AuthError::InvalidSyntax(alloc::format!(
                 "m.room.create room_id {declared} domain does not match sender {} domain",
-                event.sender
+                event.sender()
             )));
         }
     }
@@ -2030,31 +2046,30 @@ where
 /// applies to every event, not just create events (which Rule 1.2 already
 /// forbids from declaring `room_id` at all under V12+, so this only ever
 /// matters for non-create events once `is_v12_plus`).
-fn check_room_id_matches_accepted_create<Id, C, K>(
-    event: &LeanEvent<Id, C, K>,
+fn check_room_id_matches_accepted_create<Id, C, E>(
+    event: &E,
     is_v12_plus: bool,
-    state: &RoomState<Id, C, K>,
-    rejected_ids: &crate::HashSet<Id>,
+    state: &impl StateProvider<Id, C, E>,
 ) -> Result<(), AuthError<Id>>
 where
     Id: EventId,
     C: EventContent,
-    K: StateKey + 'static,
+    E: EventLike<Id = Id, Content = C>,
 {
-    if !is_v12_plus || event.event_type == "m.room.create" {
+    if !is_v12_plus || event.event_type() == "m.room.create" {
         return Ok(());
     }
-    let Some(declared) = &event.room_id else {
+    let Some(declared) = event.room_id() else {
         return Ok(());
     };
     let accepted_create = state
         .get_event(M_ROOM_CREATE, "")
-        .filter(|create_ev| !rejected_ids.contains(&create_ev.event_id));
+        .filter(|create_ev| !create_ev.rejected());
     let matches_accepted_create = accepted_create.is_some_and(|create_ev| {
-        let create_id_str = create_ev.event_id.to_string();
+        let create_id_str = create_ev.event_id().to_string();
         create_id_str
             .strip_prefix('$')
-            .is_some_and(|hash_part| declared.as_ref() == alloc::format!("!{hash_part}"))
+            .is_some_and(|hash_part| declared == alloc::format!("!{hash_part}"))
     });
     if matches_accepted_create {
         Ok(())
@@ -2091,42 +2106,119 @@ where
     Ok(())
 }
 
-/// Rule 2.5: reject if any cited auth event carries a `room_id` that
-/// disagrees with this event's own, OR carries no `room_id` at all --
-/// opt-in only on this (citing) event's side (see
-/// [`AuthError::ForeignRoomEvent`]'s docs for why a `None` here never
-/// triggers the check, but a `None` on the auth event's side, once
-/// triggered, is not a free pass).
-fn check_foreign_room_citation<Id, C, K>(
-    event: &LeanEvent<Id, C, K>,
-    event_map: &crate::HashMap<Id, LeanEvent<Id, C, K>>,
+fn check_room_id_pair<Id: EventId>(
+    event_id: &Id,
+    expected_room_id: Option<&str>,
+    auth_event_id: &Id,
+    actual_room_id: Option<&str>,
+) -> Result<(), AuthError<Id>> {
+    match (expected_room_id, actual_room_id) {
+        (None, None) => Ok(()),
+        (Some(expected), Some(actual)) if actual == expected => Ok(()),
+        (Some(expected), Some(actual)) => Err(AuthError::ForeignRoomEvent {
+            event_id: event_id.clone(),
+            auth_event_id: auth_event_id.clone(),
+            expected: expected.to_string(),
+            actual: Some(actual.to_string()),
+        }),
+        (Some(expected), None) => Err(AuthError::ForeignRoomEvent {
+            event_id: event_id.clone(),
+            auth_event_id: auth_event_id.clone(),
+            expected: expected.to_string(),
+            actual: None,
+        }),
+        (None, Some(actual)) => Err(AuthError::ForeignRoomEvent {
+            event_id: event_id.clone(),
+            auth_event_id: auth_event_id.clone(),
+            expected: String::new(),
+            actual: Some(actual.to_string()),
+        }),
+    }
+}
+
+/// Rule 2.5 (MSC4307): reject if any cited auth event or consulted auth state
+/// event belongs to a different room than `event`.
+///
+/// Fails closed whenever either side populates a `room_id` that does not
+/// match the other side:
+/// - `(Some(expected), Some(actual))` with `actual != expected` -> reject
+/// - `(Some(expected), None)` -> reject (untagged auth event is not a free pass)
+/// - `(None, Some(actual))` -> reject (untagged citing event cannot cite a
+///   foreign-tagged auth event)
+/// - `(None, None)` -> allowed (preserves opt-in compatibility when neither
+///   side populates `room_id`).
+fn check_foreign_room_citation<Id, C, E>(
+    event: &E,
+    state: &impl StateProvider<Id, C, E>,
+    auth_context: Option<&dyn EventProvider<Id, C, E>>,
+    version: StateResVersion,
 ) -> Result<(), AuthError<Id>>
 where
     Id: EventId,
     C: EventContent,
-    K: StateKey,
+    E: EventLike<Id = Id, Content = C>,
 {
-    let Some(expected) = &event.room_id else {
-        return Ok(());
-    };
-    let foreign = event.auth_events.iter().find_map(|auth_id| {
-        let auth_event = event_map.get(auth_id)?;
-        match &auth_event.room_id {
-            Some(actual) if actual == expected => None,
-            Some(actual) => Some((auth_id.clone(), Some(actual.clone()))),
-            None => Some((auth_id.clone(), None)),
+    let expected = event.room_id();
+    let is_v12_plus = version.is_v2_1_plus();
+
+    if let Some(provider) = auth_context.filter(|_| version != StateResVersion::V2_2) {
+        for auth_id in event.auth_events() {
+            let Some(auth_ev) = provider.get_event(auth_id) else {
+                continue;
+            };
+            if auth_ev.rejected() {
+                return Err(AuthError::RejectedAuthEvent {
+                    event_id: event.event_id().clone(),
+                    auth_event_id: auth_id.clone(),
+                });
+            }
+            if is_v12_plus && auth_ev.event_type() == M_ROOM_CREATE && auth_ev.room_id().is_none() {
+                continue;
+            }
+            check_room_id_pair(event.event_id(), expected, auth_id, auth_ev.room_id())?;
         }
-    });
-    if let Some((auth_event_id, actual)) = foreign {
-        Err(AuthError::ForeignRoomEvent {
-            event_id: event.event_id.clone(),
-            auth_event_id,
-            expected: expected.to_string(),
-            actual: actual.map(|a| a.to_string()),
-        })
-    } else {
-        Ok(())
     }
+
+    let check_state_slot = |ev_type: &str, state_key: &str| -> Result<(), AuthError<Id>> {
+        if let Some(state_ev) = state.get_event(ev_type, state_key) {
+            check_room_id_pair(
+                event.event_id(),
+                expected,
+                state_ev.event_id(),
+                state_ev.room_id(),
+            )?;
+        }
+        Ok(())
+    };
+
+    if !is_v12_plus {
+        check_state_slot(M_ROOM_CREATE, "")?;
+    }
+    check_state_slot(M_ROOM_POWER_LEVELS, "")?;
+    check_state_slot(M_ROOM_MEMBER, event.sender())?;
+
+    let event_type = event.event_type();
+    if event_type == M_ROOM_MEMBER {
+        if let Some(target_user) = event.state_key() {
+            check_state_slot(M_ROOM_MEMBER, target_user)?;
+        }
+        let membership = event.get_membership();
+        if matches!(membership, Some(MEM_JOIN | MEM_INVITE | MEM_KNOCK)) {
+            check_state_slot(M_ROOM_JOIN_RULES, "")?;
+        }
+        if membership == Some(MEM_JOIN) {
+            if let Some(authorising_user) = event.get_join_authorised_via_users_server() {
+                check_state_slot(M_ROOM_MEMBER, authorising_user)?;
+            }
+        }
+        if membership == Some(MEM_INVITE) {
+            if let Some(token) = event.get_third_party_invite_token() {
+                check_state_slot(M_ROOM_THIRD_PARTY_INVITE, token)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Iteratively apply auth checks to a list of events in topological order.
@@ -2161,28 +2253,8 @@ where
 
     let mut rejected_ids = crate::HashSet::new();
 
-    // V12+: room_id is no longer server-assigned/domain-based -- it's
-    // derived from the create event, "!" followed by the same content hash
-    // used for that event's own "$"-prefixed event ID (version_props.rs's
-    // "Room ID format" note). Computed once; used only by the create-event
-    // check below.
-    let is_v12_plus = matches!(
-        version,
-        StateResVersion::V2_1
-            | StateResVersion::V2_1_1
-            | StateResVersion::V2_2
-            | StateResVersion::V3
-    );
-
     for event in sorted_events {
-        let pre_check = check_create_room_id(event, is_v12_plus)
-            .and_then(|()| {
-                check_room_id_matches_accepted_create(event, is_v12_plus, &state, &rejected_ids)
-            })
-            .and_then(|()| check_not_citing_rejected_auth_event(event, &rejected_ids))
-            .and_then(|()| check_foreign_room_citation(event, &event_map));
-
-        if let Err(err) = pre_check {
+        if let Err(err) = check_not_citing_rejected_auth_event(event, &rejected_ids) {
             rejected.push((event.event_id.clone(), err));
             rejected_ids.insert(event.event_id.clone());
             continue;
