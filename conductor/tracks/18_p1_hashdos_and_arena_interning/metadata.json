@@ -2,7 +2,7 @@
   "track_id": "18_p1_hashdos_and_arena_interning",
   "title": "P1 Remediation: Harden Hash Tables Against HashDoS & Land u32 Arena Interning (InternId)",
   "type": "architecture",
-  "status": "new",
+  "status": "in_progress",
   "priority": "P1",
   "origin_tracks": [
     "09_perf_interning_benchmarks_20260920"
