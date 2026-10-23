@@ -74,7 +74,7 @@ This registry tracks the complete historical feature trajectory of `rezzy` (`01`
 
 ---
 
-- [ ] **Track: 15 — P0 Remediation: Seal Permissive Canonical JSON, Fix `> u64::MAX` Fallthrough & Lossy `as_f64` (`rezzy-json`)**
+- [~] **Track: 15 — P0 Remediation: Seal Permissive Canonical JSON, Fix `> u64::MAX` Fallthrough & Lossy `as_f64` (`rezzy-json`)**
   *Link: [./tracks/15_p0_strict_canonical_json_bounds/index.md](./tracks/15_p0_strict_canonical_json_bounds/index.md)*
 
 ---
