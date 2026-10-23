@@ -43,24 +43,29 @@ where
     pub fn build<C: Clone, S: core::hash::BuildHasher>(
         sort_context: &HashMap<Id, LeanEvent<Id, C>, S>,
     ) -> Self {
+        let mut sorted_keys: Vec<&Id> = sort_context.keys().collect();
+        sorted_keys.sort_unstable();
+
         let mut in_degree: FastMap<&Id, usize> = FastMap::default();
         let mut adjacency: FastMap<&Id, Vec<&Id>> = FastMap::default();
 
-        for (id, ev) in sort_context {
+        for &id in &sorted_keys {
             in_degree.entry(id).or_insert(0);
-            for auth_id in &ev.auth_events {
-                if sort_context.contains_key(auth_id) {
-                    adjacency.entry(auth_id).or_default().push(id);
-                    let val = in_degree.entry(id).or_insert(0);
-                    *val = val.saturating_add(1);
+            if let Some(ev) = sort_context.get(id) {
+                for auth_id in &ev.auth_events {
+                    if sort_context.contains_key(auth_id) {
+                        adjacency.entry(auth_id).or_default().push(id);
+                        let val = in_degree.entry(id).or_insert(0);
+                        *val = val.saturating_add(1);
+                    }
                 }
             }
         }
 
         let mut queue = VecDeque::new();
-        for (id, &deg) in &in_degree {
-            if deg == 0 {
-                queue.push_back(*id);
+        for &id in &sorted_keys {
+            if in_degree.get(id).copied().unwrap_or(0) == 0 {
+                queue.push_back(id);
             }
         }
 
@@ -68,12 +73,21 @@ where
         while let Some(id) = queue.pop_front() {
             sorted.push(id);
             if let Some(children) = adjacency.get(id) {
-                for child in children {
+                for &child in children {
                     let deg = in_degree.get_mut(child).unwrap();
                     *deg = deg.saturating_sub(1);
                     if *deg == 0 {
-                        queue.push_back(*child);
+                        queue.push_back(child);
                     }
+                }
+            }
+        }
+
+        let had_cycle = sorted.len() < sort_context.len();
+        if had_cycle {
+            for &id in &sorted_keys {
+                if in_degree.get(id).copied().unwrap_or(0) > 0 {
+                    sorted.push(id);
                 }
             }
         }
@@ -93,6 +107,31 @@ where
                 }
             }
             auth_bitmaps[idx] = bitmap;
+        }
+
+        if had_cycle {
+            loop {
+                let mut changed = false;
+                for (idx, &id) in sorted.iter().enumerate() {
+                    let before_len = auth_bitmaps[idx].len();
+                    let mut bitmap = auth_bitmaps[idx].clone();
+                    if let Some(ev) = sort_context.get(id) {
+                        for auth_id in &ev.auth_events {
+                            if let Some(p_idx) = index.index_of(auth_id) {
+                                bitmap |= &auth_bitmaps[p_idx as usize];
+                                bitmap.insert(p_idx);
+                            }
+                        }
+                    }
+                    if bitmap.len() != before_len {
+                        auth_bitmaps[idx] = bitmap;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
         }
 
         Self {
@@ -364,5 +403,66 @@ mod tests {
         let diff = graph.auth_difference(&["Z".into()], &["D".into()]);
         // All of D's auth chain + D itself
         assert_eq!(diff.len(), 4);
+    }
+
+    #[test]
+    fn test_auth_graph_build_deterministic_kahn_seed_and_cyclic_safety_f_07_07() {
+        let mut ctx: HashMap<String, LeanEvent> = HashMap::new();
+        let mut expected_roots = Vec::new();
+        for i in (0..16).rev() {
+            let id = alloc::format!("$root_{i:02}");
+            expected_roots.push(id.clone());
+            ctx.insert(
+                id.clone(),
+                LeanEvent {
+                    event_id: id,
+                    event_type: "m.room.member".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        expected_roots.sort();
+
+        let graph = AuthGraph::build(&ctx);
+        assert_eq!(
+            graph.index.items(),
+            expected_roots.as_slice(),
+            "F-07-07: AuthGraph::build must seed Kahn's queue in deterministic sorted order"
+        );
+
+        // Also verify cyclic events are retained in the dense index rather than silently dropped.
+        let mut cyclic_ctx: HashMap<String, LeanEvent> = HashMap::new();
+        cyclic_ctx.insert(
+            "A".into(),
+            LeanEvent {
+                event_id: "A".into(),
+                event_type: "m.room.create".into(),
+                ..Default::default()
+            },
+        );
+        cyclic_ctx.insert(
+            "B".into(),
+            LeanEvent {
+                event_id: "B".into(),
+                event_type: "m.room.member".into(),
+                auth_events: vec!["A".into(), "C".into()],
+                ..Default::default()
+            },
+        );
+        cyclic_ctx.insert(
+            "C".into(),
+            LeanEvent {
+                event_id: "C".into(),
+                event_type: "m.room.member".into(),
+                auth_events: vec!["A".into(), "B".into()],
+                ..Default::default()
+            },
+        );
+        let cyclic_graph = AuthGraph::build(&cyclic_ctx);
+        assert_eq!(
+            cyclic_graph.index.len(),
+            3,
+            "F-07-07: cyclic events must not be silently dropped from AuthGraph::index"
+        );
     }
 }

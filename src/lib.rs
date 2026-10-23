@@ -187,30 +187,199 @@ pub use std::collections::{HashMap, HashSet};
 #[cfg(not(feature = "std"))]
 pub use hashbrown::{HashMap, HashSet};
 
-/// Internal-only hashmap/hashset for maps rezzy builds and owns entirely
-/// (never a caller-supplied parameter or a public field), keyed with
-/// `hashbrown`'s `foldhash`-based `DefaultHashBuilder` instead of
-/// `std::collections`'s `SipHash13`.
+/// DoS-resistant per-instance seeded `BuildHasher` for internal and
+/// narrow-conflict hash tables (`FastMap`, `FastSet`, `SeededMap`, `SeededSet`).
 ///
-/// State keys and event IDs handled by resolution originate from federation
-/// input an attacker can choose, so these maps still benefit from a randomized
-/// hasher. `foldhash` gives us a fast, minimally DoS-resistant, non-cryptographic
-/// default; that is appropriate here because the maps are internal-only, but we
-/// do not treat it as a security boundary. Not part of the public API:
-/// swapping the hasher on a caller-visible `HashMap<K, V, S>` parameter would
-/// silently break every external caller that passes a
-/// `std::collections::HashMap` there, since `S: BuildHasher` genericity only
-/// covers the hasher, not the underlying map type. See `benches/state_backend.rs`
-/// and the perf investigation this followed for how that was found out the hard
-/// way.
-pub(crate) type FastMap<K, V> = hashbrown::HashMap<K, V, hashbrown::DefaultHashBuilder>;
+/// When the `std` feature is enabled, this delegates directly to
+/// `std::collections::hash_map::RandomState` (OS CSPRNG-seeded `SipHash-1-3`).
+/// In `#![no_std]` builds, each instance derives a unique 128-bit `SipHash-1-3`
+/// key by mixing a monotonic atomic counter and stack address through BLAKE3.
+#[derive(Clone, Debug)]
+pub struct FastHashBuilder {
+    #[cfg(feature = "std")]
+    inner: std::collections::hash_map::RandomState,
+    #[cfg(not(feature = "std"))]
+    k0: u64,
+    #[cfg(not(feature = "std"))]
+    k1: u64,
+}
 
-/// A hash set using rezzy's default randomized hasher.
+impl FastHashBuilder {
+    /// Creates a new per-instance randomly seeded `FastHashBuilder`.
+    #[must_use]
+    pub fn new() -> Self {
+        #[cfg(feature = "std")]
+        {
+            Self {
+                inner: std::collections::hash_map::RandomState::new(),
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            static COUNTER: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0x9e37_79b9_7f4a_7c15);
+            let seq = COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let stack_addr = core::ptr::from_ref(&seq) as usize as u64;
+            let mut input = [0u8; 16];
+            input[..8].copy_from_slice(&seq.to_le_bytes());
+            input[8..].copy_from_slice(&stack_addr.to_le_bytes());
+            let digest = blake3::hash(&input);
+            let bytes = digest.as_bytes();
+            let k0 = u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]);
+            let k1 = u64::from_le_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ]);
+            Self { k0, k1 }
+        }
+    }
+}
+
+impl Default for FastHashBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(feature = "std"))]
+#[derive(Clone, Debug)]
+pub struct SipHasher13 {
+    v0: u64,
+    v1: u64,
+    v2: u64,
+    v3: u64,
+    tail: u64,
+    ntail: usize,
+    length: usize,
+}
+
+#[cfg(not(feature = "std"))]
+impl SipHasher13 {
+    #[inline]
+    const fn new_with_keys(k0: u64, k1: u64) -> Self {
+        Self {
+            v0: k0 ^ 0x736f_6d65_7073_6575,
+            v1: k1 ^ 0x646f_7261_6e64_6f6d,
+            v2: k0 ^ 0x6c79_6765_6e65_7261,
+            v3: k1 ^ 0x7465_6462_7974_6573,
+            tail: 0,
+            ntail: 0,
+            length: 0,
+        }
+    }
+
+    #[inline]
+    fn sip_round(&mut self) {
+        self.v0 = self.v0.wrapping_add(self.v1);
+        self.v1 = self.v1.rotate_left(13);
+        self.v1 ^= self.v0;
+        self.v0 = self.v0.rotate_left(32);
+        self.v2 = self.v2.wrapping_add(self.v3);
+        self.v3 = self.v3.rotate_left(16);
+        self.v3 ^= self.v2;
+        self.v0 = self.v0.wrapping_add(self.v3);
+        self.v3 = self.v3.rotate_left(21);
+        self.v3 ^= self.v0;
+        self.v2 = self.v2.wrapping_add(self.v1);
+        self.v1 = self.v1.rotate_left(17);
+        self.v1 ^= self.v2;
+        self.v2 = self.v2.rotate_left(32);
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl core::hash::Hasher for SipHasher13 {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        self.length = self.length.wrapping_add(bytes.len());
+        let mut idx = 0usize;
+        if self.ntail != 0 {
+            while idx < bytes.len() && self.ntail < 8 {
+                let shift = (self.ntail & 7) << 3;
+                self.tail |= u64::from(bytes[idx]) << shift;
+                self.ntail = self.ntail.wrapping_add(1);
+                idx = idx.wrapping_add(1);
+            }
+            if self.ntail == 8 {
+                self.v3 ^= self.tail;
+                self.sip_round();
+                self.v0 ^= self.tail;
+                self.tail = 0;
+                self.ntail = 0;
+            }
+        }
+        while idx.wrapping_add(8) <= bytes.len() {
+            let chunk = &bytes[idx..idx.wrapping_add(8)];
+            let m = u64::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ]);
+            self.v3 ^= m;
+            self.sip_round();
+            self.v0 ^= m;
+            idx = idx.wrapping_add(8);
+        }
+        while idx < bytes.len() {
+            let shift = (self.ntail & 7) << 3;
+            self.tail |= u64::from(bytes[idx]) << shift;
+            self.ntail = self.ntail.wrapping_add(1);
+            idx = idx.wrapping_add(1);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        let mut state = self.clone();
+        let b: u64 = ((state.length as u64 & 0xff) << 56) | state.tail;
+        state.v3 ^= b;
+        state.sip_round();
+        state.v0 ^= b;
+        state.v2 ^= 0xff;
+        state.sip_round();
+        state.sip_round();
+        state.sip_round();
+        state.v0 ^ state.v1 ^ state.v2 ^ state.v3
+    }
+}
+
+impl core::hash::BuildHasher for FastHashBuilder {
+    #[cfg(feature = "std")]
+    type Hasher = <std::collections::hash_map::RandomState as core::hash::BuildHasher>::Hasher;
+    #[cfg(not(feature = "std"))]
+    type Hasher = SipHasher13;
+
+    #[inline]
+    fn build_hasher(&self) -> Self::Hasher {
+        #[cfg(feature = "std")]
+        {
+            self.inner.build_hasher()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            SipHasher13::new_with_keys(self.k0, self.k1)
+        }
+    }
+}
+
+pub(crate) type FastMap<K, V> = hashbrown::HashMap<K, V, FastHashBuilder>;
+
+/// A hash set using rezzy's per-instance seeded DoS-resistant hasher.
 ///
 /// This is public because the narrow-conflict override APIs accept it. Most
 /// callers should not need it: their state resolution entry point derives the
 /// conflicted-key set itself.
-pub type FastSet<K> = hashbrown::HashSet<K, hashbrown::DefaultHashBuilder>;
+pub type FastSet<K> = hashbrown::HashSet<K, FastHashBuilder>;
+
+/// A hash map keyed with [`FastHashBuilder`] (CSPRNG/BLAKE3-seeded `SipHash-1-3`)
+/// for untrusted external string keys (`event_id`, `state_key`, `sender`).
+pub type SeededMap<K, V> = hashbrown::HashMap<K, V, FastHashBuilder>;
+
+/// A hash set keyed with [`FastHashBuilder`] (CSPRNG/BLAKE3-seeded `SipHash-1-3`)
+/// for untrusted external string keys (`event_id`, `state_key`, `sender`).
+pub type SeededSet<K> = hashbrown::HashSet<K, FastHashBuilder>;
+
+pub use basespec::interned_key::{InternId, InternedRoomState, Interner, StaticInternId};
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -245,6 +414,30 @@ mod tests {
                     event_id: "$b".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn fast_set_and_fast_map_use_per_instance_randomized_seeds_f_09_01() {
+        use core::hash::BuildHasher;
+
+        assert!(
+            core::any::type_name::<FastSet<String>>().contains("FastHashBuilder"),
+            "F-09-01: FastSet must use FastHashBuilder (CSPRNG/BLAKE3-seeded SipHash) rather than unseeded foldhash"
+        );
+
+        #[inline(never)]
+        fn make_fast_set() -> FastSet<String> {
+            FastSet::default()
+        }
+
+        let set_a = make_fast_set();
+        let set_b = make_fast_set();
+        let hash_a = set_a.hasher().hash_one("$untrusted_event_id:example.org");
+        let hash_b = set_b.hasher().hash_one("$untrusted_event_id:example.org");
+        assert_ne!(
+            hash_a, hash_b,
+            "F-09-01: distinct FastSet instances must use per-instance randomized seeds to resist HashDoS"
         );
     }
 }

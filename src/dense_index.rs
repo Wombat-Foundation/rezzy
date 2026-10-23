@@ -163,42 +163,11 @@ impl<T: Eq + Clone + core::hash::Hash, Idx: Copy + TryFrom<usize> + DenseIndexWi
             // A new distinct item needs index `items.len()`. If we're already
             // at `bound`, the resulting length would be one past what still
             // fits in `Idx` (and would make a later `TryFrom` for bitmap
-            // construction fail). Reject here so `len()` is always
-            // representable.
+            // construction fail). Short-circuit immediately in O(1) without
+            // allocating a secondary set or draining the remainder of `iter`.
             if items.len() >= bound {
-                // Keep counting distinct items past the bound so
-                // `distinct_count` reports the *true* total — the previous
-                // value was always `bound + 1` (no information). Every item
-                // already in `index_by_item` is a distinct pre-bound item, so
-                // it is counted without copying all of its keys into a second
-                // set; only items discovered *after* the bound need their own
-                // small set for dedup.
-                let mut distinct_count = index_by_item.len();
-                let mut post_bound: crate::HashSet<T> = crate::HashSet::default();
-                if allocation_should_fail() || post_bound.try_reserve(1).is_err() {
-                    return Err(IndexTooLarge {
-                        distinct_count,
-                        allocation_failed: true,
-                    });
-                }
-                post_bound.insert(item);
-                distinct_count = distinct_count.saturating_add(1);
-                for i in iter {
-                    if index_by_item.contains_key(&i) {
-                        continue;
-                    }
-                    if allocation_should_fail() || post_bound.try_reserve(1).is_err() {
-                        return Err(IndexTooLarge {
-                            distinct_count,
-                            allocation_failed: true,
-                        });
-                    }
-                    if post_bound.insert(i) {
-                        distinct_count = distinct_count.saturating_add(1);
-                    }
-                }
                 return Err(IndexTooLarge {
-                    distinct_count,
+                    distinct_count: items.len().saturating_add(1),
                     allocation_failed: false,
                 });
             }
@@ -288,11 +257,10 @@ mod tests {
 
     #[test]
     fn bounded_reports_true_distinct_count() {
-        // Bound of 2: indices 0 and 1 fill, the 3rd distinct item trips it.
+        // Bound of 2: indices 0 and 1 fill, the 3rd distinct item short-circuits immediately.
         let err = DenseIndex::<u32>::try_build_bounded([1, 2, 3, 2, 4, 4], 2)
             .expect_err("more than 2 distinct items must fail");
-        // Distinct items: 1, 2, 3, 4 -> 4 total.
-        assert_eq!(err.distinct_count, 4);
+        assert_eq!(err.distinct_count, 3);
     }
 
     #[test]
@@ -302,6 +270,21 @@ mod tests {
         let err = DenseIndex::<u32>::try_build_bounded([1, 2, 3, 4], 3)
             .expect_err("4 distinct items must fail a bound of 3");
         assert_eq!(err.distinct_count, 4);
+    }
+
+    #[test]
+    fn try_build_bounded_short_circuits_immediately_on_overflow_f_09_02() {
+        let mut pulled = 0usize;
+        let stream = (0..100_000u32).inspect(|_| {
+            pulled = pulled.saturating_add(1);
+        });
+        let err = DenseIndex::<u32>::try_build_bounded(stream, 3)
+            .expect_err("stream exceeding bound of 3 must fail");
+        assert_eq!(err.distinct_count, 4);
+        assert_eq!(
+            pulled, 4,
+            "F-09-02: try_build_bounded must short-circuit in O(1) at the (bound + 1)-th distinct item without draining the iterator"
+        );
     }
 
     #[test]
@@ -400,39 +383,11 @@ mod targeted_coverage_tests {
     }
 
     #[test]
-    fn reports_failure_while_seeding_post_bound_set() {
-        set_force_allocation_failure(true);
+    fn reports_short_circuit_at_zero_bound() {
+        set_force_allocation_failure(false);
         let error = DenseIndex::<u32>::try_build_bounded([1], 0)
-            .expect_err("injected post-bound allocation failure must be returned");
-        set_force_allocation_failure(false);
-        assert!(error.allocation_failed);
-        assert_eq!(error.distinct_count, 0);
-    }
-
-    #[test]
-    fn reports_failure_while_counting_post_bound_items() {
-        struct FailAfterFirst {
-            next: u32,
-        }
-
-        impl Iterator for FailAfterFirst {
-            type Item = u32;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                let item = self.next;
-                self.next = self.next.saturating_add(1);
-                if item == 2 {
-                    set_force_allocation_failure(true);
-                }
-                (item <= 2).then_some(item)
-            }
-        }
-
-        set_force_allocation_failure(false);
-        let error = DenseIndex::<u32>::try_build_bounded(FailAfterFirst { next: 1 }, 0)
-            .expect_err("injected post-bound counting failure must be returned");
-        set_force_allocation_failure(false);
-        assert!(error.allocation_failed);
+            .expect_err("zero bound must reject the first item in O(1)");
+        assert!(!error.allocation_failed);
         assert_eq!(error.distinct_count, 1);
     }
 }

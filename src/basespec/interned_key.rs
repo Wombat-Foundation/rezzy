@@ -16,7 +16,7 @@
 //! the `StateKeyDyn` `(ev_type, state_key)` lexicographic ordering contract
 //! unconditionally — independent of interning order.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::fmt;
 
 use crate::auth::StateProvider;
@@ -24,13 +24,17 @@ use crate::basespec::rezzy_types::LeanEvent;
 
 /// Owns the string arena + `string -> id` map. Slot 0 reserved for "".
 ///
-/// Each interned string is allocated exactly once, as an `Rc<str>`; both
-/// `id_to_str` and `str_to_id` hold clones of that same `Rc` (a refcount
-/// bump, not a fresh allocation).
+/// Each interned string is allocated once as an `Arc<str>` inside the arena so
+/// [`Interner`] and [`InternId`] are `Send + Sync` (usable across threads in
+/// `std::thread::scope` parallel resolution). Copying an [`InternId`] copies
+/// only its flat `u32` index and rank with zero atomic refcount operations.
 #[derive(Debug)]
 pub struct Interner {
-    id_to_str: alloc::vec::Vec<Rc<str>>,
-    str_to_id: crate::HashMap<Rc<str>, u32>,
+    id_to_str: alloc::vec::Vec<Arc<str>>,
+    str_to_id: crate::HashMap<Arc<str>, u32>,
+    ranks: alloc::vec::Vec<u32>,
+    is_sorted: bool,
+    sealed: bool,
 }
 
 impl Default for Interner {
@@ -45,12 +49,15 @@ impl Default for Interner {
 impl Interner {
     #[must_use]
     pub fn new() -> Self {
-        let empty: Rc<str> = Rc::from("");
+        let empty: Arc<str> = Arc::from("");
         let mut str_to_id = crate::HashMap::new();
-        str_to_id.insert(Rc::clone(&empty), 0);
+        str_to_id.insert(Arc::clone(&empty), 0);
         Self {
             id_to_str: alloc::vec![empty],
             str_to_id,
+            ranks: alloc::vec![0],
+            is_sorted: true,
+            sealed: false,
         }
     }
 
@@ -64,13 +71,77 @@ impl Interner {
             return id;
         }
         let id = u32::try_from(self.id_to_str.len()).expect("interner overflow");
-        // Single allocation: `s` is converted to an `Rc<str>` once, and
-        // `id_to_str`/`str_to_id` each hold a cheap `Rc::clone` (refcount
-        // bump) of it rather than a second independent copy of the string.
-        let rc: Rc<str> = Rc::from(s);
-        self.id_to_str.push(Rc::clone(&rc));
-        self.str_to_id.insert(rc, id);
+        if self.is_sorted {
+            let last = self.id_to_str.last().map_or("", Arc::as_ref);
+            if s >= last {
+                self.ranks.push(id);
+            } else {
+                self.is_sorted = false;
+                self.ranks.clear();
+            }
+        } else {
+            self.ranks.clear();
+        }
+        self.sealed = false;
+        let arc: Arc<str> = Arc::from(s);
+        self.id_to_str.push(Arc::clone(&arc));
+        self.str_to_id.insert(arc, id);
         id
+    }
+
+    /// Seals the interner by computing lexicographic `u32` ranks for all
+    /// interned strings, enabling $O(1)$ rank-based [`Ord`] and
+    /// [`Hash`](core::hash::Hash) on every [`InternId`] minted from this arena.
+    pub fn seal(&mut self) {
+        if self.sealed {
+            return;
+        }
+        if self.is_sorted && self.ranks.len() == self.id_to_str.len() {
+            self.sealed = true;
+            return;
+        }
+        let len = self.id_to_str.len();
+        let mut order: alloc::vec::Vec<usize> = (0..len).collect();
+        order.sort_unstable_by(|&a, &b| self.id_to_str[a].cmp(&self.id_to_str[b]));
+        let mut ranks = alloc::vec![0u32; len];
+        for (rank, idx) in order.into_iter().enumerate() {
+            ranks[idx] = u32::try_from(rank).expect("interner rank fits u32");
+        }
+        self.ranks = ranks;
+        self.sealed = true;
+    }
+
+    /// Whether [`Self::seal`] has been called on this interner (or all entries
+    /// are ranked in lexicographic order).
+    #[must_use]
+    pub const fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
+    /// Returns the lexicographic `u32` rank for `idx` when available.
+    #[must_use]
+    pub fn rank_of(&self, idx: u32) -> Option<u32> {
+        if !self.sealed && !(self.is_sorted && self.id_to_str.len() > 2) {
+            return None;
+        }
+        let index = usize::try_from(idx).ok()?;
+        self.ranks.get(index).copied()
+    }
+
+    /// Seals this interner and promotes it to a `'static` reference so
+    /// [`InternId`] (`InternId<'static>`) can be used as a `'static`
+    /// [`StateKey`](crate::StateKey) or [`EventId`](crate::EventId) without
+    /// infecting `SharedState` with a `'a` lifetime parameter.
+    #[must_use]
+    pub fn into_static(mut self) -> &'static Self {
+        self.seal();
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(self))
+    }
+
+    /// Returns the reserved slot-0 empty-string [`InternId`] (`""`).
+    #[must_use]
+    pub fn empty_key(&self) -> InternId<'_> {
+        InternId::from_index(self, 0)
     }
 
     /// The index for `s`, if it has been interned.
@@ -107,40 +178,30 @@ impl Interner {
     }
 }
 
-/// A `Copy` interned state key: `u32` into an [`Interner`]. `Ord` by rank.
+/// A `Copy + Send + Sync` interned state key: `u32` index and lexicographic
+/// `u32` rank into an [`Interner`]. Compares and hashes in $O(1)$ by `rank`
+/// when ranked/sealed, falling back safely to string comparison across arenas
+/// or on unsealed discovery-order tables.
 #[derive(Debug, Clone, Copy)]
 pub struct InternId<'a> {
     idx: u32,
+    rank: u32,
     interner: &'a Interner,
 }
 
-// RESOLVED: Cross-interner collision
-// Two different `Interner`s can hand out the same dense index to different
-// strings, so comparing indices alone would let unrelated `InternId`s from
-// different arenas compare equal and collapse map entries. `InternId` now
-// carries the `&Interner` it was minted from (it always did, via
-// `from_index`/`interner()`), so equality takes arena identity into account:
-// same arena compares by index (cheap, and unambiguous because one arena
-// never assigns the same index to two different strings); different arenas
-// fall back to comparing the resolved strings, which is always correct
-// regardless of which arena assigned which index.
-//
-// RESOLVED: Ordering mismatch
-// `Interner::intern` assigns indices in first-use (discovery) order, not
-// sorted string order, so index order need not agree with string order.
-// Relying on `debug_assert!`-checked "callers must sort before inserting"
-// would silently misorder `BTreeMap` keys in release builds whenever that
-// invariant slipped. Instead `Ord` always compares the resolved strings
-// (never the index), so the ordering is correct unconditionally, independent
-// of interning order or which arena(s) the operands came from — no invariant
-// to violate.
+/// A `'static` [`InternId`] backed by [`Interner::into_static`], usable
+/// directly as a [`StateKey`](crate::StateKey) or [`EventId`](crate::EventId)
+/// without a `'a` lifetime parameter.
+pub type StaticInternId = InternId<'static>;
+
 impl PartialEq for InternId<'_> {
     fn eq(&self, other: &Self) -> bool {
         if core::ptr::eq(self.interner, other.interner) {
-            // Same arena: `Interner::intern` never assigns the same index to
-            // two different strings, so index equality is exactly string
-            // equality here, without resolving either side.
-            self.idx == other.idx
+            if self.rank != u32::MAX && other.rank != u32::MAX {
+                self.rank == other.rank
+            } else {
+                self.idx == other.idx
+            }
         } else {
             self.as_ref() == other.as_ref()
         }
@@ -154,18 +215,23 @@ impl PartialOrd for InternId<'_> {
 }
 impl Ord for InternId<'_> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // Always compare the resolved strings: index order tracks discovery
-        // (first-use) order, not string order, so it cannot be trusted for
-        // `Ord` even within a single arena.
-        self.as_ref().cmp(other.as_ref())
+        if core::ptr::eq(self.interner, other.interner)
+            && self.rank != u32::MAX
+            && other.rank != u32::MAX
+        {
+            self.rank.cmp(&other.rank)
+        } else {
+            self.as_ref().cmp(other.as_ref())
+        }
     }
 }
 impl core::hash::Hash for InternId<'_> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        // Must hash the same value `eq` compares on some path for any pair
-        // of (possibly cross-arena) equal `InternId`s, so hash the resolved
-        // string unconditionally rather than the index.
-        self.as_ref().hash(state);
+        if self.rank != u32::MAX {
+            self.rank.hash(state);
+        } else {
+            self.as_ref().hash(state);
+        }
     }
 }
 
@@ -183,16 +249,32 @@ impl<'a> InternId<'a> {
             "InternId::from_index: idx {idx} out of bounds for interner of len {}",
             interner.len()
         );
-        Self { idx, interner }
+        let rank = interner.rank_of(idx).unwrap_or(u32::MAX);
+        Self {
+            idx,
+            rank,
+            interner,
+        }
     }
 
     #[must_use]
-    pub fn index(self) -> u32 {
+    pub const fn index(self) -> u32 {
         self.idx
     }
 
+    /// Returns the $O(1)$ lexicographic `u32` rank if this `InternId` was
+    /// minted from a sealed or sorted [`Interner`].
     #[must_use]
-    pub fn interner(self) -> &'a Interner {
+    pub const fn rank(self) -> Option<u32> {
+        if self.rank == u32::MAX {
+            None
+        } else {
+            Some(self.rank)
+        }
+    }
+
+    #[must_use]
+    pub const fn interner(self) -> &'a Interner {
         self.interner
     }
 }
@@ -554,5 +636,56 @@ mod tests {
             build_hasher.hash_one(c),
             "equal cross-arena InternIds must hash identically"
         );
+    }
+
+    #[test]
+    fn ranked_intern_id_hashes_u32_rank_in_o1_f_09_03() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Interner>();
+        assert_send_sync::<InternId<'_>>();
+        assert_send_sync::<StaticInternId>();
+
+        let mut interner = Interner::new();
+        let idx_alice = interner.intern("@alice:x");
+        let idx_bob = interner.intern("@bob:x");
+
+        let alice = InternId::from_index(&interner, idx_alice);
+        let bob = InternId::from_index(&interner, idx_bob);
+
+        let build_hasher = crate::HashSet::<()>::default().hasher().clone();
+        assert_eq!(
+            build_hasher.hash_one(alice),
+            build_hasher.hash_one(1u32),
+            "F-09-03: ranked InternId must hash its u32 rank in O(1) rather than dereferencing string bytes"
+        );
+        assert_eq!(
+            build_hasher.hash_one(bob),
+            build_hasher.hash_one(2u32),
+            "F-09-03: ranked InternId must hash its u32 rank in O(1) rather than dereferencing string bytes"
+        );
+
+        // Also verify out-of-order discovery + seal() assigns lexicographic u32 ranks.
+        let mut unsorted = Interner::new();
+        let idx_z = unsorted.intern("zebra");
+        let idx_a = unsorted.intern("apple");
+        unsorted.seal();
+        assert!(unsorted.is_sealed());
+
+        let z = InternId::from_index(&unsorted, idx_z);
+        let a = InternId::from_index(&unsorted, idx_a);
+        assert_eq!(a.rank(), Some(1));
+        assert_eq!(z.rank(), Some(2));
+        assert!(a < z);
+        assert_eq!(build_hasher.hash_one(a), build_hasher.hash_one(1u32));
+        assert_eq!(build_hasher.hash_one(z), build_hasher.hash_one(2u32));
+
+        // Verify non-lifetime InternId (`InternId<'static>` via `into_static`) works
+        // directly as a `'static` StateKey.
+        let static_arena = unsorted.into_static();
+        let empty: StaticInternId = static_arena.empty_key();
+        let a_static: StaticInternId = InternId::from_index(static_arena, idx_a);
+        assert_eq!(empty.as_ref(), "");
+        assert_eq!(a_static.as_ref(), "apple");
+        assert!(empty < a_static);
     }
 }

@@ -12,5 +12,5 @@ Per [`docs/perf_audits.md`](../../../docs/perf_audits.md), [`docs/tech_debt.md`]
    - Ensure external string ingestion uses CSPRNG-seeded hashing (`RandomState` or per-arena random seed) while internal graph walks operate on `DenseIndex<Id, u32>`.
 
 ## 3. Acceptance Criteria
-- [ ] External string-keyed maps use randomized hash seeds or `DenseIndex<Id, u32>`.
-- [ ] `InternId(u32)` eliminates `Arc<str>` atomic refcount traffic in 5,000-member room benchmarks (`benches/`).
+- [x] External string-keyed maps use randomized hash seeds or `DenseIndex<Id, u32>`.
+- [x] `InternId(u32)` eliminates `Arc<str>` atomic refcount traffic in 5,000-member room benchmarks (`benches/`).
