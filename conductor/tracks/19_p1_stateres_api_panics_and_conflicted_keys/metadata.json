@@ -1,0 +1,33 @@
+{
+  "track_id": "19_p1_stateres_api_panics_and_conflicted_keys",
+  "title": "P1 Remediation: State Resolution Conflicted-Keys Isolation, Cycle Tie-Breaks & Lean 4 Proof Parity",
+  "type": "remediation",
+  "status": "new",
+  "priority": "P1",
+  "origin_tracks": [
+    "01_lean_formalization_20260408",
+    "02_stateres_v2_cdo_20260510"
+  ],
+  "remediated_findings": [
+    "F-01.3",
+    "F-01.5",
+    "F-01.6",
+    "F-01.7",
+    "F-02.2",
+    "F-02.3",
+    "F-02.5",
+    "F-02.6",
+    "F-02.7"
+  ],
+  "created_at": "2026-10-23T11:25:00Z",
+  "updated_at": "2026-10-23T11:25:00Z",
+  "linked_docs": [
+    "../01_lean_formalization_20260408/review.md",
+    "../02_stateres_v2_cdo_20260510/review.md",
+    "../../audits/rezzy_docs_public_safety_audit.md",
+    "../../../TODO.txt",
+    "../../../docs/cdo_soundness_anomalies.md",
+    "../../../docs/rezzy_msc4242_security_comparison.md"
+  ],
+  "public_safety_audit_summary": "High (Federation Split-Brain & HashDoS): Conflicted-key derivation on flat conflicted_events without conflicted_keys_override allows supplemental MSC4297 auth-diff events to overwrite unconflicted state keys (F-02.3); V2.1.1 join_rules narrowing diverges from stock V2.1 on SEND01 (F-02.2); unseeded foldhash in Kahn/mainline walks risks HashDoS (F-01.5); Lean 4 single-pass mutual demotion theorem remains open (F-01.3)."
+}

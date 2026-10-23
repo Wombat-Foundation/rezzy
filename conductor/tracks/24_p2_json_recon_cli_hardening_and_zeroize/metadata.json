@@ -1,0 +1,40 @@
+{
+  "track_id": "24_p2_json_recon_cli_hardening_and_zeroize",
+  "title": "P2 Remediation: rezzy-json Float/Lookup Hardening, rezzy-recon Phase-1 Gate & h64 Chunk Fix, rezzy-cli Zeroize & Cycle Signaling",
+  "type": "hardening",
+  "status": "new",
+  "priority": "P2",
+  "origin_tracks": [
+    "09_perf_interning_benchmarks_20260920",
+    "10_rezzy_json_crate_20261004",
+    "11_rezzy_recon_pinsketch_trie_20261018",
+    "12_rezzy_cli_federation_agg_20261010"
+  ],
+  "remediated_findings": [
+    "F-09-07",
+    "F-09-08",
+    "T10-F4",
+    "T10-F5",
+    "T10-F6",
+    "T11-F4",
+    "T11-F5",
+    "T11-F6",
+    "T12-F3",
+    "T12-F4",
+    "T12-F5"
+  ],
+  "created_at": "2026-10-23T11:27:00Z",
+  "updated_at": "2026-10-23T11:27:00Z",
+  "linked_docs": [
+    "../../../docs/json_numeric_limits.md",
+    "../../../docs/2026-10-12-h64-prefix-grinding.md",
+    "../../../docs/jsonl-aggregation.md",
+    "../../../docs/format.sh",
+    "../../audits/rezzy_docs_public_safety_audit.md",
+    "../09_perf_interning_benchmarks_20260920/review.md",
+    "../10_rezzy_json_crate_20261004/review.md",
+    "../11_rezzy_recon_pinsketch_trie_20261018/review.md",
+    "../12_rezzy_cli_federation_agg_20261010/review.md"
+  ],
+  "public_safety_audit_summary": "Moderate (Cross-Crate Hardening, Algebraic Disjointness, Key Zeroization & Forensic CLI Telemetry): Remediates 11 Medium/Low findings across rezzy-json (overflow float canonicality T10-F4, ValueRef O(M*N) lookup bounds T10-F5, crate docs T10-F6), rezzy-recon (unverified BucketExchange::advance T11-F4, h64/q3 chunk correlation T11-F5, degree-256 overflow decode budget T11-F6), rezzy-cli (kahn_order_by cycle signaling F-09-07, zero-clone observation & O(F+E) connectivity check T12-F3, DSE-resistant key zeroization T12-F4, --check report schema T12-F5), and docs/format.sh shell hygiene (F-09-08)."
+}

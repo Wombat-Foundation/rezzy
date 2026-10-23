@@ -1,0 +1,30 @@
+{
+  "track_id": "22_p1_lazy_cache_sync_and_roaring_consolidation",
+  "title": "P1 Remediation: Thread-Safe LeanEventCache, Fallible EventProvider Error Propagation & DenseIndex/Roaring Consolidation",
+  "type": "architecture",
+  "status": "new",
+  "priority": "P1",
+  "origin_tracks": [
+    "07_roaring_lazy_provider_20260703",
+    "09_perf_interning_benchmarks_20260920"
+  ],
+  "remediated_findings": [
+    "F-07-02",
+    "F-07-05",
+    "F-07-06",
+    "F-07-08",
+    "F-07-09",
+    "F-09-06"
+  ],
+  "created_at": "2026-10-23T11:25:00Z",
+  "updated_at": "2026-10-23T11:25:00Z",
+  "linked_docs": [
+    "../../../docs/architecture.md",
+    "../../../docs/homeserver_utilities.md",
+    "../../../docs/tech_debt.md",
+    "../../audits/rezzy_docs_public_safety_audit.md",
+    "../07_roaring_lazy_provider_20260703/review.md",
+    "../09_perf_interning_benchmarks_20260920/review.md"
+  ],
+  "public_safety_audit_summary": "Critical/High (Audit #2 — Operational Liveness, Cache Concurrency & Crash Resilience): Real federation fork scales reach 10^4–10^5 events (not 500–700), LeanEventCache is !Sync with O(log N) BTreeMap churn on hits, resolve_state_maps_lazy/AuthGraph panic unconditionally on missing events or u32 overflow, and DenseIndex/Roaring bitmap migrations remain incomplete."
+}

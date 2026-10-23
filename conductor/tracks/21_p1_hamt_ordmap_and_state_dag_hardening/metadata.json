@@ -1,0 +1,36 @@
+{
+  "track_id": "21_p1_hamt_ordmap_and_state_dag_hardening",
+  "title": "P1 Remediation: HAMT Domain Separation, PersistentOrdMap Rebalancing, Cold Snapshot Diffing & MSC4242 State DAG Bounds",
+  "type": "remediation",
+  "status": "new",
+  "priority": "P1",
+  "origin_tracks": [
+    "04_hamt_delta_state_20260629",
+    "05_lattice_v22_msc4242_20260630",
+    "09_perf_interning_benchmarks_20260920"
+  ],
+  "remediated_findings": [
+    "F-04-02",
+    "F-04-03",
+    "F-04-04",
+    "F-04-05",
+    "F-04-06",
+    "F-05-02",
+    "F-05-04",
+    "F-05-05",
+    "F-05-06",
+    "F-09-05"
+  ],
+  "created_at": "2026-10-23T11:27:00Z",
+  "updated_at": "2026-10-23T11:27:00Z",
+  "linked_docs": [
+    "../04_hamt_delta_state_20260629/review.md",
+    "../05_lattice_v22_msc4242_20260630/review.md",
+    "../09_perf_interning_benchmarks_20260920/review.md",
+    "../../audits/rezzy_docs_public_safety_audit.md",
+    "../../../docs/hamt_live_frontier_retention.md",
+    "../../../docs/rezzy_msc4242_security_comparison.md",
+    "../../../docs/spec_coverage.csv"
+  ],
+  "public_safety_audit_summary": "Critical/High (DAG Branch Withholding, Unbounded HAMT Walk RAM & Type Aliasing): MSC4242/V2.1.1 branch withholding requires frontier reconciliation detection (F-05-02); LeanEvent aliases prev_state_events to auth_events (F-05-04); CLI HAMT walks accumulate O(N) nodes in RAM (F-04-02); PersistentOrdMap lacks remove rebalancing and cold-snapshot diff short-circuiting (F-04-03, F-09-05)."
+}
