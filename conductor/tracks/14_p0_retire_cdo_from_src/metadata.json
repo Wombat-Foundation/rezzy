@@ -2,7 +2,7 @@
   "track_id": "14_p0_retire_cdo_from_src",
   "title": "P0 Remediation: Relocate Retired Causal Domination Operator (cdo.rs) Out of Production src/",
   "type": "compliance",
-  "status": "new",
+  "status": "in_progress",
   "priority": "P0",
   "origin_tracks": [
     "02_stateres_v2_cdo_20260510"
