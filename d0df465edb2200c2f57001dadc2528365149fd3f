@@ -1,0 +1,7 @@
+Task: Add Red phase regression tests for Track 13 (F-03.1, F-03.3, F-03.4, F-06-01, F-06-02)
+
+Summary of Changes:
+- Added regression tests in tests/unit/test_auth.rs covering cross-room auth_events and auth state rejection in check_auth and check_auth_with_context, including fail-closed behavior when the citing event omits room_id (F-03.1).
+- Added regression tests for check_auth enforcing Rule 1.2 (V12 create room_id prohibition and pre-V12 domain match) and Rule 2 (V12 non-create room_id matching accepted m.room.create) (F-06-01).
+- Added regression test for V12 Rule 10.4 rejecting m.room.power_levels containing create_event.sender() in content.users when content.creator is omitted (F-06-02).
+- Added regression tests for EventContent::has_user_in_users default delegating to visit_user_keys (F-03.3), validate_forward_extremity threading EventVerifier to pass 2 (F-03.4), and Rule 1.2 allowing historical uppercase MXIDs per MSC4303.
