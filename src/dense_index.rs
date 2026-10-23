@@ -305,6 +305,21 @@ mod tests {
     }
 
     #[test]
+    fn try_build_bounded_short_circuits_immediately_on_overflow_f_09_02() {
+        let mut pulled = 0usize;
+        let stream = (0..100_000u32).inspect(|_| {
+            pulled = pulled.saturating_add(1);
+        });
+        let err = DenseIndex::<u32>::try_build_bounded(stream, 3)
+            .expect_err("stream exceeding bound of 3 must fail");
+        assert_eq!(err.distinct_count, 4);
+        assert_eq!(
+            pulled, 4,
+            "F-09-02: try_build_bounded must short-circuit in O(1) at the (bound + 1)-th distinct item without draining the iterator"
+        );
+    }
+
+    #[test]
     fn borrowed_construction_dedups() {
         let data = [10u32, 20, 10, 30];
         let idx: DenseIndex<&u32> = DenseIndex::try_build(data.iter()).unwrap();

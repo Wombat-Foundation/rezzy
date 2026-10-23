@@ -555,4 +555,26 @@ mod tests {
             "equal cross-arena InternIds must hash identically"
         );
     }
+
+    #[test]
+    fn ranked_intern_id_hashes_u32_rank_in_o1_f_09_03() {
+        let mut interner = Interner::new();
+        let idx_alice = interner.intern("@alice:x");
+        let idx_bob = interner.intern("@bob:x");
+
+        let alice = InternId::from_index(&interner, idx_alice);
+        let bob = InternId::from_index(&interner, idx_bob);
+
+        let build_hasher = crate::HashSet::<()>::default().hasher().clone();
+        assert_eq!(
+            build_hasher.hash_one(alice),
+            build_hasher.hash_one(1u32),
+            "F-09-03: ranked InternId must hash its u32 rank in O(1) rather than dereferencing string bytes"
+        );
+        assert_eq!(
+            build_hasher.hash_one(bob),
+            build_hasher.hash_one(2u32),
+            "F-09-03: ranked InternId must hash its u32 rank in O(1) rather than dereferencing string bytes"
+        );
+    }
 }

@@ -247,4 +247,28 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn fast_set_and_fast_map_use_per_instance_randomized_seeds_f_09_01() {
+        use core::hash::BuildHasher;
+
+        assert!(
+            core::any::type_name::<FastSet<String>>().contains("FastHashBuilder"),
+            "F-09-01: FastSet must use FastHashBuilder (CSPRNG/BLAKE3-seeded SipHash) rather than unseeded foldhash"
+        );
+
+        #[inline(never)]
+        fn make_fast_set() -> FastSet<String> {
+            FastSet::default()
+        }
+
+        let set_a = make_fast_set();
+        let set_b = make_fast_set();
+        let hash_a = set_a.hasher().hash_one("$untrusted_event_id:example.org");
+        let hash_b = set_b.hasher().hash_one("$untrusted_event_id:example.org");
+        assert_ne!(
+            hash_a, hash_b,
+            "F-09-01: distinct FastSet instances must use per-instance randomized seeds to resist HashDoS"
+        );
+    }
 }
